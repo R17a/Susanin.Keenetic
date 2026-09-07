@@ -4,14 +4,9 @@
 /docs/RECON.md
 /recon/
 
-# build artifacts
+# build intermediates (release binaries ARE committed, see build/)
 *.o
 susanin-agent
-susanin-agent.mipsel
-/build/
-
-# deployment archives (build locally, attach to GitHub Releases)
-/deploy/
 
 # runtime state / logs (never commit secrets)
 *.log

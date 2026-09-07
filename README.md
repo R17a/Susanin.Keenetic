@@ -47,6 +47,16 @@
 - LAN-интерфейсы (обычно `br0`, `br1`);
 - root-доступ по SSH.
 
+## Дистрибутив (для тестеров)
+
+Готовые сборки — в разделе **Releases**:
+- `susanin-agent.mipsel` — статический бинарь (архитектура **mipsel**, проверено
+  на Keenetic Viva / KeeneticOS 5.1.4 / Entware);
+- `susanin-keenetic-deploy.tar.gz` — комплект для установки
+  (`susanin-agent.mipsel`, `datapath.sh`, `susanin.sh`, конфиг, `manual.install.sh`).
+
+Для других архитектур (armv7/aarch64) — собирайте из исходников (см. «Сборка»).
+
 ## Быстрый старт
 
 1. Соберите бинарь (см. «Сборка») или возьмите готовый из GitHub Releases.
