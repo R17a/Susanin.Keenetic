@@ -1,0 +1,19 @@
+# Cross-compile susanin-agent to a static MIPS (mipsel) binary.
+# Build:   docker build -f Dockerfile.cross -t susanin-build .
+# Extract: docker run --rm -v "$PWD/build:/out" susanin-build sh -c \
+#            'cp /src/susanin-agent /out/susanin-agent.mipsel && file /out/susanin-agent.mipsel'
+# (binary will be in ./build/susanin-agent.mipsel)
+FROM debian:12
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc-mipsel-linux-gnu make file && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+ADD . /src
+
+RUN make CC=mipsel-linux-gnu-gcc \
+        CFLAGS="-O2 -std=c11 -Wall -Wextra -Wpedantic -static" \
+        LDFLAGS="-static"
+
+CMD ["/bin/sh", "-c", "echo built; file /src/susanin-agent"]

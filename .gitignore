@@ -1,0 +1,25 @@
+# internal/private working docs (not for publication)
+/PLAN.md
+/STATUS.md
+/docs/RECON.md
+/recon/
+
+# build artifacts
+*.o
+susanin-agent
+susanin-agent.mipsel
+/build/
+
+# deployment archives (build locally, attach to GitHub Releases)
+/deploy/
+
+# runtime state / logs (never commit secrets)
+*.log
+*.state
+/opt/
+
+# editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
