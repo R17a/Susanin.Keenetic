@@ -24,7 +24,9 @@ jobs:
 
       - name: Log in to GHCR
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io \
+          # Forks cannot push packages with GITHUB_TOKEN, so prefer a PAT
+          # (repo secret GHCR_PAT, scope write:packages) when present.
+          echo "${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}" | docker login ghcr.io \
             -u "${{ github.actor }}" --password-stdin
 
       - name: Build and push cross-compile image
