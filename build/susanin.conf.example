@@ -39,6 +39,16 @@ health_miss_debounce=2
 health_probe=1.1.1.1,8.8.8.8
 health_probe_src=10.8.1.1
 
+# Домены, которые ВСЕГДА идут через VPN (список-«принудительный»).
+# Файл: по одному домену (или IPv4) на строку, '#' — комментарии. Демон
+# резолвит A-записи и пиннит их IP в ok-наборы (TCP и UDP), обновляет каждые
+# vpn_always_interval секунд. Изменение файла подхватывается на лету.
+# Если файла нет — функция выключена. Пример: см. vpn_always.example.txt.
+vpn_always_file=/opt/susanin/etc/vpn_always.txt
+vpn_always_interval=300s
+# Резолвер для списка (пусто = автоматически из /etc/resolv.conf):
+vpn_always_dns=
+
 # Diagnostics.
 log_level=info
 diagnostics=off

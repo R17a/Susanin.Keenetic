@@ -7,7 +7,8 @@ CONFDIR = $(PREFIX)/susanin/etc
 VARDIR = $(PREFIX)/susanin/var
 
 SRCS = src/main.c src/config.c src/discover.c src/conntrack.c src/state.c \
-       src/backend.c src/classifier.c src/health.c src/engine.c src/log.c src/ops.c
+       src/backend.c src/classifier.c src/health.c src/engine.c src/log.c src/ops.c \
+       src/vpn_always.c
 OBJS = $(SRCS:.c=.o)
 
 TARGET = susanin-agent

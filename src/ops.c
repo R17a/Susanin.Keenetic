@@ -150,6 +150,26 @@ static void print_check(const char *name, int ok)
     printf("  %-28s %s\n", name, ok ? "OK" : "MISSING");
 }
 
+static int count_list_lines(const char *path)
+{
+    FILE *fp = fopen(path, "r");
+    char line[320];
+    int n = 0;
+    if (!fp)
+        return -1;
+    while (fgets(line, sizeof(line), fp)) {
+        char *p = line + strlen(line);
+        while (p > line && (p[-1] == ' ' || p[-1] == '\t' || p[-1] == '\r' ||
+                            p[-1] == '\n'))
+            *--p = '\0';
+        if (line[0] == '\0' || line[0] == '#')
+            continue;
+        n++;
+    }
+    fclose(fp);
+    return n;
+}
+
 int ops_status(const susanin_config *cfg, const char *conf_path)
 {
     const char *ipt = tool("iptables");
@@ -196,6 +216,19 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
             b[0] = (char *)ipset; b[1] = "list"; b[2] = (char *)names[k]; b[3] = NULL;
             printf("  %-18s = %d\n", names[k], cap_count_digits(ipset, b));
         }
+    }
+
+    printf("vpn_always (домены -> всегда VPN):\n");
+    if (!cfg->vpn_always_file[0]) {
+        printf("  disabled (vpn_always_file empty)\n");
+    } else {
+        int n = count_list_lines(cfg->vpn_always_file);
+        printf("  file: %s (%s)\n", cfg->vpn_always_file,
+               n < 0 ? "absent — disabled" : "present");
+        if (n >= 0)
+            printf("  domains: %d (refresh every %ds%s)\n", n,
+                   cfg->vpn_always_interval,
+                   cfg->vpn_always_dns[0] ? "" : ", resolver: auto");
     }
 
     printf("cache:\n");

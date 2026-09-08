@@ -6,6 +6,7 @@
 #include "health.h"
 #include "log.h"
 #include "state.h"
+#include "vpn_always.h"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -108,10 +109,13 @@ int engine_run(const susanin_config *cfg)
     susanin_state st;
     classifier_ctx ctx;
     flowlist L;
+    vpn_always *va = NULL;
     int tunnel_up = 1, miss = 0;
     time_t last[4] = { 0, 0, 0, 0 };
     time_t last_save = 0;
     time_t last_recon = 0;
+    time_t last_force = 0;
+    int force_pending = 0;
     const char *state_path = "/opt/susanin/var/susanin.state";
 
     signal(SIGINT, on_sig);
@@ -141,7 +145,13 @@ int engine_run(const susanin_config *cfg)
         slogf(SL_INFO, "restored cache from %s", state_path);
     if (tunnel_up)
         resync_sets(cfg, &st);
+    if (cfg->vpn_always_file[0])
+        va = va_new();
     slogf(SL_INFO, "engine started (egress=%s table=%d)", cfg->egress_interface, cfg->routing_table);
+    if (va && tunnel_up) {
+        last_force = time(NULL);
+        force_pending = va_refresh(va, cfg);
+    }
 
     while (!g_stop) {
         time_t now = time(NULL);
@@ -166,6 +176,7 @@ int engine_run(const susanin_config *cfg)
                     slogf(SL_INFO, "tunnel UP, recovery");
                     resync_sets(cfg, &st);
                     sweep_direct(cfg, &st, L.v, L.n);
+                    last_force = 0;
                 }
             } else {
                 miss++;
@@ -174,6 +185,7 @@ int engine_run(const susanin_config *cfg)
                     miss = 0;
                     slogf(SL_ERROR, "tunnel DOWN, fail-open DIRECT");
                     backend_ipset_flush(cfg);
+                    va_mark_dirty(va);
                 }
             }
         }
@@ -187,9 +199,23 @@ int engine_run(const susanin_config *cfg)
             last_recon = now;
             if (!backend_ready(cfg)) {
                 slogf(SL_WARN, "data plane missing (NDM rebuild?), re-provisioning");
-                if (backend_provision(cfg) == 0 && tunnel_up)
+                if (backend_provision(cfg) == 0 && tunnel_up) {
                     resync_sets(cfg, &st);
+                    last_force = 0;
+                    va_mark_dirty(va);
+                }
             }
+        }
+
+        if (tunnel_up && va &&
+            (force_pending ||
+             now - last_force >= (time_t)cfg->vpn_always_interval ||
+             va_changed(va, cfg))) {
+            time_t prev = last_force;
+            last_force = now;
+            force_pending = va_refresh(va, cfg);
+            if (force_pending)
+                last_force = prev;  /* догоняем оставшиеся домены вскоре */
         }
 
         usleep(200000);
@@ -197,6 +223,7 @@ int engine_run(const susanin_config *cfg)
 
     state_save(state_path, &st);
     slogf(SL_INFO, "engine stopped");
+    va_free(va);
     state_free(&st);
     free(L.v);
     return 0;

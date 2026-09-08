@@ -51,6 +51,10 @@ void config_set_defaults(susanin_config *c)
     c->health_miss_debounce = 2;
     snprintf(c->health_probe, sizeof(c->health_probe), "%s", "1.1.1.1,8.8.8.8");
     snprintf(c->health_probe_src, sizeof(c->health_probe_src), "%s", "10.8.1.1");
+    snprintf(c->vpn_always_file, sizeof(c->vpn_always_file), "%s",
+             "/opt/susanin/etc/vpn_always.txt");
+    snprintf(c->vpn_always_dns, sizeof(c->vpn_always_dns), "%s", "");
+    c->vpn_always_interval = 300;
     snprintf(c->log_level, sizeof(c->log_level), "%s", "info");
     c->diagnostics = 0;
 }
@@ -142,6 +146,12 @@ int config_load(const char *path, susanin_config *c)
             set_str(c->health_probe, sizeof(c->health_probe), val);
         else if (!strcmp(key, "health_probe_src"))
             set_str(c->health_probe_src, sizeof(c->health_probe_src), val);
+        else if (!strcmp(key, "vpn_always_file"))
+            set_str(c->vpn_always_file, sizeof(c->vpn_always_file), val);
+        else if (!strcmp(key, "vpn_always_dns"))
+            set_str(c->vpn_always_dns, sizeof(c->vpn_always_dns), val);
+        else if (!strcmp(key, "vpn_always_interval"))
+            c->vpn_always_interval = parse_interval(val);
         else if (!strcmp(key, "log_level"))
             set_str(c->log_level, sizeof(c->log_level), val);
         else if (!strcmp(key, "diagnostics"))
@@ -182,6 +192,9 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "health_miss_debounce=%d\n", c->health_miss_debounce);
     fprintf(fp, "health_probe=%s\n", c->health_probe);
     fprintf(fp, "health_probe_src=%s\n", c->health_probe_src);
+    fprintf(fp, "vpn_always_file=%s\n", c->vpn_always_file);
+    fprintf(fp, "vpn_always_dns=%s\n", c->vpn_always_dns);
+    fprintf(fp, "vpn_always_interval=%ds\n", c->vpn_always_interval);
     fprintf(fp, "log_level=%s\n", c->log_level);
     fprintf(fp, "diagnostics=%d\n", c->diagnostics);
     fclose(fp);
@@ -214,6 +227,9 @@ void config_print(const susanin_config *c)
     printf("health_miss_debounce=%d\n", c->health_miss_debounce);
     printf("health_probe=%s\n", c->health_probe);
     printf("health_probe_src=%s\n", c->health_probe_src);
+    printf("vpn_always_file=%s\n", c->vpn_always_file);
+    printf("vpn_always_dns=%s\n", c->vpn_always_dns);
+    printf("vpn_always_interval=%ds\n", c->vpn_always_interval);
     printf("log_level=%s\n", c->log_level);
     printf("diagnostics=%d\n", c->diagnostics);
 }

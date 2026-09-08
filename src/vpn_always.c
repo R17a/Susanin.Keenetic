@@ -1,0 +1,566 @@
+#define _GNU_SOURCE
+#include "vpn_always.h"
+#include "backend.h"
+#include "log.h"
+
+#include <arpa/inet.h>
+#include <ctype.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+
+#define VA_MAXDOM 256
+#define VA_MAXIP  32
+#define VA_TRACK  4096
+#define VA_LINE   320
+#define VA_BUDGET_MS 4000
+#define VA_QUERY_MAX_MS 2000
+#define VA_BACKOFF_S 60
+
+typedef struct {
+    char name[256];
+    char ips[VA_MAXIP][16]; /* последние успешно отресолвленные A-записи */
+    int nips;
+    time_t next_try;        /* когда перепроверять домен */
+} va_dom;
+
+struct vpn_always {
+    va_dom dom[VA_MAXDOM];
+    int nd;
+    char track[VA_TRACK][16]; /* IP, добавленные нами в ok-наборы */
+    int ntrack;
+    long long seen_mtime;
+    long long seen_size;
+    int seen_exists;
+    int warned;
+    int dirty;              /* ipset мог быть очищен — передобавить пины */
+};
+
+vpn_always *va_new(void)
+{
+    return calloc(1, sizeof(vpn_always));
+}
+
+void va_free(vpn_always *v)
+{
+    free(v);
+}
+
+void va_mark_dirty(vpn_always *v)
+{
+    if (v)
+        v->dirty = 1;
+}
+
+/* ---------------- файл списка ---------------- */
+
+static void trim_line(char *s)
+{
+    char *p = s + strlen(s);
+    while (p > s && (p[-1] == ' ' || p[-1] == '\t' || p[-1] == '\r' ||
+                     p[-1] == '\n'))
+        *--p = '\0';
+}
+
+static void lower_str(char *s)
+{
+    for (; *s; s++)
+        *s = (char)tolower((unsigned char)*s);
+}
+
+/* Валидно: IPv4 (пинится как есть) или DNS-имя из [a-z0-9.-]. */
+static int valid_name(const char *s, char *out, size_t n)
+{
+    struct in_addr a;
+    const char *p;
+    size_t len = strlen(s);
+    if (len == 0 || len >= n)
+        return 0;
+    if (inet_pton(AF_INET, s, &a) == 1) {
+        snprintf(out, n, "%s", s);
+        return 1;
+    }
+    if (len > 253)
+        return 0;
+    for (p = s; *p; p++) {
+        char c = *p;
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+              c == '.' || c == '-'))
+            return 0;
+    }
+    snprintf(out, n, "%s", s);
+    return 1;
+}
+
+/* Читает файл, дедуплицирует имена. -1 если файл недоступен. */
+static int file_load(const char *path, char names[][256], int maxnames)
+{
+    FILE *fp = fopen(path, "r");
+    char line[VA_LINE];
+    int n = 0;
+    if (!fp)
+        return -1;
+    while (fgets(line, sizeof(line), fp)) {
+        char buf[256];
+        int i;
+        trim_line(line);
+        if (line[0] == '\0' || line[0] == '#')
+            continue;
+        lower_str(line);
+        if (!valid_name(line, buf, sizeof(buf)))
+            continue;
+        if (n >= maxnames)
+            break;
+        for (i = 0; i < n; i++)
+            if (strcmp(names[i], buf) == 0)
+                break;
+        if (i == n) {
+            size_t l = strlen(buf) + 1;
+            if (l > sizeof(names[n]))
+                l = sizeof(names[n]);
+            memcpy(names[n], buf, l);
+            names[n][sizeof(names[n]) - 1] = '\0';
+            n++;
+        }
+    }
+    fclose(fp);
+    return n;
+}
+
+static va_dom *dom_find(vpn_always *v, const char *name)
+{
+    int i;
+    for (i = 0; i < v->nd; i++)
+        if (strcmp(v->dom[i].name, name) == 0)
+            return &v->dom[i];
+    return NULL;
+}
+
+/* Согласует список доменов с файлом: новые — next_try=0 (резолвить сразу),
+ * удалённые выкидываются вместе с их IP. */
+static void doms_reconcile(vpn_always *v, char names[][256], int n)
+{
+    va_dom keep[VA_MAXDOM];
+    int nk = 0, i;
+    for (i = 0; i < n && i < VA_MAXDOM; i++) {
+        va_dom *old = dom_find(v, names[i]);
+        va_dom *d = &keep[nk++];
+        if (old)
+            *d = *old;
+        else {
+            size_t l;
+            memset(d, 0, sizeof(*d));
+            l = strlen(names[i]) + 1;
+            if (l > sizeof(d->name))
+                l = sizeof(d->name);
+            memcpy(d->name, names[i], l);
+            d->name[sizeof(d->name) - 1] = '\0';
+            d->next_try = 0;
+        }
+    }
+    memcpy(v->dom, keep, (size_t)nk * sizeof(va_dom));
+    v->nd = nk;
+}
+
+/* ---------------- DNS (A-запрос) ---------------- */
+
+static unsigned short dns_id(void)
+{
+    static unsigned short c = 0;
+    if (c == 0)
+        c = (unsigned short)(time(NULL) ^ (getpid() << 8));
+    c = (unsigned short)(c + 1);
+    return c ? c : 1;
+}
+
+/* Кодирует имя в DNS-метки. Возвращает длину или -1. */
+static int enc_name(unsigned char *dst, size_t cap, const char *name)
+{
+    size_t o = 0;
+    const char *p = name;
+    while (*p) {
+        const char *dot = strchr(p, '.');
+        size_t l = dot ? (size_t)(dot - p) : strlen(p);
+        if (l == 0 || l > 63 || o + l + 2 > cap)
+            return -1;
+        dst[o++] = (unsigned char)l;
+        memcpy(dst + o, p, l);
+        o += l;
+        if (!dot)
+            break;
+        p = dot + 1;
+    }
+    if (o + 1 > cap)
+        return -1;
+    dst[o++] = 0;
+    return (int)o;
+}
+
+/* Пропускает (возможно, сжатое) DNS-имя. Новая позиция или -1. */
+static int skip_name(const unsigned char *b, size_t n, size_t off)
+{
+    int jumps = 0;
+    while (off < n) {
+        unsigned char c = b[off];
+        if (c == 0)
+            return (int)(off + 1);
+        if ((c & 0xc0) == 0xc0) {
+            if (off + 1 >= n || ++jumps > 16)
+                return -1;
+            off = (size_t)(((c & 0x3f) << 8) | b[off + 1]);
+            if (off >= n)
+                return -1;
+            continue;
+        }
+        if ((c & 0xc0) != 0 || off + 1u + c > n)
+            return -1;
+        off += 1u + c;
+    }
+    return -1;
+}
+
+/*
+ * UDP A-запрос к server:53. Возвращает число A-записей (>=0) в ips или -1
+ * при ошибке/таймауте/плохом ответе.
+ */
+static int dns_query_a(const char *server, const char *domain,
+                       char ips[][16], int max, int timeout_ms)
+{
+    unsigned char q[512], r[2048];
+    struct sockaddr_in sa;
+    struct pollfd pfd;
+    unsigned short id;
+    int ql, fd = -1, i, ret = -1, rn = 0, matched = 0;
+    size_t off;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(53);
+    if (inet_pton(AF_INET, server, &sa.sin_addr) != 1)
+        return -1;
+
+    id = dns_id();
+    q[0] = (unsigned char)(id >> 8);
+    q[1] = (unsigned char)(id & 0xff);
+    q[2] = 0x01; q[3] = 0x00;          /* RD */
+    q[4] = 0; q[5] = 1;                /* QDCOUNT=1 */
+    q[6] = 0; q[7] = 0; q[8] = 0; q[9] = 0; q[10] = 0; q[11] = 0;
+    ql = 12;
+    {
+        int l = enc_name(q + ql, sizeof(q) - (size_t)ql, domain);
+        if (l < 0)
+            return -1;
+        ql += l;
+    }
+    if ((size_t)ql + 4 > sizeof(q))
+        return -1;
+    q[ql++] = 0; q[ql++] = 1;          /* qtype A */
+    q[ql++] = 0; q[ql++] = 1;          /* qclass IN */
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0)
+        return -1;
+    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0)
+        goto out;
+    if (send(fd, q, (size_t)ql, 0) != ql)
+        goto out;
+
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    for (i = 0; i < 2 && !matched; i++) {
+        if (poll(&pfd, 1, timeout_ms) <= 0)
+            break;
+        rn = (int)recv(fd, r, sizeof(r), 0);
+        if (rn < 12)
+            continue;
+        if (r[0] == q[0] && r[1] == q[1] && (r[2] & 0x80))
+            matched = 1;
+    }
+    if (!matched || rn < 12)
+        goto out;
+    {
+        unsigned short flags = (unsigned short)((r[2] << 8) | r[3]);
+        unsigned short an = (unsigned short)((r[6] << 8) | r[7]);
+        int nans = 0;
+        int o;
+        if ((flags & 0x000f) != 0 || (flags & 0x0200)) { /* rcode!=0 / TC */
+            ret = -1;
+            goto out;
+        }
+        o = skip_name(r, (size_t)rn, 12);
+        if (o < 0 || (size_t)o + 4 > (size_t)rn) { ret = -1; goto out; }
+        off = (size_t)o + 4;
+        while (an-- > 0 && nans < max) {
+            unsigned short type, rdlen;
+            o = skip_name(r, (size_t)rn, off);
+            if (o < 0 || (size_t)o + 10 > (size_t)rn) { ret = -1; goto out; }
+            off = (size_t)o;
+            type = (unsigned short)((r[off] << 8) | r[off + 1]);
+            rdlen = (unsigned short)((r[off + 8] << 8) | r[off + 9]);
+            off += 10;
+            if (off + rdlen > (size_t)rn) { ret = -1; goto out; }
+            if (type == 1 && rdlen == 4) {
+                snprintf(ips[nans], 16, "%u.%u.%u.%u", r[off], r[off + 1],
+                         r[off + 2], r[off + 3]);
+                nans++;
+            }
+            off += rdlen;
+        }
+        ret = nans;
+    }
+out:
+    if (fd >= 0)
+        close(fd);
+    return ret;
+}
+
+/* Первый nameserver из /etc/resolv.conf, либо пустая строка. */
+static void resolv_server(char *out, size_t n)
+{
+    FILE *fp = fopen("/etc/resolv.conf", "r");
+    char line[300];
+    out[0] = '\0';
+    if (!fp)
+        return;
+    while (fgets(line, sizeof(line), fp)) {
+        char *p = line, *v;
+        struct in_addr a;
+        while (*p == ' ' || *p == '\t') p++;
+        if (strncmp(p, "nameserver", 10) != 0)
+            continue;
+        p += 10;
+        while (*p == ' ' || *p == '\t') p++;
+        v = p;
+        while (*v && *v != '\n' && *v != ' ' && *v != '\t' && *v != '#') v++;
+        *v = '\0';
+        if (inet_pton(AF_INET, p, &a) == 1) {
+            snprintf(out, n, "%s", p);
+            break;
+        }
+    }
+    fclose(fp);
+}
+
+static long long now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static int tracked_has(const vpn_always *v, const char *ip)
+{
+    int i;
+    for (i = 0; i < v->ntrack; i++)
+        if (strcmp(v->track[i], ip) == 0)
+            return 1;
+    return 0;
+}
+
+static int tracked_add(vpn_always *v, const char *ip)
+{
+    if (v->ntrack >= VA_TRACK)
+        return -1;
+    snprintf(v->track[v->ntrack++], 16, "%s", ip);
+    return 0;
+}
+
+static void tracked_remove(vpn_always *v, const char *ip)
+{
+    int i, w = 0;
+    for (i = 0; i < v->ntrack; i++) {
+        if (strcmp(v->track[i], ip) == 0)
+            continue;
+        if (w != i)
+            memcpy(v->track[w], v->track[i], 16);
+        w++;
+    }
+    v->ntrack = w;
+}
+
+int va_changed(vpn_always *v, const susanin_config *cfg)
+{
+    struct stat st;
+    int had;
+    if (!v || !cfg->vpn_always_file[0])
+        return 0;
+    had = v->seen_exists;
+    if (stat(cfg->vpn_always_file, &st) != 0)
+        return had ? 1 : 0;       /* файл исчез — нужно снять пины */
+    if (!had)
+        return 1;                 /* файл появился — включить */
+    return st.st_mtime != v->seen_mtime || st.st_size != v->seen_size;
+}
+
+int va_refresh(vpn_always *v, const susanin_config *cfg)
+{
+    char names[VA_MAXDOM][256];
+    char server[64];
+    struct stat st;
+    struct in_addr dns_a;
+    time_t now = time(NULL);
+    int nfiles, i, ndes = 0, added = 0, removed = 0, pending = 0;
+    long long t0 = now_ms();
+    int interval = cfg->vpn_always_interval > 0 ? cfg->vpn_always_interval : 300;
+    char (*desired)[16];
+
+    if (!v || !cfg->vpn_always_file[0])
+        return 0;
+
+    if (stat(cfg->vpn_always_file, &st) != 0) {
+        /* Файла нет — функция выключена. Если раньше был список — снимаем. */
+        if (v->seen_exists) {
+            v->seen_exists = 0;
+            v->nd = 0;
+            while (v->ntrack > 0) {
+                backend_ipset_del(cfg, 0, 1, v->track[0]);
+                backend_ipset_del(cfg, 1, 1, v->track[0]);
+                slogf(SL_INFO, "vpn_always: unpin %s (file removed)",
+                      v->track[0]);
+                tracked_remove(v, v->track[0]);
+            }
+        } else if (!v->warned) {
+            v->warned = 1;
+            slogf(SL_INFO, "vpn_always: %s absent (disabled)",
+                  cfg->vpn_always_file);
+        }
+        return 0;
+    }
+    v->seen_exists = 1;
+    v->warned = 0;
+    if (!v->seen_mtime || v->seen_mtime != st.st_mtime ||
+        v->seen_size != st.st_size) {
+        nfiles = file_load(cfg->vpn_always_file, names, VA_MAXDOM);
+        if (nfiles >= 0)
+            doms_reconcile(v, names, nfiles);
+        v->seen_mtime = st.st_mtime;
+        v->seen_size = st.st_size;
+    }
+
+    if (cfg->vpn_always_dns[0] &&
+        inet_pton(AF_INET, cfg->vpn_always_dns, &dns_a) == 1) {
+        snprintf(server, sizeof(server), "%.63s", cfg->vpn_always_dns);
+    } else {
+        resolv_server(server, sizeof(server));
+        if (!server[0])
+            snprintf(server, sizeof(server), "%s", "8.8.8.8");
+    }
+
+    desired = calloc((size_t)VA_TRACK, sizeof(*desired));
+    if (!desired)
+        return 0;
+
+    /* 1) резолвим домены, чьё время перепроверки наступило (с бюджетом) */
+    for (i = 0; i < v->nd; i++) {
+        va_dom *d = &v->dom[i];
+        int n, k;
+        long long spent = now_ms() - t0;
+        long left;
+        int to;
+        if (d->next_try > now)
+            continue;
+        {
+            struct in_addr lit;
+            if (inet_pton(AF_INET, d->name, &lit) == 1) {
+                /* строка файла — уже IP: пин без DNS-запроса */
+                if (d->nips == 0)
+                    slogf(SL_DEBUG, "vpn_always: literal %s", d->name);
+                snprintf(d->ips[0], 16, "%.15s", d->name);
+                d->nips = 1;
+                d->next_try = now + interval;
+                continue;
+            }
+        }
+        if (spent >= VA_BUDGET_MS) {
+            pending = 1;
+            continue;
+        }
+        left = VA_BUDGET_MS - spent;
+        if (left < 300)
+            left = 300;
+        to = VA_QUERY_MAX_MS < left ? VA_QUERY_MAX_MS : (int)left;
+        n = dns_query_a(server, d->name, d->ips, VA_MAXIP, to);
+        if (n > 0) {
+            if (d->nips == 0) {
+                for (k = 0; k < n; k++)
+                    slogf(SL_DEBUG, "vpn_always: %s -> %s", d->name,
+                          d->ips[k]);
+                slogf(SL_DEBUG, "vpn_always: %s resolved to %d ip", d->name,
+                      n);
+            }
+            d->nips = n;
+            d->next_try = now + interval;
+        } else {
+            if (d->nips > 0)
+                slogf(SL_DEBUG,
+                      "vpn_always: %s resolve failed (keep %d old ip)",
+                      d->name, d->nips);
+            else
+                slogf(SL_INFO,
+                      "vpn_always: %s resolve failed (no A records)",
+                      d->name);
+            d->next_try = now + VA_BACKOFF_S;
+        }
+    }
+
+    /* 2) желаемый набор = объединение IP доменов списка */
+    for (i = 0; i < v->nd; i++) {
+        int k;
+        for (k = 0; k < v->dom[i].nips && ndes < VA_TRACK; k++) {
+            int j;
+            for (j = 0; j < ndes; j++)
+                if (strcmp(desired[j], v->dom[i].ips[k]) == 0)
+                    break;
+            if (j == ndes)
+                snprintf(desired[ndes++], 16, "%s", v->dom[i].ips[k]);
+        }
+    }
+
+    /* 3) снять пины, которых больше нет в списке/в A-записях */
+    for (i = 0; i < v->ntrack; ) {
+        int j;
+        for (j = 0; j < ndes; j++)
+            if (strcmp(v->track[i], desired[j]) == 0)
+                break;
+        if (j == ndes) {
+            backend_ipset_del(cfg, 0, 1, v->track[i]);
+            backend_ipset_del(cfg, 1, 1, v->track[i]);
+            slogf(SL_INFO, "vpn_always: unpin %s", v->track[i]);
+            removed++;
+            tracked_remove(v, v->track[i]);
+        } else {
+            i++;
+        }
+    }
+
+    /* 4) добавить недостающие пины (tcp+udp, без истечения); при dirty —
+       передобавить все, т.к. наборы могли быть очищены fail-open'ом */
+    for (i = 0; i < ndes; i++) {
+        int known = tracked_has(v, desired[i]);
+        if (known && !v->dirty)
+            continue;
+        backend_ipset_add(cfg, 0, 1, desired[i], 0);
+        backend_ipset_add(cfg, 1, 1, desired[i], 0);
+        if (!known)
+            tracked_add(v, desired[i]);
+        slogf(SL_DEBUG, "vpn_always: pin %s", desired[i]);
+        added++;
+    }
+    v->dirty = 0;
+
+    if (added || removed)
+        slogf(SL_INFO, "vpn_always: +%d/-%d ip, %d domain(s), now %d pinned",
+              added, removed, v->nd, v->ntrack);
+    else if (slog_enabled(SL_DEBUG))
+        slogf(SL_DEBUG, "vpn_always: no changes (%d pinned)", v->ntrack);
+
+    free(desired);
+    return pending;
+}

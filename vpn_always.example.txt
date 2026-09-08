@@ -1,0 +1,35 @@
+# vpn_always.example.txt — пример списка доменов, которые ВСЕГДА
+# маршрутизируются через VPN (в обход автообучения).
+#
+# Использование:
+#   1) скопируйте файл на роутер как /opt/susanin/etc/vpn_always.txt
+#      (имя по умолчанию — см. vpn_always_file в susanin.conf);
+#   2) демон сам резолвит A-записи и пинит их IP в susanin_ok_{tcp,udp};
+#      менять файл можно в любой момент — изменения подхватываются на лету.
+#
+# Формат: по одному домену (или IPv4) на строку. '#' — комментарии.
+# Поддомены указываются отдельными строками (api.example.com, www.example.com).
+# IPv6 в v1 не поддерживается (только A-записи).
+
+# Пример: Claude / Anthropic недоступны в РФ из-за блокировок — их трафик
+# всегда заворачивается в VPN (включая поддомены Claude и инфраструктуру):
+anthropic.com
+clau.de
+claude.ai
+claude.app
+claude.com
+claude.new
+claude.site
+claudemcpclient.com
+claudemcpcontent.com
+claudepages.dev
+claudestudio.com
+claudeusercontent.com
+datadoghq.com
+intercom.io
+intercomassets.com
+intercomcdn.com
+modelcontextprotocol.com
+modelcontextprotocol.io
+modelcontextprotocol.net
+modelcontextprotocol.org

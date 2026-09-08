@@ -42,6 +42,9 @@ cp "$DIR/datapath.sh"          "$TOOLS/datapath.sh"
 cp "$DIR/susanin.sh"           "$TOOLS/susanin.sh"
 cp "$DIR/config.example.conf"  "$ETC/susanin.conf"
 cp "$DIR/S94susanin"           "$INITD/S94susanin"
+if [ -f "$DIR/vpn_always.example.txt" ]; then
+    cp "$DIR/vpn_always.example.txt" "$ETC/vpn_always.example.txt"
+fi
 
 chmod +x "$BIN/susanin-agent" "$TOOLS/datapath.sh" "$TOOLS/susanin.sh" "$INITD/S94susanin"
 
@@ -50,6 +53,7 @@ echo "  binary   $BIN/susanin-agent"
 echo "  datapath $TOOLS/datapath.sh"
 echo "  control  $TOOLS/susanin.sh   (start|stop|restart|status|log|install|down|add|del)"
 echo "  config   $ETC/susanin.conf"
+echo "  example  $ETC/vpn_always.example.txt   (домены \"всегда через VPN\")"
 echo "  init     $INITD/S94susanin"
 echo
 echo "  quick: sh $TOOLS/susanin.sh start"

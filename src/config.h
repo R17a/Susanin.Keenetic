@@ -29,6 +29,9 @@ typedef struct {
     int health_miss_debounce;
     char health_probe[CFG_PATH_MAX];
     char health_probe_src[64];
+    char vpn_always_file[CFG_PATH_MAX];
+    char vpn_always_dns[CFG_PATH_MAX];
+    int vpn_always_interval;
     char log_level[16];
     int diagnostics;
 } susanin_config;
