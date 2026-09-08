@@ -28,6 +28,7 @@ typedef struct {
     char name[256];
     char ips[VA_MAXIP][16]; /* последние успешно отресолвленные A-записи */
     int nips;
+    int fail_logged;        /* INFO об ошибке уже печатали (не спамим) */
     time_t next_try;        /* когда перепроверять домен */
 } va_dom;
 
@@ -203,21 +204,19 @@ static int enc_name(unsigned char *dst, size_t cap, const char *name)
     return (int)o;
 }
 
-/* Пропускает (возможно, сжатое) DNS-имя. Новая позиция или -1. */
+/* Пропускает (возможно, сжатое) DNS-имя. Возвращает позицию сразу ПОСЛЕ
+ * представления имени в пакете: для указателя сжатия это +2 от его начала,
+ * для обычных меток — после завершающего нуля. -1 при ошибке. */
 static int skip_name(const unsigned char *b, size_t n, size_t off)
 {
-    int jumps = 0;
     while (off < n) {
         unsigned char c = b[off];
         if (c == 0)
             return (int)(off + 1);
         if ((c & 0xc0) == 0xc0) {
-            if (off + 1 >= n || ++jumps > 16)
+            if (off + 1 >= n)
                 return -1;
-            off = (size_t)(((c & 0x3f) << 8) | b[off + 1]);
-            if (off >= n)
-                return -1;
-            continue;
+            return (int)(off + 2);
         }
         if ((c & 0xc0) != 0 || off + 1u + c > n)
             return -1;
@@ -496,16 +495,19 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
                       n);
             }
             d->nips = n;
+            d->fail_logged = 0;
             d->next_try = now + interval;
         } else {
             if (d->nips > 0)
                 slogf(SL_DEBUG,
                       "vpn_always: %s resolve failed (keep %d old ip)",
                       d->name, d->nips);
-            else
+            else if (!d->fail_logged) {
                 slogf(SL_INFO,
                       "vpn_always: %s resolve failed (no A records)",
                       d->name);
+                d->fail_logged = 1;
+            }
             d->next_try = now + VA_BACKOFF_S;
         }
     }
