@@ -1,5 +1,11 @@
 # Susanin.Keenetic
 
+> Проект разработан на основе статьи на
+> [Habr](https://habr.com/ru/articles/1076620/) и проекта
+> [Fiark/susanin](https://github.com/Fiark/susanin) (адаптивная
+> VPN-маршрутизация для MikroTik RouterOS), портирован на роутеры
+> Keenetic/Entware.
+
 Адаптивная маршрутизация «как в Susanin (MikroTik)» для роутеров **Keenetic**
 с **Entware**. Автоматически обнаруживает заблокированные направления,
 пробует их через VPN-туннель, запоминает рабочие пути и возвращается в
