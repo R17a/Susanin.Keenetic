@@ -59,10 +59,21 @@
 ## Дистрибутив (для тестеров)
 
 Готовые сборки — в разделе **Releases**:
-- `susanin-agent.mipsel` — статический бинарь (архитектура **mipsel**, проверено
-  на Keenetic Viva / KeeneticOS 5.1.4 / Entware);
 - `susanin-keenetic-deploy.tar.gz` — комплект для установки
-  (`susanin-agent.mipsel`, `datapath.sh`, `susanin.sh`, конфиг, `manual.install.sh`).
+  (`susanin-agent.mipsel`, `datapath.sh`, `susanin.sh`, конфиг, `manual.install.sh`,
+  пример списка доменов «всегда через VPN»).
+
+Проверено на Keenetic Viva / KeeneticOS 5.1.4 / Entware (архитектура **mipsel**).
+
+**Собрать бинарь без локального тулчейна** — через кросс-образ на GitHub Packages:
+
+```sh
+docker pull ghcr.io/r17a/susanin.keenetic:v0.1.0
+docker run --rm -v "$PWD/build:/out" ghcr.io/r17a/susanin.keenetic:v0.1.0 \
+  sh -c 'cp /src/susanin-agent /out/susanin-agent.mipsel'
+```
+
+Пакет: https://github.com/users/R17a/packages/container/package/susanin.keenetic
 
 Для других архитектур (armv7/aarch64) — собирайте из исходников (см. «Сборка»).
 
