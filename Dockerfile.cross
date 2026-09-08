@@ -3,7 +3,9 @@
 # Extract: docker run --rm -v "$PWD/build:/out" susanin-build sh -c \
 #            'cp /src/susanin-agent /out/susanin-agent.mipsel && file /out/susanin-agent.mipsel'
 # (binary will be in ./build/susanin-agent.mipsel)
-FROM debian:12
+# (cross headers/glibc of debian:12 didn't resolve time.h for mipsel gcc;
+#  ubuntu:24.04 matches the proven WSL toolchain)
+FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc-mipsel-linux-gnu make file && \
