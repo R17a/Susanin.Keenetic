@@ -3,6 +3,7 @@
 /STATUS.md
 /docs/RECON.md
 /recon/
+/AGENTS.md
 
 # build intermediates (release binaries ARE committed, see build/)
 *.o
