@@ -47,6 +47,7 @@ TTL_OK=${SUSANIN_TTL_OK:-21600}
 
 CHAIN=SUSANIN
 SETS="susanin_ok_tcp susanin_ok_udp susanin_test_tcp susanin_test_udp"
+NETSET=susanin_ok_net
 
 say() { echo "[susanin] $*"; }
 
@@ -72,6 +73,8 @@ ensure_sets() {
     for s in $SETS; do
         set_exists "$s" || "$IPSET" create "$s" hash:ip timeout 0
     done
+    # CIDR (vpn_always) live in a hash:net set; matches any LAN proto.
+    set_exists "$NETSET" || "$IPSET" create "$NETSET" hash:net timeout 0
     say "ipsets ready"
 }
 
@@ -94,6 +97,11 @@ rule_mark() {
             mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
                 -m mark --mark 0x0/0xffffffff \
                 -m set --match-set susanin_ok_${p} dst \
+                -j CONNMARK --set-xmark "$MARK_OK/$MASK"
+            # forced CIDR ranges (vpn_always) -> VPN for both protocols
+            mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
+                -m mark --mark 0x0/0xffffffff \
+                -m set --match-set susanin_ok_net dst \
                 -j CONNMARK --set-xmark "$MARK_OK/$MASK"
             mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
                 -m mark --mark 0x0/0xffffffff \
@@ -138,6 +146,7 @@ command_down() {
         "$IPT" -t mangle -F "$CHAIN"; "$IPT" -t mangle -X "$CHAIN" || true
     fi
     for s in $SETS; do set_exists "$s" && "$IPSET" destroy "$s" || true; done
+    set_exists "$NETSET" && "$IPSET" destroy "$NETSET" || true
     "$IPCMD" rule del fwmark "$MARK_OK" priority "$PRI_OK" lookup "$TABLE" >/dev/null 2>&1 || true
     "$IPCMD" rule del fwmark "$MARK_TEST" priority "$PRI_TEST" lookup "$TABLE" >/dev/null 2>&1 || true
     "$IPCMD" route del default dev "$EGRESS" table "$TABLE" >/dev/null 2>&1 || true
@@ -157,11 +166,17 @@ command_status() {
             echo "$s = (absent)"
         fi
     done
+    if set_exists "$NETSET"; then
+        echo "$NETSET = $("$IPSET" list "$NETSET" 2>/dev/null | grep -cE '^[0-9]+\.' || true)"
+    else
+        echo "$NETSET = (absent)"
+    fi
     "$IPCMD" rule show | grep -E "lookup $TABLE" || echo "no ip rule for table $TABLE"
 }
 
 command_flush() {
     for s in $SETS; do set_exists "$s" && "$IPSET" flush "$s" || true; done
+    set_exists "$NETSET" && "$IPSET" flush "$NETSET" || true
     say "sets flushed (fail-open / DIRECT)"
 }
 

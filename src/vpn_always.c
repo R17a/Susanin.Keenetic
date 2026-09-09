@@ -29,6 +29,7 @@ typedef struct {
     char ips[VA_MAXIP][16]; /* последние успешно отресолвленные A-записи */
     int nips;
     int fail_logged;        /* INFO об ошибке уже печатали (не спамим) */
+    int is_net;             /* строка файла — CIDR (a.b.c.d/n), не домен */
     time_t next_try;        /* когда перепроверять домен */
 } va_dom;
 
@@ -37,6 +38,8 @@ struct vpn_always {
     int nd;
     char track[VA_TRACK][16]; /* IP, добавленные нами в ok-наборы */
     int ntrack;
+    char tracknet[VA_TRACK][40]; /* CIDR, добавленные в susanin_ok_net */
+    int ntracknet;
     long long seen_mtime;
     long long seen_size;
     int seen_exists;
@@ -76,7 +79,30 @@ static void lower_str(char *s)
         *s = (char)tolower((unsigned char)*s);
 }
 
-/* Валидно: IPv4 (пинится как есть) или DNS-имя из [a-z0-9.-]. */
+/* Валидно: IPv4 (пинится как есть), CIDR a.b.c.d/n (в susanin_ok_net) или
+ * DNS-имя из [a-z0-9.-]. */
+static int valid_cidr(const char *s, char *out, size_t n)
+{
+    char buf[48], *slash, *e;
+    struct in_addr a;
+    long pre;
+    if (strlen(s) >= sizeof(buf))
+        return 0;
+    snprintf(buf, sizeof(buf), "%s", s);
+    slash = strchr(buf, '/');
+    if (!slash)
+        return 0;
+    *slash = '\0';
+    if (inet_pton(AF_INET, buf, &a) != 1)
+        return 0;
+    errno = 0;
+    pre = strtol(slash + 1, &e, 10);
+    if (e == slash + 1 || *e != '\0' || errno != 0 || pre < 0 || pre > 32)
+        return 0;
+    snprintf(out, n, "%s", s);
+    return 1;
+}
+
 static int valid_name(const char *s, char *out, size_t n)
 {
     struct in_addr a;
@@ -88,6 +114,8 @@ static int valid_name(const char *s, char *out, size_t n)
         snprintf(out, n, "%s", s);
         return 1;
     }
+    if (strchr(s, '/'))
+        return valid_cidr(s, out, n);
     if (len > 253)
         return 0;
     for (p = s; *p; p++) {
@@ -163,6 +191,7 @@ static void doms_reconcile(vpn_always *v, char names[][256], int n)
                 l = sizeof(d->name);
             memcpy(d->name, names[i], l);
             d->name[sizeof(d->name) - 1] = '\0';
+            d->is_net = strchr(d->name, '/') ? 1 : 0;
             d->next_try = 0;
         }
     }
@@ -384,6 +413,42 @@ static void tracked_remove(vpn_always *v, const char *ip)
     v->ntrack = w;
 }
 
+static int trackednet_has(const vpn_always *v, const char *cidr)
+{
+    int i;
+    for (i = 0; i < v->ntracknet; i++)
+        if (strcmp(v->tracknet[i], cidr) == 0)
+            return 1;
+    return 0;
+}
+
+static int trackednet_add(vpn_always *v, const char *cidr)
+{
+    size_t l;
+    if (v->ntracknet >= VA_TRACK)
+        return -1;
+    l = strlen(cidr) + 1;
+    if (l > sizeof(v->tracknet[0]))
+        l = sizeof(v->tracknet[0]);
+    memcpy(v->tracknet[v->ntracknet], cidr, l);
+    v->tracknet[v->ntracknet][sizeof(v->tracknet[0]) - 1] = '\0';
+    v->ntracknet++;
+    return 0;
+}
+
+static void trackednet_remove(vpn_always *v, const char *cidr)
+{
+    int i, w = 0;
+    for (i = 0; i < v->ntracknet; i++) {
+        if (strcmp(v->tracknet[i], cidr) == 0)
+            continue;
+        if (w != i)
+            memcpy(v->tracknet[w], v->tracknet[i], 40);
+        w++;
+    }
+    v->ntracknet = w;
+}
+
 int va_changed(vpn_always *v, const susanin_config *cfg)
 {
     struct stat st;
@@ -405,10 +470,12 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
     struct stat st;
     struct in_addr dns_a;
     time_t now = time(NULL);
-    int nfiles, i, ndes = 0, added = 0, removed = 0, pending = 0;
+    int nfiles, i, ndes = 0, ndesn = 0, added = 0, removed = 0, pending = 0;
+    int addn = 0, remn = 0;
     long long t0 = now_ms();
     int interval = cfg->vpn_always_interval > 0 ? cfg->vpn_always_interval : 300;
     char (*desired)[16];
+    char (*desired_net)[40];
 
     if (!v || !cfg->vpn_always_file[0])
         return 0;
@@ -424,6 +491,12 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
                 slogf(SL_INFO, "vpn_always: unpin %s (file removed)",
                       v->track[0]);
                 tracked_remove(v, v->track[0]);
+            }
+            while (v->ntracknet > 0) {
+                backend_net_del(cfg, v->tracknet[0]);
+                slogf(SL_INFO, "vpn_always: unpin %s (file removed)",
+                      v->tracknet[0]);
+                trackednet_remove(v, v->tracknet[0]);
             }
         } else if (!v->warned) {
             v->warned = 1;
@@ -453,8 +526,12 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
     }
 
     desired = calloc((size_t)VA_TRACK, sizeof(*desired));
-    if (!desired)
+    desired_net = calloc((size_t)VA_TRACK, sizeof(*desired_net));
+    if (!desired || !desired_net) {
+        free(desired);
+        free(desired_net);
         return 0;
+    }
 
     /* 1) резолвим домены, чьё время перепроверки наступило (с бюджетом) */
     for (i = 0; i < v->nd; i++) {
@@ -465,6 +542,11 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
         int to;
         if (d->next_try > now)
             continue;
+        if (d->is_net) {
+            /* CIDR — пинится как есть, без DNS */
+            d->next_try = now + interval;
+            continue;
+        }
         {
             struct in_addr lit;
             if (inet_pton(AF_INET, d->name, &lit) == 1) {
@@ -512,9 +594,18 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
         }
     }
 
-    /* 2) желаемый набор = объединение IP доменов списка */
+    /* 2) желаемый набор = объединение IP доменов + CIDR-строк списка */
     for (i = 0; i < v->nd; i++) {
         int k;
+        if (v->dom[i].is_net) {
+            int j;
+            for (j = 0; j < ndesn; j++)
+                if (strcmp(desired_net[j], v->dom[i].name) == 0)
+                    break;
+            if (j == ndesn && ndesn < VA_TRACK)
+                snprintf(desired_net[ndesn++], 40, "%s", v->dom[i].name);
+            continue;
+        }
         for (k = 0; k < v->dom[i].nips && ndes < VA_TRACK; k++) {
             int j;
             for (j = 0; j < ndes; j++)
@@ -525,7 +616,7 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
         }
     }
 
-    /* 3) снять пины, которых больше нет в списке/в A-записях */
+    /* 3) снять пины IP, которых больше нет в списке/в A-записях */
     for (i = 0; i < v->ntrack; ) {
         int j;
         for (j = 0; j < ndes; j++)
@@ -537,6 +628,22 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
             slogf(SL_INFO, "vpn_always: unpin %s", v->track[i]);
             removed++;
             tracked_remove(v, v->track[i]);
+        } else {
+            i++;
+        }
+    }
+
+    /* 3b) снять CIDR, которых больше нет в списке */
+    for (i = 0; i < v->ntracknet; ) {
+        int j;
+        for (j = 0; j < ndesn; j++)
+            if (strcmp(v->tracknet[i], desired_net[j]) == 0)
+                break;
+        if (j == ndesn) {
+            backend_net_del(cfg, v->tracknet[i]);
+            slogf(SL_INFO, "vpn_always: unpin %s", v->tracknet[i]);
+            remn++;
+            trackednet_remove(v, v->tracknet[i]);
         } else {
             i++;
         }
@@ -555,14 +662,27 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
         slogf(SL_DEBUG, "vpn_always: pin %s", desired[i]);
         added++;
     }
+    for (i = 0; i < ndesn; i++) {
+        int known = trackednet_has(v, desired_net[i]);
+        if (known && !v->dirty)
+            continue;
+        backend_net_add(cfg, desired_net[i], 0);
+        if (!known)
+            trackednet_add(v, desired_net[i]);
+        slogf(SL_DEBUG, "vpn_always: pin net %s", desired_net[i]);
+        addn++;
+    }
     v->dirty = 0;
 
-    if (added || removed)
-        slogf(SL_INFO, "vpn_always: +%d/-%d ip, %d domain(s), now %d pinned",
-              added, removed, v->nd, v->ntrack);
+    if (added || removed || addn || remn)
+        slogf(SL_INFO, "vpn_always: +%d/-%d ip, +%d/-%d net, %d domain(s), "
+              "now %d ip + %d net pinned",
+              added, removed, addn, remn, v->nd, v->ntrack, v->ntracknet);
     else if (slog_enabled(SL_DEBUG))
-        slogf(SL_DEBUG, "vpn_always: no changes (%d pinned)", v->ntrack);
+        slogf(SL_DEBUG, "vpn_always: no changes (%d ip + %d net pinned)",
+              v->ntrack, v->ntracknet);
 
     free(desired);
+    free(desired_net);
     return pending;
 }

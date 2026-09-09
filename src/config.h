@@ -21,6 +21,7 @@ typedef struct {
     int fast_syn_min_op;
     int ok_ttl;
     int ok_refresh_below;
+    int ok_max_entries;     /* bounded GC: per-proto ok-cache limit (0=off) */
     int test_ttl;
     int cooldown_ttl;
     int cooldown_ok_ttl;

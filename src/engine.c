@@ -104,6 +104,26 @@ static void sweep_direct(const susanin_config *cfg, susanin_state *st,
     }
 }
 
+/* Bounded GC (upstream v0.12 idea): keep per-proto ok-cache within a limit by
+ * evicting the oldest entries. Runs periodically; 0 in config disables. */
+static void trim_ok(const susanin_config *cfg, susanin_state *st)
+{
+    int udp;
+    if (cfg->ok_max_entries <= 0)
+        return;
+    for (udp = 0; udp < 2; udp++) {
+        state_set *set = st_ok(st, udp);
+        while (set->n > cfg->ok_max_entries && set->n > 0) {
+            char ip[64];
+            snprintf(ip, sizeof(ip), "%s", set->v[0].addr);
+            backend_ipset_del(cfg, udp, 1, ip);
+            state_remove(set, ip);
+            slogf(SL_INFO, "GC: evict ok %s (%s), limit %d", ip,
+                  udp ? "udp" : "tcp", cfg->ok_max_entries);
+        }
+    }
+}
+
 int engine_run(const susanin_config *cfg)
 {
     susanin_state st;
@@ -115,6 +135,7 @@ int engine_run(const susanin_config *cfg)
     time_t last_save = 0;
     time_t last_recon = 0;
     time_t last_force = 0;
+    time_t last_trim = 0;
     int force_pending = 0;
     const char *state_path = "/opt/susanin/var/susanin.state";
 
@@ -193,6 +214,11 @@ int engine_run(const susanin_config *cfg)
         if (now - last_save >= 300) {
             last_save = now;
             state_save(state_path, &st);
+        }
+
+        if (now - last_trim >= 30) {
+            last_trim = now;
+            trim_ok(cfg, &st);
         }
 
         if (now - last_recon >= 15) {

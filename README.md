@@ -115,11 +115,10 @@ sh /opt/susanin/tools/susanin.sh install
 
 ```sh
 cat > /opt/susanin/etc/vpn_always.txt <<'EOF'
-# по одному домену (или IPv4) на строку; '#' — комментарии
+# по одному домену / IPv4 / CIDR на строку; '#' — комментарии
 anthropic.com
 claude.ai
-claude.app
-modelcontextprotocol.io
+104.16.0.0/13
 EOF
 ```
 
@@ -134,8 +133,8 @@ EOF
 - убрали домен из файла — его «свои» IP будут распинены при следующем
   обновлении (уже подтверждённые обучением останутся как обычный кэш `ok`);
 - полное имя `sub.example.com` указывается отдельной строкой;
-- только IPv4 (A-записи); резолвер — из `/etc/resolv.conf` или поле
-  `vpn_always_dns`;
+- только IPv4 (A-записи); CIDR-строки (`a.b.c.d/n`) пинятся как есть;
+  резолвер — из `/etc/resolv.conf` или поле `vpn_always_dns`;
 - готовый пример со списком Claude/Anthropic — `vpn_always.example.txt`
   (после установки лежит в `/opt/susanin/etc/vpn_always.example.txt`).
   Проверка: `sh /opt/susanin/tools/susanin.sh status` покажет домены.

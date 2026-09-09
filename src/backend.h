@@ -13,6 +13,10 @@ int backend_ipset_add(const susanin_config *c, int proto_udp, int phase_ok,
 int backend_ipset_del(const susanin_config *c, int proto_udp, int phase_ok,
                       const char *ip);
 int backend_ipset_flush(const susanin_config *c);
+
+/* Forced CIDR ranges (vpn_always): hash:net susanin_ok_net, timeout ttl. */
+int backend_net_add(const susanin_config *c, const char *cidr, int ttl);
+int backend_net_del(const susanin_config *c, const char *cidr);
 int backend_ct_delete(const ct_flow *f);
 
 #endif

@@ -28,6 +28,8 @@ fast_syn_min_op=2
 # a confirmed IP that stops replying via VPN is removed by JUDGE automatically).
 ok_ttl=0
 ok_refresh_below=3h
+# Bounded GC (like upstream Susanin v0.12): per-proto ok-cache limit, 0=off.
+ok_max_entries=4096
 test_ttl=1m
 cooldown_ttl=5m
 cooldown_ok_ttl=30s
