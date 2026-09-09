@@ -39,7 +39,7 @@ void config_set_defaults(susanin_config *c)
     c->fast_interval = 1;
     c->soft_interval = 2;
     c->judge_interval = 1;
-    c->health_interval = 3;
+    c->health_interval = 5;
     c->fast_syn_min_op = 2;
     c->ok_ttl = 6 * 3600;
     c->ok_refresh_below = 3 * 3600;
@@ -48,7 +48,7 @@ void config_set_defaults(susanin_config *c)
     c->cooldown_ok_ttl = 30;
     c->watch_ttl = 8;
     c->watch_retry_below = 4;
-    c->health_miss_debounce = 2;
+    c->health_miss_debounce = 4;
     snprintf(c->health_probe, sizeof(c->health_probe), "%s", "1.1.1.1,8.8.8.8");
     snprintf(c->health_probe_src, sizeof(c->health_probe_src), "%s", "10.8.1.1");
     snprintf(c->vpn_always_file, sizeof(c->vpn_always_file), "%s",

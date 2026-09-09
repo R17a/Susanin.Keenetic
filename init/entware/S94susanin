@@ -1,24 +1,20 @@
 #!/bin/sh
-# Entware init script for susanin-agent (Keinetic/Entware).
-# Uses Entware rc.func conventions (/etc/init.d/rc.unslung).
+# Entware init script for susanin-agent (Keenetic/Entware).
+# Uses the project's own control script (susanin.sh) instead of Entware rc.func,
+# whose path (/etc/init.d/rc.func) may not exist on KeeneticOS.
 # Install as /opt/etc/init.d/S94susanin and make executable.
+# Test: /opt/etc/init.d/S94susanin start|stop|restart
 
-. /etc/init.d/rc.func
-
-PROG=/opt/susanin/bin/susanin-agent
-APP=susanin-agent
-CONF=/opt/susanin/etc/susanin.conf
-PIDFILE=/opt/susanin/var/susanin-agent.pid
+SUSANIN_SH=/opt/susanin/tools/susanin.sh
 
 start() {
-    [ -x "$PROG" ] || return 1
-    command_start_check "$APP" && return 0
-    export SUSANIN_CONF="$CONF"
-    command_start "$PROG" "$APP" "$PIDFILE"
+    [ -x /opt/susanin/bin/susanin-agent ] || return 1
+    mkdir -p /opt/susanin/var
+    sh "$SUSANIN_SH" start
 }
 
 stop() {
-    command_stop "$APP" "$PIDFILE"
+    sh "$SUSANIN_SH" stop
 }
 
 case "$1" in

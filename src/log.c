@@ -3,6 +3,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 static int g_level = SL_INFO;
 
@@ -27,13 +28,19 @@ void slogf(int lvl, const char *fmt, ...)
 {
     va_list ap;
     const char *tag;
+    char ts[16];
+    time_t now;
+    struct tm tmv;
     if (!slog_enabled(lvl))
         return;
     if (lvl <= SL_ERROR) tag = "ERR";
     else if (lvl <= SL_WARN) tag = "WARN";
     else if (lvl <= SL_INFO) tag = "INFO";
     else tag = "DBG";
-    fprintf(stdout, "%s: ", tag);
+    now = time(NULL);
+    localtime_r(&now, &tmv);
+    strftime(ts, sizeof(ts), "%H:%M:%S", &tmv);
+    fprintf(stdout, "%s %s: ", ts, tag);
     va_start(ap, fmt);
     vfprintf(stdout, fmt, ap);
     va_end(ap);
