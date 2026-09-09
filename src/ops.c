@@ -206,12 +206,13 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
 
     printf("ipset sizes:\n");
     {
-        static const char *names[4] = {
+        static const char *names[5] = {
             "susanin_test_tcp", "susanin_test_udp",
-            "susanin_ok_tcp", "susanin_ok_udp"
+            "susanin_ok_tcp", "susanin_ok_udp",
+            "susanin_ok_net"
         };
         int k;
-        for (k = 0; k < 4; k++) {
+        for (k = 0; k < 5; k++) {
             char *b[4];
             b[0] = (char *)ipset; b[1] = "list"; b[2] = (char *)names[k]; b[3] = NULL;
             printf("  %-18s = %d\n", names[k], cap_count_digits(ipset, b));
