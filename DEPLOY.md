@@ -10,8 +10,17 @@
 - `config.example.conf` — конфиг (на роутере — `/opt/susanin/etc/susanin.conf`).
 - `vpn_always.example.txt` — пример списка доменов «всегда через VPN»
   (ставится как `/opt/susanin/etc/vpn_always.example.txt`).
-- `manual.install.sh` — установщик «в один шаг» (рекомендуется).
+- `manual.install.sh` — установщик «в один шаг» (рекомендуется; существующий
+  `susanin.conf` не перезаписывает — для перезаписи `sh manual.install.sh --force`).
+- `update.sh` / `uninstall.sh` — обновление (конфиг и state сохраняются) и
+  удаление (`--purge` — целиком).
+- `install.sh` — установщик одной строкой (скачивает архив под архитектуру).
 - `DEPLOY.md` — этот файл.
+
+> В релизах v0.3.0+ публикуются отдельные архивы на архитектуру:
+> `susanin-keenetic-deploy-<mipsel|mips|aarch64|armv7|x86_64>.tar.gz` и
+> файл контрольных сумм `SHA256SUMS`. Бинарь внутри архива называется
+> `susanin-agent` (без суффикса архитектуры).
 
 ## Установка в один шаг (рекомендуется)
 

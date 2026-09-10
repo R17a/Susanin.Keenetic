@@ -139,6 +139,44 @@ EOF
   (после установки лежит в `/opt/susanin/etc/vpn_always.example.txt`).
   Проверка: `sh /opt/susanin/tools/susanin.sh status` покажет домены.
 
+## Установка / обновление / удаление
+
+Установка **одной строкой** (скачает архив под нужную архитектуру, определит
+LAN/VPN-интерфейсы; при неоднозначности спросит):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
+  | sh -s -- --arch mipsel --yes
+```
+
+Флаги: `--arch mipsel|mips|aarch64|armv7|x86_64`, `--version latest|vX.Y.Z`,
+`--egress <if>`, `--lan <if,if>`, `--subnets <cidr,cidr>`, `--no-start`,
+`--force`, `--prefix <dir>`. Без `--arch` архитектура определяется по `uname -m`.
+
+**Обновление** (конфиг `susanin.conf` и состояние сохраняются):
+
+```sh
+sh /opt/susanin/tools/susanin.sh update            # до последнего релиза
+sh /opt/susanin/tools/susanin.sh update v0.3.0     # конкретная версия
+```
+
+**Удаление**:
+
+```sh
+sh /opt/susanin/tools/susanin.sh uninstall          # стоп + снять datapath/init, конфиг и state оставить
+sh /opt/susanin/tools/susanin.sh uninstall --purge  # удалить /opt/susanin полностью
+```
+
+В релизах публикуются архивы `susanin-keenetic-deploy-<arch>.tar.gz`
+(mipsel/mips/aarch64/armv7/x86_64) и `SHA256SUMS`.
+
+## Что нового в v0.3.0 (в разработке)
+
+- установка одной строкой (`install.sh`) с автоопределением архитектуры и
+  интерфейсов, обновление (`update`) и удаление (`uninstall`);
+- сборки под mipsel/mips/aarch64/armv7/x86_64 в Release (+`SHA256SUMS`);
+- graceful stop в `susanin.sh` (SIGTERM, затем KILL при необходимости).
+
 ## Что нового в v0.2.0
 
 **Перенесено из родительского Susanin (MikroTik) v0.12.0:**

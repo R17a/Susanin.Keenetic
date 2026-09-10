@@ -1,0 +1,84 @@
+name: Release binaries
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: mipsel
+            cc: mipsel-linux-gnu-gcc
+            pkg: gcc-mipsel-linux-gnu
+          - arch: mips
+            cc: mips-linux-gnu-gcc
+            pkg: gcc-mips-linux-gnu
+          - arch: aarch64
+            cc: aarch64-linux-gnu-gcc
+            pkg: gcc-aarch64-linux-gnu
+          - arch: armv7
+            cc: arm-linux-gnueabihf-gcc
+            pkg: gcc-arm-linux-gnueabihf
+          - arch: x86_64
+            cc: gcc
+            pkg: gcc-multilib
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends make file ${{ matrix.pkg }}
+      - name: Build ${{ matrix.arch }}
+        run: |
+          make clean || true
+          make CC=${{ matrix.cc }} \
+            CFLAGS="-O2 -std=c11 -Wall -Wextra -Wpedantic -static" \
+            LDFLAGS="-static"
+          file susanin-agent
+      - name: Stage deploy archive
+        run: |
+          set -e
+          STAGE="pkg-${{ matrix.arch }}"
+          mkdir -p "$STAGE"
+          cp susanin-agent "$STAGE/susanin-agent"
+          for f in datapath.sh susanin.sh update.sh uninstall.sh install.sh \
+                   config.example.conf vpn_always.example.txt S94susanin \
+                   DEPLOY.md manual.install.sh; do
+            [ -f "tools/$f" ] && cp "tools/$f" "$STAGE/$f" || true
+            [ -f "$f" ] && cp "$f" "$STAGE/$f" || true
+          done
+          tar -czf "susanin-keenetic-deploy-${{ matrix.arch }}.tar.gz" -C "$STAGE" .
+          ls -l "susanin-keenetic-deploy-${{ matrix.arch }}.tar.gz"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.arch }}
+          path: susanin-keenetic-deploy-${{ matrix.arch }}.tar.gz
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS

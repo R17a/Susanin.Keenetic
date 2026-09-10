@@ -9,6 +9,8 @@
 #   sh susanin.sh log            # последние 30 строк лога
 #   sh susanin.sh log 100        # последние 100 строк лога
 #   sh susanin.sh install        # настройка дата-плейна (setup + up)
+#   sh susanin.sh update [ver]   # обновить бинарь/скрипты (конфиг и state сохраняются)
+#   sh susanin.sh uninstall [--purge]  # удалить Susanin
 #   sh susanin.sh down           # снять правила дата-плейна (без остановки демона)
 #   sh susanin.sh add  <ip> tcp|udp test|ok   # вручную добавить IP в VPN
 #   sh susanin.sh del  <ip> tcp|udp           # убрать IP
@@ -50,9 +52,20 @@ cmd_stop() {
         echo "[susanin] и так не запущен"
         return 0
     fi
+    # graceful: SIGTERM (движок сохраняет state), затем KILL при необходимости
     for p in $(ps | grep susanin-agent | grep -v grep | awk '{print $1}'); do
-        kill -9 "$p" 2>/dev/null || true
+        kill -TERM "$p" 2>/dev/null || true
     done
+    _i=0
+    while [ "$_i" -lt 10 ] && is_running; do
+        sleep 1
+        _i=$((_i + 1))
+    done
+    if is_running; then
+        for p in $(ps | grep susanin-agent | grep -v grep | awk '{print $1}'); do
+            kill -9 "$p" 2>/dev/null || true
+        done
+    fi
     sleep 1
     echo "[susanin] остановлен"
 }
@@ -78,10 +91,12 @@ case "${1:-}" in
     status) cmd_status ;;
     log) cmd_log "${2:-30}" ;;
     install) sh "$TOOLS/datapath.sh" up; "$BIN" setup ;;
+    update) shift || true; sh "$TOOLS/update.sh" "$@" ;;
+    uninstall) shift || true; sh "$TOOLS/uninstall.sh" "$@" ;;
     down) sh "$TOOLS/datapath.sh" down ;;
     add) sh "$TOOLS/datapath.sh" add "$2" "$3" "$4" ;;
     del) sh "$TOOLS/datapath.sh" del "$2" "$3" ;;
     *)
-        echo "usage: $0 {start|stop|restart|status|log [N]|install|down|add <ip> <tcp|udp> <test|ok>|del <ip> <tcp|udp>}" >&2
+        echo "usage: $0 {start|stop|restart|status|log [N]|install|update [ver]|uninstall [--purge]|down|add <ip> <tcp|udp> <test|ok>|del <ip> <tcp|udp>}" >&2
         exit 2 ;;
 esac
