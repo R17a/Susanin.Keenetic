@@ -58,18 +58,21 @@
 
 ## Дистрибутив (для тестеров)
 
-Готовые сборки — в разделе **Releases**:
-- `susanin-keenetic-deploy.tar.gz` — комплект для установки
-  (`susanin-agent.mipsel`, `datapath.sh`, `susanin.sh`, конфиг, `manual.install.sh`,
-  пример списка доменов «всегда через VPN»).
+Готовые сборки — в разделе **Releases** (по архитектурам, +`SHA256SUMS`):
+- `susanin-keenetic-deploy-<arch>.tar.gz`, где arch = `mipsel`, `mips`,
+  `aarch64`, `armv7`, `x86_64` — комплект для установки (`susanin-agent`,
+  `datapath.sh`, `susanin.sh`, `update.sh`, `uninstall.sh`, конфиг,
+  `manual.install.sh`, пример списка доменов «всегда через VPN»).
 
-Проверено на Keenetic Viva / KeeneticOS 5.1.4 / Entware (архитектура **mipsel**).
+**Проверено на реальном железе:** Keenetic Viva / KeeneticOS 5.1.4–5.1.5 /
+Entware, архитектура **mipsel**. Остальные архитектуры собираются в CI, но на
+живом железе не тестировались — если что-то не работает, сообщите в Issues.
 
 **Собрать бинарь без локального тулчейна** — через кросс-образ на GitHub Packages:
 
 ```sh
-docker pull ghcr.io/r17a/susanin.keenetic:v0.1.0
-docker run --rm -v "$PWD/build:/out" ghcr.io/r17a/susanin.keenetic:v0.1.0 \
+docker pull ghcr.io/r17a/susanin.keenetic:latest
+docker run --rm -v "$PWD/build:/out" ghcr.io/r17a/susanin.keenetic:latest \
   sh -c 'cp /src/susanin-agent /out/susanin-agent.mipsel'
 ```
 
@@ -84,7 +87,7 @@ docker run --rm -v "$PWD/build:/out" ghcr.io/r17a/susanin.keenetic:v0.1.0 \
 
 ```sh
 cd /opt
-tar -xzf susanin-keenetic-deploy.tar.gz -C /opt/sp && cd /opt/sp
+tar -xzf susanin-keenetic-deploy-<arch>.tar.gz -C /opt/sp && cd /opt/sp
 sh manual.install.sh
 ```
 
