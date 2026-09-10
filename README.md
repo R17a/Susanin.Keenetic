@@ -139,6 +139,25 @@ EOF
   (после установки лежит в `/opt/susanin/etc/vpn_always.example.txt`).
   Проверка: `sh /opt/susanin/tools/susanin.sh status` покажет домены.
 
+## Что нового в v0.2.0
+
+**Перенесено из родительского Susanin (MikroTik) v0.12.0:**
+- CIDR-строки в списке «всегда через VPN» (`a.b.c.d/n`) — отдельный ipset
+  `susanin_ok_net` (маркируется для TCP и UDP, чистится/восстанавливается
+  вместе с остальными пинами);
+- bounded GC: лимит ok-кэша `ok_max_entries` (по умолчанию 4096 на протокол,
+  старые записи вытесняются);
+- graceful shutdown: по SIGTERM/SIGINT кэш сохраняется в state-файл.
+
+**Наши доработки:**
+- health-устойчивость по умолчанию: `health_interval=5s`,
+  `health_miss_debounce=4` (меньше ложных DOWN при кратких сбоях туннеля);
+- временные метки (`HH:MM:SS`) в логе демона;
+- init-скрипт `S94susanin` без зависимости от `rc.func` (надёжный автозапуск
+  на KeeneticOS);
+- мультиархитектурная сборка: `tools/wsl-build.sh mipsel mips aarch64 armv7`;
+- `susanin_ok_net` в выводе `status`.
+
 ## CLI
 
 ```
@@ -181,6 +200,7 @@ docker build -f Dockerfile.cross -t susanin-build .
 | `vpn_always_file` | файл доменов «всегда через VPN» (нет файла = off) | `/opt/susanin/etc/vpn_always.txt` |
 | `vpn_always_interval` | как часто перечитывать/резолвить список | `300s` |
 | `vpn_always_dns` | резолвер для списка (пусто = из resolv.conf) | (пусто) |
+| `ok_max_entries` | лимит записей ok-кэша на протокол (bounded GC; 0=off) | `4096` |
 
 ## Известные ограничения v1
 
