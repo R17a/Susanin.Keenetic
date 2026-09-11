@@ -250,6 +250,16 @@ docker build -f Dockerfile.cross -t susanin-build .
 - [DEPLOY.md](DEPLOY.md) — установка/обновление/удаление на роутере;
 - `tools/susanin.sh`, `tools/datapath.sh` — управление демоном и дата-плейном.
 
+## Поддержать проект
+
+Проект развивается на энтузиазме. Если он оказался полезным — можно поддержать
+разработку:
+
+- **DonationAlerts:** https://www.donationalerts.com/r/dmitriy_r17a
+- **CloudTips:** https://pay.cloudtips.ru/p/dcbf5f2e
+
+Также доступна кнопка **Sponsor** на странице репозитория.
+
 ## Дисклеймер
 
 Проект не связан и не аффилирован с Keenetic, Amnezia, WireGuard, MikroTik или
