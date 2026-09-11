@@ -111,6 +111,12 @@ pick() {
     echo "$1"
 }
 
+default_devs() {
+    ip route show table all 2>/dev/null \
+      | awk '/default/ {for (i = 1; i <= NF; i++) if ($i == "dev") print $(i + 1)}' \
+      | sort -u
+}
+
 if [ -z "$EGRESS" ]; then
     CAND=$(ifaces | grep -E '^(nwg|wg[0-9]*|amnezia|ovpn)' || true)
     if [ -z "$CAND" ]; then
@@ -120,10 +126,17 @@ if [ -z "$EGRESS" ]; then
     if [ "$CN" = 1 ]; then
         EGRESS="$CAND"
     elif [ "$CN" -gt 1 ]; then
-        say "several VPN interfaces found:"
-        EGRESS=$(pick "select egress (VPN)" $CAND)
+        DEF=$(default_devs)
+        for c in $CAND; do
+            if printf '%s\n' "$DEF" | grep -qx "$c"; then EGRESS="$c"; break; fi
+        done
+        [ -n "$EGRESS" ] || EGRESS=$(printf '%s\n' "$CAND" | grep -E '^(nwg|wg)' | head -1)
+        [ -n "$EGRESS" ] || EGRESS=$(printf '%s\n' "$CAND" | head -1)
+        say "выбран egress=$EGRESS (кандидаты: $(printf '%s ' $CAND)); если неверно — укажите --egress"
+    elif ifaces | grep -qx nwg0; then
+        EGRESS=nwg0
     else
-        say "no VPN interface auto-detected; candidates:"
+        say "VPN-интерфейс не найден автоматически."
         EGRESS=$(pick "select egress (VPN)" $(ifaces | grep -Ev '^(lo|ppp|tunl)' || true))
     fi
 fi
@@ -155,10 +168,10 @@ fi
 say "lan=$LAN subnets=${SUBNETS:-n/a}"
 
 if [ "$YES" -ne 1 ] && [ -r /dev/tty ]; then
-    printf "[susanin] install to %s with egress=%s lan=%s ? [y/N]: " \
-        "$PREFIX" "$EGRESS" "$LAN" >&2
-    read _ok < /dev/tty || _ok=n
-    case "$_ok" in y|Y|yes|YES) ;; *) die "aborted" ;; esac
+    printf "[susanin] Установить в %s?\n  VPN (egress): %s\n  LAN: %s\n  подсети: %s\n[Y/n]: " \
+        "$PREFIX" "$EGRESS" "$LAN" "${SUBNETS:-n/a}" >&2
+    read _ok < /dev/tty || _ok=y
+    case "$_ok" in n|N|no|NO) die "aborted" ;; *) ;; esac
 fi
 
 mkdir -p "$PREFIX/bin" "$PREFIX/tools" "$PREFIX/etc" "$PREFIX/var" "$INITD"
