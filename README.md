@@ -115,41 +115,51 @@ EOF
 
 ## Установка / обновление / удаление
 
-![Susanin.Keenetic installer](demo.png)
-
-Перед установкой на Entware желательно поставить сертификаты (иначе `wget`
-может падать на HTTPS при скачивании релиза из GitHub):
+Перед установкой на Entware поставьте сертификаты (иначе `wget` не пройдёт по
+HTTPS при скачивании релиза):
 
 ```sh
 opkg update && opkg install ca-certificates
 ```
 
-Установка **одной строкой** (скачает архив под нужную архитектуру, определит
-LAN/VPN-интерфейсы; при неоднозначности спросит). На Entware `curl` обычно
-отсутствует — используйте `wget`:
+Установка **одной строкой**: скачивается архив под вашу архитектуру,
+автоматически определяются LAN/VPN-интерфейсы, затем запрашивается
+подтверждение. На Entware `curl` обычно отсутствует — используйте `wget`:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
-  | sh -s -- --arch mipsel
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
 ```
 
 Либо поставьте curl и используйте его:
 ```sh
 opkg install curl
-curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
-  | sh -s -- --arch mipsel
+curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
 ```
 
-Флаги: `--arch mipsel|mips|aarch64|armv7|x86_64`, `--version latest|vX.Y.Z`,
-`--egress <if>`, `--lan <if,if>`, `--subnets <cidr,cidr>`, `--no-start`,
-`--force`, `--prefix <dir>`. Без `--arch` архитектура определяется по `uname -m`.
+Архитектура определяется автоматически по `uname -m`. Дополнительные флаги:
+`--arch mipsel|mips|aarch64|armv7|x86_64` (override),
+`--version latest|vX.Y.Z`, `--egress <if>`, `--lan <if,if>`,
+`--subnets <cidr,cidr>`, `--yes` (без подтверждения), `--force`
+(перезаписать `susanin.conf`), `--no-start`, `--prefix <dir>`.
+
+Офлайн-установка из распакованного архива:
+```sh
+sh install.sh --yes
+```
+
+Существующие `/opt/susanin/etc/susanin.conf` и
+`/opt/susanin/etc/vpn_always.txt` при install/update **не перезаписываются**.
+
+![Susanin.Keenetic installer](demo.png)
 
 **Обновление** (конфиг `susanin.conf` и состояние сохраняются):
 
 ```sh
 sh /opt/susanin/tools/susanin.sh update            # до последнего релиза
-sh /opt/susanin/tools/susanin.sh update v0.3.0     # конкретная версия
+sh /opt/susanin/tools/susanin.sh update v0.3.3     # конкретная версия
 ```
+
+![Susanin.Keenetic uninstall](demo2.png)
 
 **Удаление**:
 
