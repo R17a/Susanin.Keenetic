@@ -16,6 +16,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --arch) ARCH="$2"; shift ;;
         --version) VERSION="$2"; shift ;;
+        v[0-9]*) VERSION="$1" ;;
+        [0-9]*) VERSION="v$1" ;;
         --prefix) PREFIX="$2"; shift ;;
         -h|--help) echo "usage: $0 [--arch ARCH] [--version latest|vX.Y.Z] [--prefix DIR]"; exit 0 ;;
         *) die "unknown arg: $1" ;;
