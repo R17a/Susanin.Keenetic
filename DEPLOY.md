@@ -26,6 +26,11 @@
 
 ## Установка в один шаг
 
+Зависимости Entware (сертификаты — чтобы `wget` работал по HTTPS с GitHub):
+```sh
+opkg update && opkg install ca-certificates
+```
+
 Онлайн, прямо на роутере (скачает архив под архитектуру):
 ```sh
 curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \

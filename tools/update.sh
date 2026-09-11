@@ -40,7 +40,7 @@ if command -v curl >/dev/null 2>&1; then
 elif command -v wget >/dev/null 2>&1; then
     fetch() { wget -qO "$2" "$1"; }
 else
-    die "need curl or wget"
+    die "need curl or wget (Entware: opkg update && opkg install ca-certificates)"
 fi
 
 OLD="unknown"
@@ -60,7 +60,8 @@ ASSET="susanin-keenetic-deploy-$ARCH.tar.gz"
 TMP=$(mktemp -d /tmp/susanin-upd.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT INT TERM
 say "downloading $BASE/$ASSET"
-fetch "$BASE/$ASSET" "$TMP/pkg.tar.gz" || die "download failed: $BASE/$ASSET"
+fetch "$BASE/$ASSET" "$TMP/pkg.tar.gz" || die "download failed: $BASE/$ASSET
+     hint: opkg update && opkg install ca-certificates"
 tar -xzf "$TMP/pkg.tar.gz" -C "$TMP" || die "bad archive"
 PKG=$(find "$TMP" -maxdepth 2 -name 'susanin-agent' -type f 2>/dev/null | head -1)
 [ -n "$PKG" ] || PKG=$(find "$TMP" -maxdepth 2 -name 'susanin-agent.*' -type f 2>/dev/null | head -1)

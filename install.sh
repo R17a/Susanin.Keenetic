@@ -66,7 +66,7 @@ else
     elif command -v wget >/dev/null 2>&1; then
         fetch() { wget -qO "$2" "$1"; }
     else
-        die "need curl or wget"
+        die "need curl or wget (Entware: opkg update && opkg install ca-certificates; optionally 'opkg install curl')"
     fi
     if [ "$VERSION" = latest ]; then
         BASE="https://github.com/$REPO/releases/latest/download"
@@ -79,7 +79,8 @@ else
     trap 'rm -rf "$TMP"' EXIT INT TERM
     say "downloading $BASE/$ASSET"
     fetch "$BASE/$ASSET" "$TMP/pkg.tar.gz" \
-        || die "download failed (check --arch/--version or release assets): $BASE/$ASSET"
+        || die "download failed (check --arch/--version or release assets): $BASE/$ASSET
+     hint: opkg update && opkg install ca-certificates"
     tar -xzf "$TMP/pkg.tar.gz" -C "$TMP" || die "bad archive $ASSET"
     DIR=$TMP
 fi
