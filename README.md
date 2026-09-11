@@ -182,43 +182,6 @@ sh /opt/susanin/tools/susanin.sh install    # datapath up + setup
 | Удаление | `sh /opt/susanin/tools/susanin.sh uninstall [--purge]` |
 | IP вручную в VPN | `sh /opt/susanin/tools/susanin.sh add <ip> tcp test` |
 
-## Что нового в v0.3.3
-
-- исправлено: `susanin.sh update vX.Y.Z` — версия принимается и позиционно
-  (раньше требовалось `--version vX.Y.Z`);
-- синхронизирована версия в бинарях и именах ассетов (`0.3.3`).
-
-## Что нового в v0.3.2
-
-- весь вывод CLI переведён на английский (`susanin.sh`, блок `status`);
-- установщик сам перезапускает демон, если он уже запущен.
-
-## Что нового в v0.3.0
-
-- установка одной строкой (`install.sh`) с автоопределением архитектуры и
-  интерфейсов, обновление (`update`) и удаление (`uninstall`);
-- сборки под mipsel/mips/aarch64/armv7/x86_64 в Release (+`SHA256SUMS`);
-- graceful stop в `susanin.sh` (SIGTERM, затем KILL при необходимости).
-
-## Что нового в v0.2.0
-
-**Перенесено из родительского Susanin (MikroTik) v0.12.0:**
-- CIDR-строки в списке «всегда через VPN» (`a.b.c.d/n`) — отдельный ipset
-  `susanin_ok_net` (маркируется для TCP и UDP, чистится/восстанавливается
-  вместе с остальными пинами);
-- bounded GC: лимит ok-кэша `ok_max_entries` (по умолчанию 4096 на протокол,
-  старые записи вытесняются);
-- graceful shutdown: по SIGTERM/SIGINT кэш сохраняется в state-файл.
-
-**Наши доработки:**
-- health-устойчивость по умолчанию: `health_interval=5s`,
-  `health_miss_debounce=4` (меньше ложных DOWN при кратких сбоях туннеля);
-- временные метки (`HH:MM:SS`) в логе демона;
-- init-скрипт `S94susanin` без зависимости от `rc.func` (надёжный автозапуск
-  на KeeneticOS);
-- мультиархитектурная сборка: `tools/wsl-build.sh mipsel mips aarch64 armv7 x86_64`;
-- `susanin_ok_net` в выводе `status`.
-
 ## CLI
 
 ```
@@ -273,6 +236,7 @@ docker build -f Dockerfile.cross -t susanin-build .
 
 ## Документы
 
+- [CHANGELOG.md](CHANGELOG.md) — история версий (что нового по релизам);
 - [DEPLOY.md](DEPLOY.md) — установка/обновление/удаление на роутере;
 - `tools/susanin.sh`, `tools/datapath.sh` — управление демоном и дата-плейном.
 
