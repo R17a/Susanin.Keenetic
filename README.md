@@ -182,6 +182,12 @@ sh /opt/susanin/tools/susanin.sh install    # datapath up + setup
 | Удаление | `sh /opt/susanin/tools/susanin.sh uninstall [--purge]` |
 | IP вручную в VPN | `sh /opt/susanin/tools/susanin.sh add <ip> tcp test` |
 
+## Что нового в v0.3.2
+
+- весь вывод CLI переведён на английский (`susanin.sh`, блок `status`);
+- установщик сам перезапускает демон, если он уже запущен;
+- в README добавлен скриншот `demo.png` в блоке установки.
+
 ## Что нового в v0.3.0
 
 - установка одной строкой (`install.sh`) с автоопределением архитектуры и
