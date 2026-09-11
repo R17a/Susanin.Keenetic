@@ -132,11 +132,11 @@ if [ -z "$EGRESS" ]; then
         done
         [ -n "$EGRESS" ] || EGRESS=$(printf '%s\n' "$CAND" | grep -E '^(nwg|wg)' | head -1)
         [ -n "$EGRESS" ] || EGRESS=$(printf '%s\n' "$CAND" | head -1)
-        say "выбран egress=$EGRESS (кандидаты: $(printf '%s ' $CAND)); если неверно — укажите --egress"
+        say "selected egress=$EGRESS (candidates: $(printf '%s ' $CAND)); use --egress to override"
     elif ifaces | grep -qx nwg0; then
         EGRESS=nwg0
     else
-        say "VPN-интерфейс не найден автоматически."
+        say "no VPN interface auto-detected; select manually"
         EGRESS=$(pick "select egress (VPN)" $(ifaces | grep -Ev '^(lo|ppp|tunl)' || true))
     fi
 fi
@@ -168,10 +168,10 @@ fi
 say "lan=$LAN subnets=${SUBNETS:-n/a}"
 
 if [ "$YES" -ne 1 ] && [ -r /dev/tty ]; then
-    printf "[susanin] Установить в %s?\n  VPN (egress): %s\n  LAN: %s\n  подсети: %s\n[Y/n]: " \
+    printf "[susanin] Install to %s ?\n  egress:  %s\n  lan:     %s\n  subnets: %s\nProceed? [y/N]: " \
         "$PREFIX" "$EGRESS" "$LAN" "${SUBNETS:-n/a}" >&2
-    read _ok < /dev/tty || _ok=y
-    case "$_ok" in n|N|no|NO) die "aborted" ;; *) ;; esac
+    read _ok < /dev/tty || _ok=n
+    case "$_ok" in y|Y|yes|YES) ;; *) die "aborted" ;; esac
 fi
 
 mkdir -p "$PREFIX/bin" "$PREFIX/tools" "$PREFIX/etc" "$PREFIX/var" "$INITD"
