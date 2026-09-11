@@ -44,7 +44,7 @@
   (после правил NDM), mark через `CONNMARK`/`MARK`, отдельная routing table
   (например `100`, малый номер — busybox `ip` не принимает большие),
   ipset-наборы `susanin_{test,ok}_{tcp,udp}`.
-- **Логика**: демон с таймерами FAST 1с / SOFT 2с / JUDGE 1с / HEALTH 3с;
+- **Логика**: демон с таймерами FAST 1с / SOFT 2с / JUDGE 1с / HEALTH 5с;
   удаляет «зависшие» соединения из conntrack, чтобы повтор клиента ушёл через
   VPN. Пороги наследованы из проекта Susanin.MikroTik.
 
@@ -78,38 +78,8 @@ docker run --rm -v "$PWD/build:/out" ghcr.io/r17a/susanin.keenetic:latest \
 
 Пакет: https://github.com/users/R17a/packages/container/package/susanin.keenetic
 
-Для других архитектур (armv7/aarch64) — собирайте из исходников (см. «Сборка»).
-
-## Быстрый старт
-
-1. Соберите бинарь (см. «Сборка») или возьмите готовый из GitHub Releases.
-2. Залейте на роутер и установите:
-
-```sh
-cd /opt
-tar -xzf susanin-keenetic-deploy-<arch>.tar.gz -C /opt/sp && cd /opt/sp
-sh install.sh --yes
-```
-
-3. Настройте один раз:
-
-```sh
-sh /opt/susanin/tools/susanin.sh install
-# при необходимости укажите вручную:
-#   /opt/susanin/bin/susanin-agent setup --egress nwg0 --lan br0,br1 --table 100
-```
-
-4. Управление демоном:
-
-| Действие | Команда |
-|---|---|
-| Запуск | `sh /opt/susanin/tools/susanin.sh start` |
-| Остановка | `sh /opt/susanin/tools/susanin.sh stop` |
-| Перезапуск | `sh /opt/susanin/tools/susanin.sh restart` |
-| Состояние | `sh /opt/susanin/tools/susanin.sh status` |
-| Лог | `sh /opt/susanin/tools/susanin.sh log` |
-| Снять правила | `sh /opt/susanin/tools/susanin.sh down` |
-| IP вручную в VPN | `sh /opt/susanin/tools/susanin.sh add <ip> tcp test` |
+Для других архитектур используйте мультиархитектурную сборку
+`sh tools/wsl-build.sh mipsel mips aarch64 armv7 x86_64` (см. «Сборка»).
 
 ## Домены, которые всегда через VPN
 
@@ -189,7 +159,28 @@ sh /opt/susanin/tools/susanin.sh uninstall --purge  # удалить /opt/susani
 В релизах публикуются архивы `susanin-keenetic-deploy-<arch>.tar.gz`
 (mipsel/mips/aarch64/armv7/x86_64) и `SHA256SUMS`.
 
-## Что нового в v0.3.0 (в разработке)
+При необходимости (ручная настройка data plane):
+```sh
+sh /opt/susanin/tools/susanin.sh install    # datapath up + setup
+# либо явно:
+/opt/susanin/bin/susanin-agent setup --egress nwg0 --lan br0,br1 --table 100
+```
+
+**Управление демоном:**
+
+| Действие | Команда |
+|---|---|
+| Запуск | `sh /opt/susanin/tools/susanin.sh start` |
+| Остановка (graceful) | `sh /opt/susanin/tools/susanin.sh stop` |
+| Перезапуск | `sh /opt/susanin/tools/susanin.sh restart` |
+| Состояние | `sh /opt/susanin/tools/susanin.sh status` |
+| Лог | `sh /opt/susanin/tools/susanin.sh log` |
+| Снять правила | `sh /opt/susanin/tools/susanin.sh down` |
+| Обновление | `sh /opt/susanin/tools/susanin.sh update` |
+| Удаление | `sh /opt/susanin/tools/susanin.sh uninstall [--purge]` |
+| IP вручную в VPN | `sh /opt/susanin/tools/susanin.sh add <ip> tcp test` |
+
+## Что нового в v0.3.0
 
 - установка одной строкой (`install.sh`) с автоопределением архитектуры и
   интерфейсов, обновление (`update`) и удаление (`uninstall`);
@@ -212,7 +203,7 @@ sh /opt/susanin/tools/susanin.sh uninstall --purge  # удалить /opt/susani
 - временные метки (`HH:MM:SS`) в логе демона;
 - init-скрипт `S94susanin` без зависимости от `rc.func` (надёжный автозапуск
   на KeeneticOS);
-- мультиархитектурная сборка: `tools/wsl-build.sh mipsel mips aarch64 armv7`;
+- мультиархитектурная сборка: `tools/wsl-build.sh mipsel mips aarch64 armv7 x86_64`;
 - `susanin_ok_net` в выводе `status`.
 
 ## CLI
