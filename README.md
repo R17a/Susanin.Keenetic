@@ -153,11 +153,19 @@ opkg update && opkg install ca-certificates
 ```
 
 Установка **одной строкой** (скачает архив под нужную архитектуру, определит
-LAN/VPN-интерфейсы; при неоднозначности спросит):
+LAN/VPN-интерфейсы; при неоднозначности спросит). На Entware `curl` обычно
+отсутствует — используйте `wget`:
 
 ```sh
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
+  | sh -s -- --arch mipsel
+```
+
+Либо поставьте curl и используйте его:
+```sh
+opkg install curl
 curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
-  | sh -s -- --arch mipsel --yes
+  | sh -s -- --arch mipsel
 ```
 
 Флаги: `--arch mipsel|mips|aarch64|armv7|x86_64`, `--version latest|vX.Y.Z`,

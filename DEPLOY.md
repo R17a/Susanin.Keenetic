@@ -31,11 +31,13 @@
 opkg update && opkg install ca-certificates
 ```
 
-Онлайн, прямо на роутере (скачает архив под архитектуру):
+Онлайн, прямо на роутере (скачает архив под архитектуру). На Entware `curl`
+обычно нет — используйте `wget`:
 ```sh
-curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
   | sh -s -- --yes
 ```
+Либо `opkg install curl` и затем `curl -fsSL ... | sh -s -- --yes`.
 
 Офлайн — из распакованного архива:
 ```sh
