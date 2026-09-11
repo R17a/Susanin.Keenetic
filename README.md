@@ -182,6 +182,12 @@ sh /opt/susanin/tools/susanin.sh install    # datapath up + setup
 | Удаление | `sh /opt/susanin/tools/susanin.sh uninstall [--purge]` |
 | IP вручную в VPN | `sh /opt/susanin/tools/susanin.sh add <ip> tcp test` |
 
+## Что нового в v0.3.3
+
+- исправлено: `susanin.sh update vX.Y.Z` — версия принимается и позиционно
+  (раньше требовалось `--version vX.Y.Z`);
+- синхронизирована версия в бинарях и именах ассетов (`0.3.3`).
+
 ## Что нового в v0.3.2
 
 - весь вывод CLI переведён на английский (`susanin.sh`, блок `status`);
