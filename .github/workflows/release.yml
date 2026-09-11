@@ -17,24 +17,30 @@ jobs:
           - arch: mipsel
             cc: mipsel-linux-gnu-gcc
             pkg: gcc-mipsel-linux-gnu
+            dev: libc6-dev-mipsel-cross
           - arch: mips
             cc: mips-linux-gnu-gcc
             pkg: gcc-mips-linux-gnu
+            dev: libc6-dev-mips-cross
           - arch: aarch64
             cc: aarch64-linux-gnu-gcc
             pkg: gcc-aarch64-linux-gnu
+            dev: libc6-dev-arm64-cross
           - arch: armv7
             cc: arm-linux-gnueabihf-gcc
             pkg: gcc-arm-linux-gnueabihf
+            dev: libc6-dev-armhf-cross
           - arch: x86_64
             cc: gcc
             pkg: gcc-multilib
+            dev: ""
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends make file ${{ matrix.pkg }}
+          sudo apt-get install -y --no-install-recommends make file \
+            ${{ matrix.pkg }} ${{ matrix.dev }}
       - name: Build ${{ matrix.arch }}
         run: |
           make clean || true
@@ -79,6 +85,24 @@ jobs:
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          draft: false
+          body: |
+            Susanin.Keenetic ${{ github.ref_name }}
+
+            Установка (Entware; `curl` обычно отсутствует — используйте `wget`):
+            ```
+            opkg update && opkg install ca-certificates
+            wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh -s -- --arch <mipsel|mips|aarch64|armv7|x86_64>
+            ```
+
+            Обновление: `sh /opt/susanin/tools/susanin.sh update`
+            Удаление: `sh /opt/susanin/tools/susanin.sh uninstall [--purge]`
+
+            В архивах: `susanin-agent`, скрипты управления, конфиг, `vpn_always.txt`.
+            `vpn_always.txt` при install/update НЕ перезаписывается, если уже есть.
+
+            Проверено на mipsel (Keenetic Viva / KeeneticOS 5.1.5 / Entware).
+            Остальные архитектуры собраны автоматически — сообщайте об ошибках в Issues.
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS
