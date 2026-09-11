@@ -61,8 +61,8 @@
 Готовые сборки — в разделе **Releases** (по архитектурам, +`SHA256SUMS`):
 - `susanin-keenetic-deploy-<arch>.tar.gz`, где arch = `mipsel`, `mips`,
   `aarch64`, `armv7`, `x86_64` — комплект для установки (`susanin-agent`,
-  `datapath.sh`, `susanin.sh`, `update.sh`, `uninstall.sh`, конфиг,
-  `manual.install.sh`, пример списка доменов «всегда через VPN»).
+  `datapath.sh`, `susanin.sh`, `update.sh`, `uninstall.sh`, `install.sh`,
+  конфиг, `vpn_always.txt`).
 
 **Проверено на реальном железе:** Keenetic Viva / KeeneticOS 5.1.4–5.1.5 /
 Entware, архитектура **mipsel**. Остальные архитектуры собираются в CI, но на
@@ -88,7 +88,7 @@ docker run --rm -v "$PWD/build:/out" ghcr.io/r17a/susanin.keenetic:latest \
 ```sh
 cd /opt
 tar -xzf susanin-keenetic-deploy-<arch>.tar.gz -C /opt/sp && cd /opt/sp
-sh manual.install.sh
+sh install.sh --yes
 ```
 
 3. Настройте один раз:
@@ -254,8 +254,7 @@ docker build -f Dockerfile.cross -t susanin-build .
 
 ## Документы
 
-- [DEPLOY.md](DEPLOY.md) и [manual.install.sh](manual.install.sh) — установка на
-  роутер.
+- [DEPLOY.md](DEPLOY.md) — установка/обновление/удаление на роутере;
 - `tools/susanin.sh`, `tools/datapath.sh` — управление демоном и дата-плейном.
 
 ## Дисклеймер

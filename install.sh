@@ -1,7 +1,10 @@
 #!/bin/sh
-# Susanin.Keenetic installer (one-line):
+# Susanin.Keenetic installer.
+# Online (default): downloads the per-arch archive from GitHub Releases.
 #   curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
-#     | sh -s -- [--arch mipsel] [--version v0.3.0] [--egress nwg0] [--lan br0,br1] [--yes]
+#     | sh -s -- [--arch mipsel] [--version vX.Y.Z] [--yes]
+# Offline/local: run from an extracted archive (susanin-agent is next to this script):
+#   sh install.sh [--yes]
 # POSIX sh (busybox ash compatible).
 set -eu
 
@@ -41,52 +44,53 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-detect_arch() {
+if [ -z "$ARCH" ]; then
     _m=$(uname -m 2>/dev/null || echo unknown)
     case "$_m" in
-        mips) ARCH=mipsel ;;
-        mipsel) ARCH=mipsel ;;
+        mips|mipsel) ARCH=mipsel ;;
         mips64) ARCH=mips64el ;;
         aarch64|arm64) ARCH=aarch64 ;;
         armv7l|armv7|armhf) ARCH=armv7 ;;
         x86_64|amd64) ARCH=x86_64 ;;
         *) die "cannot detect arch (uname -m=$_m); pass --arch" ;;
     esac
-}
-[ -n "$ARCH" ] || detect_arch
-
-if command -v curl >/dev/null 2>&1; then
-    fetch() { curl -fsSL "$1" -o "$2"; }
-elif command -v wget >/dev/null 2>&1; then
-    fetch() { wget -qO "$2" "$1"; }
-else
-    die "need curl or wget"
 fi
 
-if [ "$VERSION" = latest ]; then
-    BASE="https://github.com/$REPO/releases/latest/download"
+DIR0=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -f "$DIR0/susanin-agent" ] || [ -n "$(ls "$DIR0"/susanin-agent.* 2>/dev/null)" ]; then
+    DIR=$DIR0
+    say "local package: $DIR"
 else
-    BASE="https://github.com/$REPO/releases/download/$VERSION"
+    if command -v curl >/dev/null 2>&1; then
+        fetch() { curl -fsSL "$1" -o "$2"; }
+    elif command -v wget >/dev/null 2>&1; then
+        fetch() { wget -qO "$2" "$1"; }
+    else
+        die "need curl or wget"
+    fi
+    if [ "$VERSION" = latest ]; then
+        BASE="https://github.com/$REPO/releases/latest/download"
+    else
+        BASE="https://github.com/$REPO/releases/download/$VERSION"
+    fi
+    ASSET="susanin-keenetic-deploy-$ARCH.tar.gz"
+    say "arch=$ARCH version=$VERSION"
+    TMP=$(mktemp -d /tmp/susanin-inst.XXXXXX)
+    trap 'rm -rf "$TMP"' EXIT INT TERM
+    say "downloading $BASE/$ASSET"
+    fetch "$BASE/$ASSET" "$TMP/pkg.tar.gz" \
+        || die "download failed (check --arch/--version or release assets): $BASE/$ASSET"
+    tar -xzf "$TMP/pkg.tar.gz" -C "$TMP" || die "bad archive $ASSET"
+    DIR=$TMP
 fi
-ASSET="susanin-keenetic-deploy-$ARCH.tar.gz"
 
-say "arch=$ARCH version=$VERSION"
-TMP=$(mktemp -d /tmp/susanin-inst.XXXXXX)
-trap 'rm -rf "$TMP"' EXIT INT TERM
-say "downloading $BASE/$ASSET"
-fetch "$BASE/$ASSET" "$TMP/pkg.tar.gz" \
-    || die "download failed (check --arch/--version or release assets): $BASE/$ASSET"
-tar -xzf "$TMP/pkg.tar.gz" -C "$TMP" || die "bad archive $ASSET"
-PKG=$(find "$TMP" -maxdepth 2 -name 'susanin-agent' -type f 2>/dev/null | head -1)
-[ -n "$PKG" ] || PKG=$(find "$TMP" -maxdepth 2 -name 'susanin-agent.*' -type f 2>/dev/null | head -1)
-[ -n "$PKG" ] || die "binary not found in archive"
-DIR=$(dirname "$PKG")
 if [ -f "$DIR/susanin-agent" ]; then
     BINFILE=susanin-agent
 else
-    BINFILE=$(basename "$PKG")
+    BINFILE=$(basename "$(ls "$DIR"/susanin-agent.* 2>/dev/null | head -1)")
 fi
-say "package: $DIR (binary $BINFILE)"
+[ -n "${BINFILE:-}" ] && [ -f "$DIR/$BINFILE" ] || die "susanin-agent binary not found in $DIR"
+say "binary: $BINFILE"
 
 ifaces() { awk -F: '{print $1}' /proc/net/dev | tr -d ' ' | grep -v '^$'; }
 addr_of() { ip addr show "$1" 2>/dev/null | awk '/inet /{print $2}' | head -1; }
@@ -149,10 +153,9 @@ fi
 
 mkdir -p "$PREFIX/bin" "$PREFIX/tools" "$PREFIX/etc" "$PREFIX/var" "$INITD"
 cp "$DIR/$BINFILE" "$PREFIX/bin/susanin-agent"
-for f in datapath.sh susanin.sh update.sh uninstall.sh; do
+for f in datapath.sh susanin.sh update.sh uninstall.sh install.sh; do
     [ -f "$DIR/$f" ] && cp "$DIR/$f" "$PREFIX/tools/$f"
 done
-[ -f "$DIR/install.sh" ] && cp "$DIR/install.sh" "$PREFIX/tools/install.sh"
 chmod +x "$PREFIX/bin/susanin-agent" "$PREFIX/tools/"*.sh 2>/dev/null || true
 
 if [ ! -f "$PREFIX/etc/susanin.conf" ] || [ "$FORCE" = 1 ]; then

@@ -11,8 +11,9 @@
 - `vpn_always.txt` — готовый список доменов «всегда через VPN»; при установке
   копируется как `/opt/susanin/etc/vpn_always.txt` **только если файла нет**
   (существующий список никогда не перезаписывается, в т.ч. при update).
-- `manual.install.sh` — установщик «в один шаг» (рекомендуется; существующий
-  `susanin.conf` не перезаписывает — для перезаписи `sh manual.install.sh --force`).
+- `install.sh` — установщик (онлайн: скачивает архив под архитектуру;
+  офлайн: запускается прямо из распакованного архива). Существующий
+  `susanin.conf` не перезаписывает (для перезаписи `--force`).
 - `update.sh` / `uninstall.sh` — обновление (конфиг и state сохраняются) и
   удаление (`--purge` — целиком).
 - `install.sh` — установщик одной строкой (скачивает архив под архитектуру).
@@ -23,19 +24,18 @@
 > файл контрольных сумм `SHA256SUMS`. Бинарь внутри архива называется
 > `susanin-agent` (без суффикса архитектуры).
 
-## Установка в один шаг (рекомендуется)
+## Установка в один шаг
 
-С Windows залейте архив в `/opt` роутера (флешка), например:
-```
-scp susanin-keenetic-deploy-v2.tar.gz root@<роутер>:/opt/
-```
-На роутере:
+Онлайн, прямо на роутере (скачает архив под архитектуру):
 ```sh
-cd /opt
-rm -rf sp && mkdir sp
-tar -xzf /opt/susanin-keenetic-deploy-v2.tar.gz -C /opt/sp
+curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
+  | sh -s -- --yes
+```
+
+Офлайн — из распакованного архива:
+```sh
 cd /opt/sp
-sh manual.install.sh
+sh install.sh --yes
 ```
 Скрипт сам создаст `/opt/susanin/{bin,etc,var,tools}` и разложит файлы:
 - `/opt/susanin/bin/susanin-agent`

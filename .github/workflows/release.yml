@@ -50,7 +50,7 @@ jobs:
           cp susanin-agent "$STAGE/susanin-agent"
           for f in datapath.sh susanin.sh update.sh uninstall.sh install.sh \
                    config.example.conf vpn_always.txt S94susanin \
-                   DEPLOY.md manual.install.sh; do
+                   DEPLOY.md; do
             [ -f "tools/$f" ] && cp "tools/$f" "$STAGE/$f" || true
             [ -f "$f" ] && cp "$f" "$STAGE/$f" || true
           done
