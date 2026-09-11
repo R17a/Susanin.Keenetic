@@ -219,7 +219,7 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
         }
     }
 
-    printf("vpn_always (домены -> всегда VPN):\n");
+    printf("vpn_always (always-VPN list):\n");
     if (!cfg->vpn_always_file[0]) {
         printf("  disabled (vpn_always_file empty)\n");
     } else {

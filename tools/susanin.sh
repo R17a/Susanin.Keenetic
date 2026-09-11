@@ -1,19 +1,18 @@
 #!/bin/sh
-# susanin.sh — управление демоном Susanin.Keenetic.
+# susanin.sh — Susanin.Keenetic daemon control.
 #
 # Usage:
-#   sh susanin.sh start          # запустить демон в фоне (лог пишется)
-#   sh susanin.sh stop           # остановить демон
-#   sh susanin.sh restart        # перезапустить
-#   sh susanin.sh status         # состояние демона и дата-плейна
-#   sh susanin.sh log            # последние 30 строк лога
-#   sh susanin.sh log 100        # последние 100 строк лога
-#   sh susanin.sh install        # настройка дата-плейна (setup + up)
-#   sh susanin.sh update [ver]   # обновить бинарь/скрипты (конфиг и state сохраняются)
-#   sh susanin.sh uninstall [--purge]  # удалить Susanin
-#   sh susanin.sh down           # снять правила дата-плейна (без остановки демона)
-#   sh susanin.sh add  <ip> tcp|udp test|ok   # вручную добавить IP в VPN
-#   sh susanin.sh del  <ip> tcp|udp           # убрать IP
+#   sh susanin.sh start          # start daemon in background (writes log)
+#   sh susanin.sh stop           # graceful stop (SIGTERM, then KILL if needed)
+#   sh susanin.sh restart        # restart
+#   sh susanin.sh status         # daemon + data plane state
+#   sh susanin.sh log [N]        # last N log lines (default 30)
+#   sh susanin.sh install        # data plane setup (datapath up + setup)
+#   sh susanin.sh update [ver]   # update binary/scripts (keeps config and state)
+#   sh susanin.sh uninstall [--purge]
+#   sh susanin.sh down           # remove data plane rules (daemon keeps running)
+#   sh susanin.sh add <ip> tcp|udp test|ok
+#   sh susanin.sh del <ip> tcp|udp
 
 set -eu
 
@@ -28,7 +27,7 @@ is_running() {
 
 cmd_start() {
     if is_running; then
-        echo "[susanin] уже запущен"
+        echo "[susanin] already running"
         return 0
     fi
     mkdir -p /opt/susanin/var
@@ -39,9 +38,9 @@ cmd_start() {
     echo $! > /opt/susanin/var/susanin-agent.pid
     sleep 2
     if is_running; then
-        echo "[susanin] запущен, лог: $LOG"
+        echo "[susanin] started, log: $LOG"
     else
-        echo "[susanin] НЕ запустился, смотри лог: $LOG" >&2
+        echo "[susanin] failed to start, see log: $LOG" >&2
         tail -n 10 "$LOG" 2>/dev/null || true
         return 1
     fi
@@ -49,10 +48,9 @@ cmd_start() {
 
 cmd_stop() {
     if ! is_running; then
-        echo "[susanin] и так не запущен"
+        echo "[susanin] not running"
         return 0
     fi
-    # graceful: SIGTERM (движок сохраняет state), затем KILL при необходимости
     for p in $(ps | grep susanin-agent | grep -v grep | awk '{print $1}'); do
         kill -TERM "$p" 2>/dev/null || true
     done
@@ -67,7 +65,7 @@ cmd_stop() {
         done
     fi
     sleep 1
-    echo "[susanin] остановлен"
+    echo "[susanin] stopped"
 }
 
 cmd_status() {
@@ -81,7 +79,7 @@ cmd_status() {
 
 cmd_log() {
     n="${1:-30}"
-    tail -n "$n" "$LOG" 2>/dev/null || echo "лог пуст: $LOG"
+    tail -n "$n" "$LOG" 2>/dev/null || echo "log is empty: $LOG"
 }
 
 case "${1:-}" in

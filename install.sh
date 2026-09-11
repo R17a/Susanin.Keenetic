@@ -205,6 +205,10 @@ if [ -f "$DIR/S94susanin" ]; then
 fi
 
 if [ "$NO_START" -ne 1 ]; then
-    sh "$PREFIX/tools/susanin.sh" start || true
+    if ps 2>/dev/null | grep '[s]usanin-agent' >/dev/null 2>&1; then
+        sh "$PREFIX/tools/susanin.sh" restart || true
+    else
+        sh "$PREFIX/tools/susanin.sh" start || true
+    fi
 fi
 say "installed to $PREFIX (run: sh $PREFIX/tools/susanin.sh status)"
