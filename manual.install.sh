@@ -56,7 +56,9 @@ if [ ! -f "$ETC/susanin.conf" ] || [ "$FORCE" = 1 ]; then
     cp "$DIR/config.example.conf" "$ETC/susanin.conf"
 fi
 [ -f "$DIR/S94susanin" ] && cp "$DIR/S94susanin" "$INITD/S94susanin"
-[ -f "$DIR/vpn_always.example.txt" ] && cp "$DIR/vpn_always.example.txt" "$ETC/vpn_always.example.txt"
+if [ ! -f "$ETC/vpn_always.txt" ] && [ -f "$DIR/vpn_always.txt" ]; then
+    cp "$DIR/vpn_always.txt" "$ETC/vpn_always.txt"
+fi
 
 chmod +x "$BIN/susanin-agent" "$TOOLS/"*.sh "$INITD/S94susanin" 2>/dev/null || true
 
@@ -65,7 +67,7 @@ echo "  binary   $BIN/susanin-agent"
 echo "  datapath $TOOLS/datapath.sh"
 echo "  control  $TOOLS/susanin.sh   (start|stop|restart|status|log|install|update|uninstall|down|add|del)"
 echo "  config   $ETC/susanin.conf"
-echo "  example  $ETC/vpn_always.example.txt   (домены \"всегда через VPN\")"
+echo "  list     $ETC/vpn_always.txt   (домены \"всегда через VPN\"; не перезаписывается)"
 echo "  init     $INITD/S94susanin"
 echo
 echo "  quick: sh $TOOLS/susanin.sh start"

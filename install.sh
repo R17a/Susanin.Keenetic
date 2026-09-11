@@ -166,8 +166,11 @@ if [ ! -f "$PREFIX/etc/susanin.conf" ] || [ "$FORCE" = 1 ]; then
 else
     say "config kept: $PREFIX/etc/susanin.conf"
 fi
-if [ ! -f "$PREFIX/etc/vpn_always.txt" ] && [ -f "$DIR/vpn_always.example.txt" ]; then
-    cp "$DIR/vpn_always.example.txt" "$PREFIX/etc/vpn_always.example.txt"
+if [ ! -f "$PREFIX/etc/vpn_always.txt" ] && [ -f "$DIR/vpn_always.txt" ]; then
+    cp "$DIR/vpn_always.txt" "$PREFIX/etc/vpn_always.txt"
+    say "vpn_always list installed: $PREFIX/etc/vpn_always.txt"
+else
+    say "vpn_always list kept (not overwritten)"
 fi
 
 if [ -f "$DIR/S94susanin" ]; then

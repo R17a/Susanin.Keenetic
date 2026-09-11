@@ -8,8 +8,9 @@
 - `datapath.sh` — управление правилами (iptables+ipset).
 - `S94susanin` — init-скрипт автозапуска демона.
 - `config.example.conf` — конфиг (на роутере — `/opt/susanin/etc/susanin.conf`).
-- `vpn_always.example.txt` — пример списка доменов «всегда через VPN»
-  (ставится как `/opt/susanin/etc/vpn_always.example.txt`).
+- `vpn_always.txt` — готовый список доменов «всегда через VPN»; при установке
+  копируется как `/opt/susanin/etc/vpn_always.txt` **только если файла нет**
+  (существующий список никогда не перезаписывается, в т.ч. при update).
 - `manual.install.sh` — установщик «в один шаг» (рекомендуется; существующий
   `susanin.conf` не перезаписывает — для перезаписи `sh manual.install.sh --force`).
 - `update.sh` / `uninstall.sh` — обновление (конфиг и state сохраняются) и

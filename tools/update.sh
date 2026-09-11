@@ -1,5 +1,6 @@
 #!/bin/sh
 # Susanin.Keenetic update: replace binary/tools, keep config and state.
+# Never touches /opt/susanin/etc/vpn_always.txt (user list is preserved).
 #   sh update.sh [--arch mipsel] [--version latest|vX.Y.Z] [--prefix /opt/susanin]
 set -eu
 

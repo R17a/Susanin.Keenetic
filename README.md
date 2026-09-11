@@ -138,8 +138,9 @@ EOF
 - полное имя `sub.example.com` указывается отдельной строкой;
 - только IPv4 (A-записи); CIDR-строки (`a.b.c.d/n`) пинятся как есть;
   резолвер — из `/etc/resolv.conf` или поле `vpn_always_dns`;
-- готовый пример со списком Claude/Anthropic — `vpn_always.example.txt`
-  (после установки лежит в `/opt/susanin/etc/vpn_always.example.txt`).
+- готовый список поставляется с дистрибутивом (`vpn_always.txt`) и ставится в
+  `/opt/susanin/etc/vpn_always.txt` **только если файла ещё нет** — при install
+  и update существующий список не перезаписывается.
   Проверка: `sh /opt/susanin/tools/susanin.sh status` покажет домены.
 
 ## Установка / обновление / удаление
