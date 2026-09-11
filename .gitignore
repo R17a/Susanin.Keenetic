@@ -4,6 +4,7 @@
 /docs/RECON.md
 /recon/
 /AGENTS.md
+/readme.html
 
 # build intermediates (release binaries ARE committed, see build/)
 *.o
