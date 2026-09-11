@@ -112,7 +112,10 @@ pick() {
 }
 
 if [ -z "$EGRESS" ]; then
-    CAND=$(ifaces | grep -E '^(nwg|wg[0-9]|tun|tap|ovpn|amnezia)' || true)
+    CAND=$(ifaces | grep -E '^(nwg|wg[0-9]*|amnezia|ovpn)' || true)
+    if [ -z "$CAND" ]; then
+        CAND=$(ifaces | grep -E '^(tun[0-9]+|tap[0-9]+)$' || true)
+    fi
     CN=$(printf '%s\n' "$CAND" | grep -c . || true)
     if [ "$CN" = 1 ]; then
         EGRESS="$CAND"
@@ -121,26 +124,32 @@ if [ -z "$EGRESS" ]; then
         EGRESS=$(pick "select egress (VPN)" $CAND)
     else
         say "no VPN interface auto-detected; candidates:"
-        EGRESS=$(pick "select egress (VPN)" $(ifaces | grep -Ev '^(lo|ppp)' || true))
+        EGRESS=$(pick "select egress (VPN)" $(ifaces | grep -Ev '^(lo|ppp|tunl)' || true))
     fi
 fi
 say "egress=$EGRESS addr=$(addr_of "$EGRESS")"
 
+lan_from_routes() {
+    ip route show 2>/dev/null | awk '
+        /^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/ && $0 !~ /default/ {
+            for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); break }
+        }' | sort -u
+}
+
 if [ -z "$LAN" ]; then
-    for i in $(ifaces); do
-        [ "$i" = "$EGRESS" ] && continue
-        a=$(addr_of "$i" || true)
-        case "$a" in
-            10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*)
-                LAN="${LAN:+$LAN,}$i" ;;
-        esac
-    done
+    LANBR=$(lan_from_routes | grep '^br' || true)
+    if [ -n "$LANBR" ]; then
+        LAN=$(printf '%s\n' "$LANBR" | awk 'NR==1{s=$0;next}{s=s","$0}END{print s}')
+    else
+        LAN=$(lan_from_routes | grep -Ev '^(ppp|nwg|wg|tun|tap|eth)' \
+              | awk 'NR==1{s=$0;next}{s=s","$0}END{print s}')
+    fi
     [ -n "$LAN" ] || LAN="br0"
 fi
 if [ -z "$SUBNETS" ]; then
     for i in $(printf '%s' "$LAN" | tr ',' ' '); do
-        a=$(addr_of "$i")
-        [ -n "$a" ] && SUBNETS="${SUBNETS:+$SUBNETS,}$a"
+        p=$(ip route show 2>/dev/null | awk -v d="$i" '$0 ~ ("dev " d " ") && $1 ~ /\// {print $1; exit}')
+        [ -n "$p" ] && SUBNETS="${SUBNETS:+$SUBNETS,}$p"
     done
 fi
 say "lan=$LAN subnets=${SUBNETS:-n/a}"
