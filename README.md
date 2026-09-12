@@ -145,6 +145,10 @@ curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.
 `--subnets <cidr,cidr>`, `--yes` (без подтверждения), `--force`
 (перезаписать `susanin.conf`), `--no-start`, `--prefix <dir>`.
 
+Подтверждения установщика (`[y/N]`) можно давать двумя способами:
+- **интерактивно** — ответить `y` (или `yes`);
+- **заранее** — передать флаг `--yes` (или `-y`) и не отвечать ни на один вопрос.
+
 Офлайн-установка из распакованного архива:
 ```sh
 sh install.sh --yes
@@ -156,7 +160,8 @@ sh install.sh --yes
 Если на роутере поднят **OpenConnect-сервер (ocserv)** и его интерфейс
 (`oc0`) не входит в маршрутизацию, установщик спросит по-английски, добавить
 ли его в Susanin (`OpenConnect server detected (oc0). Add it to Susanin
-routing? [y/N]`). При `--yes` добавляется автоматически.
+routing? [y/N]`). Достаточно ответить `y` (или `yes`); при `--yes` добавление
+происходит автоматически, без вопроса.
 
 ![Susanin.Keenetic installer](demo.png)
 

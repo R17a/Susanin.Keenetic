@@ -5,6 +5,7 @@
 #     | sh -s -- [--arch mipsel] [--version vX.Y.Z] [--yes]
 # Offline/local: run from an extracted archive (susanin-agent is next to this script):
 #   sh install.sh [--yes]
+# Prompts accept short answers: "y" or "yes". Use --yes|-y to skip all prompts.
 # POSIX sh (busybox ash compatible).
 set -eu
 
@@ -38,6 +39,8 @@ while [ $# -gt 0 ]; do
             echo "usage: $0 [--arch mipsel|mips|aarch64|armv7|x86_64] [--version latest|vX.Y.Z]"
             echo "          [--egress IF] [--lan IF,IF] [--subnets CIDR,CIDR] [--prefix DIR]"
             echo "          [--yes] [--force] [--no-start]"
+            echo
+            echo "  Prompts: answer 'y' (or 'yes'); --yes|-y skips all prompts."
             exit 0 ;;
         *) die "unknown arg: $1" ;;
     esac

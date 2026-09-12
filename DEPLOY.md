@@ -44,6 +44,9 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.s
 cd /opt/sp
 sh install.sh --yes
 ```
+
+Подтверждения (`[y/N]`) можно давать двумя способами: интерактивно ответить
+`y`/`yes` либо заранее передать `--yes` (`-y`) и не отвечать ни на один вопрос.
 Скрипт сам создаст `/opt/susanin/{bin,etc,var,tools}` и разложит файлы:
 - `/opt/susanin/bin/susanin-agent`
 - `/opt/susanin/tools/datapath.sh`
