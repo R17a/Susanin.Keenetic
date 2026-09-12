@@ -1,5 +1,15 @@
 # Susanin.Keenetic
 
+<p align="center">
+  <a href="https://www.donationalerts.com/r/dmitriy_r17a">
+    <img src="https://www.donationalerts.com/img/brand/donationalerts.svg" alt="DonationAlerts" height="44">
+  </a>
+  &nbsp;
+  <a href="https://pay.cloudtips.ru/p/dcbf5f2e">
+    <img src="https://static.tildacdn.com/tild3431-6231-4938-b464-663831306266/Horiz.svg" alt="CloudTips" height="44">
+  </a>
+</p>
+
 > Проект разработан на основе статьи на
 > [Habr](https://habr.com/ru/articles/1076620/) и проекта
 > [Fiark/susanin](https://github.com/Fiark/susanin) (адаптивная
@@ -27,8 +37,10 @@
   (`ok_ttl=0`, переживает перезагрузки; снимает сам, если маршрут через VPN
   перестал отвечать);
 - TCP и UDP/QUIC учит раздельно;
-- список доменов «всегда через VPN» (`vpn_always.txt`): резолвит A-записи и
-  пинит их IP в ok-наборы, изменения файла подхватывает на лету;
+- список доменов «всегда через VPN» (`vpn_always.txt`): эти направления всегда
+  идут в туннель;
+- если сайт ответил по основному каналу, он **не** заворачивается в VPN
+  (кандидатами становятся только направления без ответа);
 - fail-open: при недоступности туннеля — прямой доступ (DIRECT);
 - автоматически чинит правила, если их снёс NDM (Web-UI change) — reconcile;
 - может маршрутизировать и клиентов **OpenConnect-сервера** на этом же роутере
@@ -268,10 +280,15 @@ docker build -f Dockerfile.cross -t susanin-build .
 Проект развивается на энтузиазме. Если он оказался полезным — можно поддержать
 разработку:
 
-- **DonationAlerts:** https://www.donationalerts.com/r/dmitriy_r17a
-- **CloudTips:** https://pay.cloudtips.ru/p/dcbf5f2e
-
-Также доступна кнопка **Sponsor** на странице репозитория.
+<p align="center">
+  <a href="https://www.donationalerts.com/r/dmitriy_r17a">
+    <img src="https://www.donationalerts.com/img/brand/donationalerts.svg" alt="DonationAlerts" height="44">
+  </a>
+  &nbsp;
+  <a href="https://pay.cloudtips.ru/p/dcbf5f2e">
+    <img src="https://static.tildacdn.com/tild3431-6231-4938-b464-663831306266/Horiz.svg" alt="CloudTips" height="44">
+  </a>
+</p>
 
 ## Дисклеймер
 

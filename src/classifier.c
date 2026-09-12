@@ -65,67 +65,6 @@ static int ours(const ct_flow *f, const susanin_config *cfg)
                          (f->ctmark & cfg->mark_mask) == cfg->mark_ok);
 }
 
-/* rate cache (two-sample deltas) */
-#define RCAP 2048
-typedef struct { char key[192]; unsigned long op, rp; time_t t; int seen; } rslot;
-static rslot rc[RCAP];
-static int rc_n = 0;
-
-static void rc_begin(void)
-{
-    int i;
-    for (i = 0; i < rc_n; i++) rc[i].seen = 0;
-}
-
-static void rc_end(void)
-{
-    int i, w = 0;
-    for (i = 0; i < rc_n; i++)
-        if (rc[i].seen) rc[w++] = rc[i];
-    rc_n = w;
-}
-
-static rslot *rc_find(const char *key)
-{
-    int i;
-    for (i = 0; i < rc_n; i++)
-        if (strcmp(rc[i].key, key) == 0)
-            return &rc[i];
-    return NULL;
-}
-
-static rslot *rc_store(const char *key, unsigned long op, unsigned long rp, time_t now)
-{
-    rslot *s;
-    if (rc_n >= RCAP) rc_n = 0;
-    s = &rc[rc_n++];
-    snprintf(s->key, sizeof(s->key), "%s", key);
-    s->op = op; s->rp = rp; s->t = now; s->seen = 1;
-    return s;
-}
-
-static void flow_key(const ct_flow *f, char *buf, size_t n)
-{
-    snprintf(buf, n, "%s|%s|%u|%s|%u", f->proto, f->src, f->sport, f->dst, f->dport);
-}
-
-/* returns 1 if caller should consume origActive/replSilent (has previous sample) */
-static int rate_delta(const ct_flow *f, time_t now, int *orig_active, int *repl_silent)
-{
-    char key[192];
-    rslot *s;
-    flow_key(f, key, sizeof(key));
-    s = rc_find(key);
-    if (s) {
-        *orig_active = (f->op > s->op);
-        *repl_silent = (f->rp == s->rp);
-        s->op = f->op; s->rp = f->rp; s->seen = 1; s->t = now;
-        return 1;
-    }
-    rc_store(key, f->op, f->rp, now);
-    return 0;
-}
-
 static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
                          const char *stage, const char *reason)
 {
@@ -161,8 +100,10 @@ void clr_fast(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         if (f->l4proto == 6) {
             if (strcmp(f->tcp_state, "SYN_SENT") == 0 && f->op >= (unsigned long)cfg->fast_syn_min_op && f->rp == 0)
                 promote_test(ctx, f, now, "FAST", "TCP-SYN");
+            /* policy: if the destination answered over the direct channel,
+             * never move it to VPN — only completely silent flows qualify. */
             else if (strcmp(f->tcp_state, "CLOSE") == 0 && f->op >= 1 &&
-                     f->rp <= 2 && f->rb < 256)
+                     f->rp == 0 && f->rb == 0)
                 promote_test(ctx, f, now, "FAST", "TCP-CLOSE");
         } else if (f->l4proto == 17) {
             if (f->dport == 443 && f->op >= 3 && f->rp == 0)
@@ -175,7 +116,6 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
 {
     const susanin_config *cfg = ctx->cfg;
     int i;
-    rc_begin();
     for (i = 0; i < n; i++) {
         const ct_flow *f = &flows[i];
         if (f->l4proto != 6 && f->l4proto != 17) continue;
@@ -184,29 +124,13 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         if (is_private_dst(f->dst, NULL)) continue;
 
         if (f->l4proto == 6 && strcmp(f->tcp_state, "ESTABLISHED") == 0) {
-            if (f->op >= 5 && f->ob >= 1000 && f->rp <= 2 && f->rb < 256) {
+            /* no reply at all -> silent stall may indicate blocking */
+            if (f->op >= 5 && f->ob >= 1000 && f->rp == 0 && f->rb == 0) {
                 if (candidate_ok(ctx, f, now))
                     promote_test(ctx, f, now, "SOFT", "TCP-STALL");
                 continue;
             }
-            if (f->op >= 8 && f->rp > 0) {
-                int oa, rs;
-                if (rate_delta(f, now, &oa, &rs) && oa && rs) {
-                    /* suspicious: watch -> maybe late-stall */
-                    if (!state_has(st_watch(ctx->st, 0), f->dst, now)) {
-                        if (candidate_ok(ctx, f, now))
-                            state_add(st_watch(ctx->st, 0), f->dst, now, cfg->watch_ttl, 0);
-                    } else {
-                        time_t at = state_at(st_watch(ctx->st, 0), f->dst, now);
-                        if (at && (int)(at - now) <= cfg->watch_retry_below) {
-                            if (candidate_ok(ctx, f, now)) {
-                                state_remove(st_watch(ctx->st, 0), f->dst);
-                                promote_test(ctx, f, now, "SOFT", "TCP-LATE-STALL");
-                            }
-                        }
-                    }
-                }
-            }
+            /* flows that already received replies are left on the direct path */
         } else if (f->l4proto == 17) {
             if (!f->has_reply) {
                 if (f->dport != 443 && f->dport != 53 && f->dport != 67 &&
@@ -214,26 +138,9 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                     if (candidate_ok(ctx, f, now))
                         promote_test(ctx, f, now, "SOFT", "UDP");
                 }
-            } else if (f->dport == 443 && f->op >= 8) {
-                int oa, rs;
-                if (rate_delta(f, now, &oa, &rs) && oa && rs) {
-                    if (!state_has(st_watch(ctx->st, 1), f->dst, now)) {
-                        if (candidate_ok(ctx, f, now))
-                            state_add(st_watch(ctx->st, 1), f->dst, now, cfg->watch_ttl, 0);
-                    } else {
-                        time_t at = state_at(st_watch(ctx->st, 1), f->dst, now);
-                        if (at && (int)(at - now) <= cfg->watch_retry_below) {
-                            if (candidate_ok(ctx, f, now)) {
-                                state_remove(st_watch(ctx->st, 1), f->dst);
-                                promote_test(ctx, f, now, "SOFT", "QUIC-LATE-STALL");
-                            }
-                        }
-                    }
-                }
             }
         }
     }
-    rc_end();
 }
 
 void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
