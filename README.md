@@ -71,7 +71,7 @@
 - LAN-интерфейсы (обычно `br0`, `br1`);
 - root-доступ по SSH.
 
-## Дистрибутив (для тестеров)
+## Дистрибутив
 
 Готовые сборки — в разделе **Releases** (по архитектурам, +`SHA256SUMS`):
 - `susanin-keenetic-deploy-<arch>.tar.gz`, где arch = `mipsel`, `mips`,
