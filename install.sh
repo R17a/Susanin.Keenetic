@@ -165,6 +165,43 @@ if [ -z "$SUBNETS" ]; then
         [ -n "$p" ] && SUBNETS="${SUBNETS:+$SUBNETS,}$p"
     done
 fi
+
+# OpenConnect (ocserv) server, if present, can be routed through Susanin too.
+oc_if=""
+for i in $(ifaces); do
+    case "$i" in oc[0-9]*) oc_if=$i ;; esac
+done
+if [ -z "$oc_if" ]; then
+    dev=$(sed -n 's/^device=//p' /var/run/ocserv/ocserv.conf 2>/dev/null | head -1)
+    if [ -n "$dev" ] && ifaces | grep -qx "${dev}0"; then
+        oc_if="${dev}0"
+    elif ps 2>/dev/null | grep -q '[o]cserv'; then
+        [ -n "$dev" ] && oc_if="${dev}0" || oc_if=oc0
+    fi
+fi
+if [ -n "$oc_if" ]; then
+    case ",$LAN," in
+        *",$oc_if,"*) : ;;
+        *)
+            add_oc=0
+            if [ "$YES" -eq 1 ]; then
+                add_oc=1
+            elif [ -r /dev/tty ]; then
+                printf "[susanin] OpenConnect server detected (%s). Add it to Susanin routing? [y/N]: " "$oc_if" >&2
+                read _oc < /dev/tty || _oc=n
+                case "$_oc" in y|Y|yes|YES) add_oc=1 ;; esac
+            fi
+            if [ "$add_oc" -eq 1 ]; then
+                oc_addr=$(sed -n 's/^ipv4-network=//p' /var/run/ocserv/ocserv.conf 2>/dev/null | head -1)
+                [ -n "$oc_addr" ] || oc_addr=$(addr_of "$oc_if")
+                oc_net=$(printf '%s' "$oc_addr" | awk -F'[./]' '{print $1"."$2"."$3".0/24"}')
+                LAN="${LAN:+$LAN,}$oc_if"
+                SUBNETS="${SUBNETS:+$SUBNETS,}$oc_net"
+                say "OpenConnect added: iface=$oc_if subnet=$oc_net"
+            fi
+            ;;
+    esac
+fi
 say "lan=$LAN subnets=${SUBNETS:-n/a}"
 
 if [ "$YES" -ne 1 ] && [ -r /dev/tty ]; then

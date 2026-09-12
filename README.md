@@ -150,6 +150,11 @@ sh install.sh --yes
 Существующие `/opt/susanin/etc/susanin.conf` и
 `/opt/susanin/etc/vpn_always.txt` при install/update **не перезаписываются**.
 
+Если на роутере поднят **OpenConnect-сервер (ocserv)** и его интерфейс
+(`oc0`) не входит в маршрутизацию, установщик спросит по-английски, добавить
+ли его в Susanin (`OpenConnect server detected (oc0). Add it to Susanin
+routing? [y/N]`). При `--yes` добавляется автоматически.
+
 ![Susanin.Keenetic installer](demo.png)
 
 **Обновление** (конфиг `susanin.conf` и состояние сохраняются):
