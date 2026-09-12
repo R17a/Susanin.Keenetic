@@ -89,20 +89,57 @@ jobs:
           body: |
             Susanin.Keenetic ${{ github.ref_name }}
 
-            Установка (Entware; `curl` обычно отсутствует — используйте `wget`):
-            ```
+            ### Установка (первый раз)
+            ```sh
             opkg update && opkg install ca-certificates
-            wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh -s -- --arch <mipsel|mips|aarch64|armv7|x86_64>
+            wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
+            ```
+            Установщик скачивает готовый архив под вашу архитектуру, определяет
+            LAN/VPN и (при наличии) OpenConnect, запрашивает подтверждение и
+            запускает демон. Существующие `susanin.conf`, `vpn_always.txt`,
+            `vpn_never.txt` и кэш сохраняются.
+
+            ### Обновление
+            ```sh
+            /opt/susanin/bin/susanin-agent version
+            sh /opt/susanin/tools/susanin.sh update
+            sh /opt/susanin/tools/susanin.sh update ${{ github.ref_name }}
+            /opt/susanin/bin/susanin-agent version
+            ```
+            `update` печатает `installed → target`, делает бэкап `susanin.conf`
+            и `susanin.state` в `/opt/susanin/var/backup/`, заменяет бинарь и
+            скрипты, **не трогая** `etc/` и `var/`, затем перезапускает демон.
+
+            ### Удаление
+            ```sh
+            sh /opt/susanin/tools/susanin.sh uninstall
+            sh /opt/susanin/tools/susanin.sh uninstall --purge
             ```
 
-            Обновление: `sh /opt/susanin/tools/susanin.sh update`
-            Удаление: `sh /opt/susanin/tools/susanin.sh uninstall [--purge]`
+            ### Что нового в этой версии
+            - сайты, ответившие по основному каналу, больше не переводятся в VPN
+              (кандидатами остаются только направления без ответа);
+            - новый список «всегда напрямую»: `/opt/susanin/etc/vpn_never.txt`
+              (домен / IPv4 / CIDR) — адреса не попадают в `ok`/`test` и всегда
+              идут напрямую;
+            - `sh /opt/susanin/tools/susanin.sh forget <ip>` — убрать адрес из
+              кэша и наборов;
+            - установщик находит OpenConnect-сервер (ocserv, `oc0`) и предлагает
+              добавить его подсеть в маршрутизацию Susanin;
+            - `vpn_always.txt` / `vpn_never.txt` при install/update не
+              перезаписываются.
 
-            В архивах: `susanin-agent`, скрипты управления, конфиг, `vpn_always.txt`.
-            `vpn_always.txt` при install/update НЕ перезаписывается, если уже есть.
+            ### Сборки
+            - архивы: `susanin-keenetic-deploy-mipsel.tar.gz`, `…-mips.tar.gz`,
+              `…-aarch64.tar.gz`, `…-armv7.tar.gz`, `…-x86_64.tar.gz` и
+              `SHA256SUMS`;
+            - контейнер: `ghcr.io/r17a/susanin.keenetic:${{ github.ref_name }}`
+              (+`latest`).
 
-            Проверено на mipsel (Keenetic Viva / KeeneticOS 5.1.5 / Entware).
-            Остальные архитектуры собраны автоматически — сообщайте об ошибках в Issues.
+            **Проверено**: mipsel — Keenetic Viva, KeeneticOS 5.1.4–5.1.5,
+            Entware (+ клиент OpenConnect). Остальные архитектуры уже собраны и
+            приложены готовыми архивами, но на живом железе не тестировались —
+            сообщайте об ошибках в Issues.
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS
