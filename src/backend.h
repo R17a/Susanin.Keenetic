@@ -17,6 +17,11 @@ int backend_ipset_flush(const susanin_config *c);
 /* Forced CIDR ranges (vpn_always): hash:net susanin_ok_net, timeout ttl. */
 int backend_net_add(const susanin_config *c, const char *cidr, int ttl);
 int backend_net_del(const susanin_config *c, const char *cidr);
+
+/* Generic named ipset entry ops (e.g. susanin_never). */
+int backend_set_add(const susanin_config *c, const char *set, const char *val,
+                    int ttl);
+int backend_set_del(const susanin_config *c, const char *set, const char *val);
 int backend_ct_delete(const ct_flow *f);
 
 #endif

@@ -177,7 +177,44 @@ int backend_ipset_flush(const susanin_config *c)
     argv[2] = (char *)"susanin_ok_net";
     argv[3] = NULL;
     run_argv(argv);
+    /* always-direct set (vpn_never) */
+    argv[0] = (char *)tool_ipset();
+    argv[1] = "flush";
+    argv[2] = (char *)"susanin_never";
+    argv[3] = NULL;
+    run_argv(argv);
     return 0;
+}
+
+int backend_set_add(const susanin_config *c, const char *set, const char *val,
+                    int ttl)
+{
+    char *argv[8];
+    char t[32];
+    (void)c;
+    snprintf(t, sizeof(t), "%d", ttl);
+    argv[0] = (char *)tool_ipset();
+    argv[1] = "-exist";
+    argv[2] = "add";
+    argv[3] = (char *)set;
+    argv[4] = (char *)val;
+    argv[5] = "timeout";
+    argv[6] = t;
+    argv[7] = NULL;
+    return run_argv(argv);
+}
+
+int backend_set_del(const susanin_config *c, const char *set, const char *val)
+{
+    char *argv[6];
+    (void)c;
+    argv[0] = (char *)tool_ipset();
+    argv[1] = "-exist";
+    argv[2] = "del";
+    argv[3] = (char *)set;
+    argv[4] = (char *)val;
+    argv[5] = NULL;
+    return run_argv(argv);
 }
 
 int backend_net_add(const susanin_config *c, const char *cidr, int ttl)

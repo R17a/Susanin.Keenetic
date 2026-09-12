@@ -11,6 +11,7 @@
 #   sh susanin.sh update [ver]   # update binary/scripts (keeps config and state)
 #   sh susanin.sh uninstall [--purge]
 #   sh susanin.sh down           # remove data plane rules (daemon keeps running)
+#   sh susanin.sh forget <ip>    # drop an address from cache/ipsets (allow direct)
 #   sh susanin.sh add <ip> tcp|udp test|ok
 #   sh susanin.sh del <ip> tcp|udp
 
@@ -92,9 +93,10 @@ case "${1:-}" in
     update) shift || true; sh "$TOOLS/update.sh" "$@" ;;
     uninstall) shift || true; sh "$TOOLS/uninstall.sh" "$@" ;;
     down) sh "$TOOLS/datapath.sh" down ;;
+    forget) "$BIN" forget "$2" ;;
     add) sh "$TOOLS/datapath.sh" add "$2" "$3" "$4" ;;
     del) sh "$TOOLS/datapath.sh" del "$2" "$3" ;;
     *)
-        echo "usage: $0 {start|stop|restart|status|log [N]|install|update [ver]|uninstall [--purge]|down|add <ip> <tcp|udp> <test|ok>|del <ip> <tcp|udp>}" >&2
+        echo "usage: $0 {start|stop|restart|status|log [N]|install|update [ver]|uninstall [--purge]|down|forget <ip>|add <ip> <tcp|udp> <test|ok>|del <ip> <tcp|udp>}" >&2
         exit 2 ;;
 esac

@@ -56,6 +56,9 @@ void config_set_defaults(susanin_config *c)
              "/opt/susanin/etc/vpn_always.txt");
     snprintf(c->vpn_always_dns, sizeof(c->vpn_always_dns), "%s", "");
     c->vpn_always_interval = 300;
+    snprintf(c->vpn_never_file, sizeof(c->vpn_never_file), "%s",
+             "/opt/susanin/etc/vpn_never.txt");
+    c->vpn_never_interval = 300;
     snprintf(c->log_level, sizeof(c->log_level), "%s", "info");
     c->diagnostics = 0;
 }
@@ -155,6 +158,10 @@ int config_load(const char *path, susanin_config *c)
             set_str(c->vpn_always_dns, sizeof(c->vpn_always_dns), val);
         else if (!strcmp(key, "vpn_always_interval"))
             c->vpn_always_interval = parse_interval(val);
+        else if (!strcmp(key, "vpn_never_file"))
+            set_str(c->vpn_never_file, sizeof(c->vpn_never_file), val);
+        else if (!strcmp(key, "vpn_never_interval"))
+            c->vpn_never_interval = parse_interval(val);
         else if (!strcmp(key, "log_level"))
             set_str(c->log_level, sizeof(c->log_level), val);
         else if (!strcmp(key, "diagnostics"))
@@ -199,6 +206,8 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "vpn_always_file=%s\n", c->vpn_always_file);
     fprintf(fp, "vpn_always_dns=%s\n", c->vpn_always_dns);
     fprintf(fp, "vpn_always_interval=%ds\n", c->vpn_always_interval);
+    fprintf(fp, "vpn_never_file=%s\n", c->vpn_never_file);
+    fprintf(fp, "vpn_never_interval=%ds\n", c->vpn_never_interval);
     fprintf(fp, "log_level=%s\n", c->log_level);
     fprintf(fp, "diagnostics=%d\n", c->diagnostics);
     fclose(fp);
@@ -235,6 +244,8 @@ void config_print(const susanin_config *c)
     printf("vpn_always_file=%s\n", c->vpn_always_file);
     printf("vpn_always_dns=%s\n", c->vpn_always_dns);
     printf("vpn_always_interval=%ds\n", c->vpn_always_interval);
+    printf("vpn_never_file=%s\n", c->vpn_never_file);
+    printf("vpn_never_interval=%ds\n", c->vpn_never_interval);
     printf("log_level=%s\n", c->log_level);
     printf("diagnostics=%d\n", c->diagnostics);
 }

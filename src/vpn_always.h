@@ -1,6 +1,8 @@
 #ifndef SUSANIN_VPN_ALWAYS_H
 #define SUSANIN_VPN_ALWAYS_H
 
+#include <stddef.h>
+
 #include "config.h"
 
 /*
@@ -38,5 +40,10 @@ void va_mark_dirty(vpn_always *v);
  * При недоступном туннеле вызывающий должен НЕ звать refresh (fail-open).
  */
 int va_refresh(vpn_always *v, const susanin_config *cfg);
+
+/* Shared DNS helpers (also used by vpn_never). */
+int va_dns_query(const char *server, const char *domain, char ips[][16],
+                 int max, int timeout_ms);
+void va_pick_resolver(const susanin_config *cfg, char *out, size_t n);
 
 #endif

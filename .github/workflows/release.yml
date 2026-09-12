@@ -55,7 +55,7 @@ jobs:
           mkdir -p "$STAGE"
           cp susanin-agent "$STAGE/susanin-agent"
           for f in datapath.sh susanin.sh update.sh uninstall.sh install.sh \
-                   config.example.conf vpn_always.txt S94susanin \
+                   config.example.conf vpn_always.txt vpn_never.txt S94susanin \
                    DEPLOY.md; do
             [ -f "tools/$f" ] && cp "tools/$f" "$STAGE/$f" || true
             [ -f "$f" ] && cp "$f" "$STAGE/$f" || true

@@ -48,6 +48,7 @@ TTL_OK=${SUSANIN_TTL_OK:-21600}
 CHAIN=SUSANIN
 SETS="susanin_ok_tcp susanin_ok_udp susanin_test_tcp susanin_test_udp"
 NETSET=susanin_ok_net
+NEVERSET=susanin_never
 
 say() { echo "[susanin] $*"; }
 
@@ -75,6 +76,8 @@ ensure_sets() {
     done
     # CIDR (vpn_always) live in a hash:net set; matches any LAN proto.
     set_exists "$NETSET" || "$IPSET" create "$NETSET" hash:net timeout 0
+    # always-direct list (vpn_never): hash:net holds IPs (/32) and CIDRs.
+    set_exists "$NEVERSET" || "$IPSET" create "$NEVERSET" hash:net timeout 0
     say "ipsets ready"
 }
 
@@ -93,6 +96,8 @@ rule_priv() {
 
 rule_mark() {
     for i in $LAN; do
+        # never-VPN list: leave these destinations completely direct
+        mangle "$CHAIN" -i "$i" -m set --match-set susanin_never dst -j RETURN
         for p in tcp udp; do
             mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
                 -m mark --mark 0x0/0xffffffff \
@@ -147,6 +152,7 @@ command_down() {
     fi
     for s in $SETS; do set_exists "$s" && "$IPSET" destroy "$s" || true; done
     set_exists "$NETSET" && "$IPSET" destroy "$NETSET" || true
+    set_exists "$NEVERSET" && "$IPSET" destroy "$NEVERSET" || true
     "$IPCMD" rule del fwmark "$MARK_OK" priority "$PRI_OK" lookup "$TABLE" >/dev/null 2>&1 || true
     "$IPCMD" rule del fwmark "$MARK_TEST" priority "$PRI_TEST" lookup "$TABLE" >/dev/null 2>&1 || true
     "$IPCMD" route del default dev "$EGRESS" table "$TABLE" >/dev/null 2>&1 || true
@@ -171,12 +177,18 @@ command_status() {
     else
         echo "$NETSET = (absent)"
     fi
+    if set_exists "$NEVERSET"; then
+        echo "$NEVERSET = $("$IPSET" list "$NEVERSET" 2>/dev/null | grep -cE '^[0-9]+\.' || true)"
+    else
+        echo "$NEVERSET = (absent)"
+    fi
     "$IPCMD" rule show | grep -E "lookup $TABLE" || echo "no ip rule for table $TABLE"
 }
 
 command_flush() {
     for s in $SETS; do set_exists "$s" && "$IPSET" flush "$s" || true; done
     set_exists "$NETSET" && "$IPSET" flush "$NETSET" || true
+    set_exists "$NEVERSET" && "$IPSET" flush "$NEVERSET" || true
     say "sets flushed (fail-open / DIRECT)"
 }
 

@@ -53,6 +53,11 @@ vpn_always_interval=300s
 # Резолвер для списка (пусто = автоматически из /etc/resolv.conf):
 vpn_always_dns=
 
+# Список «всегда напрямую» (никогда через VPN): домен / IPv4 / CIDR.
+# Нет файла = выключено. Существующий файл при install/update не перезаписывается.
+vpn_never_file=/opt/susanin/etc/vpn_never.txt
+vpn_never_interval=300s
+
 # Diagnostics.
 log_level=info
 diagnostics=off

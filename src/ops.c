@@ -2,6 +2,7 @@
 #include "ops.h"
 #include "backend.h"
 #include "log.h"
+#include "state.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -234,6 +235,34 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
 
     printf("cache:\n");
     print_check("state file", access(state_path, R_OK) == 0);
+    return 0;
+}
+
+int ops_forget(const susanin_config *cfg, const char *ip)
+{
+    const char *path = "/opt/susanin/var/susanin.state";
+    susanin_state st;
+    int udp, removed = 0;
+    if (!ip || !ip[0]) {
+        fprintf(stderr, "usage: susanin-agent forget <ip>\n");
+        return 2;
+    }
+    state_init(&st);
+    state_load(path, &st);
+    for (udp = 0; udp < 2; udp++) {
+        if (state_remove(st_test(&st, udp), ip))
+            removed++;
+        if (state_remove(st_ok(&st, udp), ip))
+            removed++;
+        if (state_remove(st_cool(&st, udp), ip))
+            removed++;
+        backend_ipset_del(cfg, udp, 0, ip);
+        backend_ipset_del(cfg, udp, 1, ip);
+    }
+    state_save(path, &st);
+    state_free(&st);
+    printf("[susanin] forget %s: %d cached entries removed, ipsets cleared\n",
+           ip, removed);
     return 0;
 }
 

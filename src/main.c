@@ -34,6 +34,7 @@ static void usage(void)
         "  susanin-agent apply [--dry-run]\n"
         "  susanin-agent install\n"
         "  susanin-agent uninstall\n"
+        "  susanin-agent forget <ip>\n"
         "  susanin-agent diag [start|stop|sample|errors]\n",
         SUSANIN_VERSION);
 }
@@ -141,6 +142,9 @@ int main(int argc, char **argv)
 
     if (!strcmp(cmd, "install"))
         return ops_setup(&cfg, cfg_path(), argc, argv);
+
+    if (!strcmp(cmd, "forget"))
+        return ops_forget(&cfg, argc > 2 ? argv[2] : NULL);
 
     if (!strcmp(cmd, "uninstall")) {
         printf("removing Susanin data plane ...\n");

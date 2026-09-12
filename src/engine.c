@@ -7,6 +7,7 @@
 #include "log.h"
 #include "state.h"
 #include "vpn_always.h"
+#include "vpn_never.h"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -130,11 +131,14 @@ int engine_run(const susanin_config *cfg)
     classifier_ctx ctx;
     flowlist L;
     vpn_always *va = NULL;
+    vpn_never *nv = NULL;
     int tunnel_up = 1, miss = 0;
     time_t last[4] = { 0, 0, 0, 0 };
     time_t last_save = 0;
     time_t last_recon = 0;
     time_t last_force = 0;
+    time_t last_never = 0;
+    int never_pending = 0;
     time_t last_trim = 0;
     int force_pending = 0;
     const char *state_path = "/opt/susanin/var/susanin.state";
@@ -168,10 +172,16 @@ int engine_run(const susanin_config *cfg)
         resync_sets(cfg, &st);
     if (cfg->vpn_always_file[0])
         va = va_new();
+    if (cfg->vpn_never_file[0])
+        nv = vn_new();
     slogf(SL_INFO, "engine started (egress=%s table=%d)", cfg->egress_interface, cfg->routing_table);
     if (va && tunnel_up) {
         last_force = time(NULL);
         force_pending = va_refresh(va, cfg);
+    }
+    if (nv) {
+        last_never = time(NULL);
+        never_pending = vn_refresh(nv, cfg);
     }
 
     while (!g_stop) {
@@ -207,6 +217,7 @@ int engine_run(const susanin_config *cfg)
                     slogf(SL_ERROR, "tunnel DOWN, fail-open DIRECT");
                     backend_ipset_flush(cfg);
                     va_mark_dirty(va);
+                    vn_mark_dirty(nv);
                 }
             }
         }
@@ -229,6 +240,7 @@ int engine_run(const susanin_config *cfg)
                     resync_sets(cfg, &st);
                     last_force = 0;
                     va_mark_dirty(va);
+                    vn_mark_dirty(nv);
                 }
             }
         }
@@ -244,12 +256,24 @@ int engine_run(const susanin_config *cfg)
                 last_force = prev;  /* догоняем оставшиеся домены вскоре */
         }
 
+        if (nv &&
+            (never_pending ||
+             now - last_never >= (time_t)cfg->vpn_never_interval ||
+             vn_changed(nv, cfg))) {
+            time_t prev = last_never;
+            last_never = now;
+            never_pending = vn_refresh(nv, cfg);
+            if (never_pending)
+                last_never = prev;
+        }
+
         usleep(200000);
     }
 
     state_save(state_path, &st);
     slogf(SL_INFO, "engine stopped");
     va_free(va);
+    vn_free(nv);
     state_free(&st);
     free(L.v);
     return 0;

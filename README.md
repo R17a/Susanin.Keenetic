@@ -77,7 +77,7 @@
 - `susanin-keenetic-deploy-<arch>.tar.gz`, где arch = `mipsel`, `mips`,
   `aarch64`, `armv7`, `x86_64` — комплект для установки (`susanin-agent`,
   `datapath.sh`, `susanin.sh`, `update.sh`, `uninstall.sh`, `install.sh`,
-  конфиг, `vpn_always.txt`).
+  конфиг, `vpn_always.txt`, `vpn_never.txt`).
 
 **Проверено на реальном железе:** Keenetic Viva / KeeneticOS 5.1.4–5.1.5 /
 Entware, архитектура **mipsel**. Остальные архитектуры собираются в CI, но на
@@ -99,16 +99,8 @@ docker run --rm -v "$PWD/build:/out" ghcr.io/r17a/susanin.keenetic:latest \
 ## Домены, которые всегда через VPN
 
 Адаптивное обучение не требуется для заведомо заблокированных сервисов
-(например, Claude/Anthropic в РФ). Положите в роутер файл со списком доменов:
-
-```sh
-cat > /opt/susanin/etc/vpn_always.txt <<'EOF'
-# по одному домену / IPv4 / CIDR на строку; '#' — комментарии
-anthropic.com
-claude.ai
-104.16.0.0/13
-EOF
-```
+(например, Claude/Anthropic в РФ). Список задаётся файлом
+`/opt/susanin/etc/vpn_always.txt` (по одному домену / IPv4 / CIDR на строку).
 
 Демон заметит файл сам (без перезапуска), отресолвит A-записи доменов и
 добавит их IP в ipset-наборы `susanin_ok_{tcp,udp}` — любые TCP/UDP
@@ -127,6 +119,38 @@ EOF
   `/opt/susanin/etc/vpn_always.txt` **только если файла ещё нет** — при install
   и update существующий список не перезаписывается.
   Проверка: `sh /opt/susanin/tools/susanin.sh status` покажет домены.
+
+## Домены, которые всегда НАПРЯМУЮ (never VPN)
+
+Обратный список — направления, которые **никогда** не должны уходить в VPN
+(например, собственный прокси на RU-сервере). Файл
+`/opt/susanin/etc/vpn_never.txt` (домен / IPv4 / CIDR), по умолчанию пустой.
+
+Демон резолвит A-записи и кладёт адреса в ipset `susanin_never`; в цепочке
+`SUSANIN` для него стоит `RETURN` **до** правил маркировки, поэтому такие
+направления не попадают в `ok`/`test` и всегда идут напрямую. Чтобы убрать
+ошибочно закэшированный адрес из «VPN-кэша» — команда
+`sh /opt/susanin/tools/susanin.sh forget <ip>`.
+
+## OpenConnect VPN на том же роутере
+
+Если на роутере установлено и работает приложение **OpenConnect VPN**
+(ocserv), установщик сам находит его интерфейс (`oc0`) и спрашивает:
+
+```
+OpenConnect server detected (oc0). Add it to Susanin routing? [y/N]
+```
+
+Достаточно ответить `y` (или `yes`); при запуске с `--yes` добавление
+происходит без вопроса. Что делает установщик при согласии:
+
+- добавляет интерфейс `oc0` в `lan_interfaces`;
+- добавляет подсеть клиентов OpenConnect (например, `172.16.5.0/24`) в
+  `lan_subnets` (значение берётся из `ipv4-network` в
+  `/var/run/ocserv/ocserv.conf` или из адреса интерфейса);
+- после этого трафик подключённых клиентов (телефон/ноутбук через
+  OpenConnect) обрабатывается Susanin так же, как трафик LAN: заблокированное
+  уходит в VPN, остальное — напрямую; отдельные NAT-правила не требуются.
 
 ## Установка / обновление / удаление
 
@@ -213,6 +237,7 @@ sh /opt/susanin/tools/susanin.sh install    # datapath up + setup
 | Состояние | `sh /opt/susanin/tools/susanin.sh status` |
 | Лог | `sh /opt/susanin/tools/susanin.sh log` |
 | Снять правила | `sh /opt/susanin/tools/susanin.sh down` |
+| Убрать IP из кэша | `sh /opt/susanin/tools/susanin.sh forget <ip>` |
 | Обновление | `sh /opt/susanin/tools/susanin.sh update` |
 | Удаление | `sh /opt/susanin/tools/susanin.sh uninstall [--purge]` |
 | IP вручную в VPN | `sh /opt/susanin/tools/susanin.sh add <ip> tcp test` |
@@ -259,6 +284,8 @@ docker build -f Dockerfile.cross -t susanin-build .
 | `vpn_always_file` | файл доменов «всегда через VPN» (нет файла = off) | `/opt/susanin/etc/vpn_always.txt` |
 | `vpn_always_interval` | как часто перечитывать/резолвить список | `300s` |
 | `vpn_always_dns` | резолвер для списка (пусто = из resolv.conf) | (пусто) |
+| `vpn_never_file` | файл «всегда напрямую» (нет файла = off) | `/opt/susanin/etc/vpn_never.txt` |
+| `vpn_never_interval` | как часто перечитывать/резолвить этот список | `300s` |
 | `ok_max_entries` | лимит записей ok-кэша на протокол (bounded GC; 0=off) | `4096` |
 
 ## Известные ограничения v1

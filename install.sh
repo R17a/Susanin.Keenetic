@@ -238,6 +238,12 @@ if [ ! -f "$PREFIX/etc/vpn_always.txt" ] && [ -f "$DIR/vpn_always.txt" ]; then
 else
     say "vpn_always list kept (not overwritten)"
 fi
+if [ ! -f "$PREFIX/etc/vpn_never.txt" ] && [ -f "$DIR/vpn_never.txt" ]; then
+    cp "$DIR/vpn_never.txt" "$PREFIX/etc/vpn_never.txt"
+    say "vpn_never list installed: $PREFIX/etc/vpn_never.txt"
+else
+    say "vpn_never list kept (not overwritten)"
+fi
 
 if [ -f "$DIR/S94susanin" ]; then
     cp "$DIR/S94susanin" "$INITD/S94susanin"

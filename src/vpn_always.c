@@ -376,6 +376,25 @@ static void resolv_server(char *out, size_t n)
     fclose(fp);
 }
 
+int va_dns_query(const char *server, const char *domain, char ips[][16],
+                 int max, int timeout_ms)
+{
+    return dns_query_a(server, domain, ips, max, timeout_ms);
+}
+
+void va_pick_resolver(const susanin_config *cfg, char *out, size_t n)
+{
+    struct in_addr a;
+    if (cfg->vpn_always_dns[0] &&
+        inet_pton(AF_INET, cfg->vpn_always_dns, &a) == 1) {
+        snprintf(out, n, "%.63s", cfg->vpn_always_dns);
+        return;
+    }
+    resolv_server(out, n);
+    if (!out[0])
+        snprintf(out, n, "%s", "8.8.8.8");
+}
+
 static long long now_ms(void)
 {
     struct timespec ts;
@@ -468,7 +487,6 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
     char names[VA_MAXDOM][256];
     char server[64];
     struct stat st;
-    struct in_addr dns_a;
     time_t now = time(NULL);
     int nfiles, i, ndes = 0, ndesn = 0, added = 0, removed = 0, pending = 0;
     int addn = 0, remn = 0;
@@ -516,14 +534,7 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
         v->seen_size = st.st_size;
     }
 
-    if (cfg->vpn_always_dns[0] &&
-        inet_pton(AF_INET, cfg->vpn_always_dns, &dns_a) == 1) {
-        snprintf(server, sizeof(server), "%.63s", cfg->vpn_always_dns);
-    } else {
-        resolv_server(server, sizeof(server));
-        if (!server[0])
-            snprintf(server, sizeof(server), "%s", "8.8.8.8");
-    }
+    va_pick_resolver(cfg, server, sizeof(server));
 
     desired = calloc((size_t)VA_TRACK, sizeof(*desired));
     desired_net = calloc((size_t)VA_TRACK, sizeof(*desired_net));

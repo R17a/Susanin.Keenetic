@@ -33,6 +33,8 @@ typedef struct {
     char vpn_always_file[CFG_PATH_MAX];
     char vpn_always_dns[CFG_PATH_MAX];
     int vpn_always_interval;
+    char vpn_never_file[CFG_PATH_MAX];
+    int vpn_never_interval;
     char log_level[16];
     int diagnostics;
 } susanin_config;
