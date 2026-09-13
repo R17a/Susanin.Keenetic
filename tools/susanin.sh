@@ -26,15 +26,21 @@ is_running() {
     ps | grep susanin-agent | grep -v grep >/dev/null 2>&1
 }
 
-# Rotate log when it grows above 5 MiB; keep 3 files (susanin.log.1..3).
+# Rotate log above 5 MiB; keep compressed archives susanin.log.1.gz .. .3.gz
 rotate_log() {
     [ -f "$LOG" ] || return 0
     _sz=$(wc -c < "$LOG" 2>/dev/null || echo 0)
     [ "${_sz:-0}" -lt 5242880 ] && return 0
-    [ -f "$LOG.2" ] && mv -f "$LOG.2" "$LOG.3"
-    [ -f "$LOG.1" ] && mv -f "$LOG.1" "$LOG.2"
+    rm -f "$LOG.3.gz"
+    [ -f "$LOG.2.gz" ] && mv -f "$LOG.2.gz" "$LOG.3.gz"
+    [ -f "$LOG.1.gz" ] && mv -f "$LOG.1.gz" "$LOG.2.gz"
     mv -f "$LOG" "$LOG.1"
-    echo "[susanin] log rotated: $LOG -> $LOG.1"
+    if command -v gzip >/dev/null 2>&1; then
+        gzip -f "$LOG.1" 2>/dev/null || true
+    else
+        rm -f "$LOG.3.gz"
+    fi
+    echo "[susanin] log rotated (archives: $LOG.N.gz, keep 3)"
 }
 
 cmd_start() {

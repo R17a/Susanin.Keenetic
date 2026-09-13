@@ -68,9 +68,18 @@ backup() {
     "$IPCMD" rule show > "$bk/ip-rule.txt" 2>/dev/null || true
     "$IPCMD" route show table all > "$bk/ip-route.txt" 2>/dev/null || true
     say "backup: $bk"
-    # keep only the 3 most recent backups
+    # keep the 3 most recent dirs; archive older ones (keep 5 archives)
+    arc="$PREFIX/susanin/var/archive"
+    mkdir -p "$arc"
     ls -1dt "$PREFIX/susanin/var"/datapath-* 2>/dev/null | tail -n +4 | \
-        while read -r old; do rm -rf "$old"; done
+        while read -r old; do
+            base=$(basename "$old")
+            if tar -czf "$arc/$base.tar.gz" -C "$(dirname "$old")" "$base" 2>/dev/null; then
+                rm -rf "$old"
+            fi
+        done
+    ls -1dt "$arc"/datapath-*.tar.gz 2>/dev/null | tail -n +6 | \
+        while read -r x; do rm -f "$x"; done
 }
 
 ensure_sets() {
