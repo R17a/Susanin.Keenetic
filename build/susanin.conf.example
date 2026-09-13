@@ -48,6 +48,7 @@ health_miss_debounce=4
 # vpn_always_interval секунд. Изменение файла подхватывается на лету.
 # Если файла нет — функция выключена. Готовый список поставляется с дистрибутивом
 # (vpn_always.txt); при установке/обновлении существующий файл НЕ перезаписывается.
+# Поддерживаются wildcard-строки: *.example.com — домен и все поддомены.
 vpn_always_file=/opt/susanin/etc/vpn_always.txt
 vpn_always_interval=300s
 # Резолвер для списка (пусто = автоматически из /etc/resolv.conf):

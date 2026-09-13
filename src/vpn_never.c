@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #define VN_MAXDOM 256
 #define VN_MAXIP  32
@@ -26,6 +27,7 @@ typedef struct {
     char ips[VN_MAXIP][16];
     int nips;
     int is_net;
+    int wild;               /* *.domain: домен и все поддомены */
     int fail_logged;
     time_t next_try;
 } vn_dom;
@@ -113,7 +115,8 @@ static int valid_name(const char *s, char *out, size_t n)
     return 1;
 }
 
-static int file_load(const char *path, char names[][256], int maxnames)
+static int file_load(const char *path, char names[][256], int wilds[],
+                     int maxnames)
 {
     FILE *fp = fopen(path, "r");
     char line[320];
@@ -122,17 +125,22 @@ static int file_load(const char *path, char names[][256], int maxnames)
         return -1;
     while (fgets(line, sizeof(line), fp)) {
         char buf[256];
-        int i;
+        const char *p = line;
+        int i, wild = 0;
         size_t l;
         trim_line(line);
         if (line[0] == '\0' || line[0] == '#')
             continue;
-        if (!valid_name(line, buf, sizeof(buf)))
+        if (line[0] == '*' && line[1] == '.') {
+            wild = 1;
+            p = line + 2;
+        }
+        if (!valid_name(p, buf, sizeof(buf)))
             continue;
         if (n >= maxnames)
             break;
         for (i = 0; i < n; i++)
-            if (strcmp(names[i], buf) == 0)
+            if (strcmp(names[i], buf) == 0 && wilds[i] == wild)
                 break;
         if (i == n) {
             l = strlen(buf) + 1;
@@ -140,6 +148,7 @@ static int file_load(const char *path, char names[][256], int maxnames)
                 l = sizeof(names[n]);
             memcpy(names[n], buf, l);
             names[n][sizeof(names[n]) - 1] = '\0';
+            wilds[n] = wild;
             n++;
         }
     }
@@ -156,14 +165,14 @@ static vn_dom *dom_find(vpn_never *v, const char *name)
     return NULL;
 }
 
-static void doms_reconcile(vpn_never *v, char names[][256], int n)
+static void doms_reconcile(vpn_never *v, char names[][256], int wilds[], int n)
 {
     vn_dom keep[VN_MAXDOM];
     int nk = 0, i;
     for (i = 0; i < n && i < VN_MAXDOM; i++) {
         vn_dom *old = dom_find(v, names[i]);
         vn_dom *d = &keep[nk++];
-        if (old)
+        if (old && old->wild == wilds[i])
             *d = *old;
         else {
             size_t l;
@@ -174,6 +183,7 @@ static void doms_reconcile(vpn_never *v, char names[][256], int n)
             memcpy(d->name, names[i], l);
             d->name[sizeof(d->name) - 1] = '\0';
             d->is_net = strchr(d->name, '/') ? 1 : 0;
+            d->wild = wilds[i];
             d->next_try = 0;
         }
     }
@@ -237,9 +247,88 @@ int vn_changed(vpn_never *v, const susanin_config *cfg)
     return st.st_mtime != v->seen_mtime || st.st_size != v->seen_size;
 }
 
+static int resolve_dom(const char *server, vn_dom *d, int timeout)
+{
+    int n, total = 0, k;
+    char tmp[VN_MAXIP][16];
+    char probe[300];
+    if (!d->wild)
+        return va_dns_query(server, d->name, d->ips, VN_MAXIP, timeout);
+    /* *.domain: apex + a couple of random subdomain probes (wildcard DNS) */
+    n = va_dns_query(server, d->name, d->ips, VN_MAXIP, timeout);
+    if (n > 0)
+        total = n;
+    for (k = 0; k < 2 && total < VN_MAXIP; k++) {
+        int m, j, x, dup;
+        snprintf(probe, sizeof(probe), "susanin-%08lx%d.%s",
+                 (unsigned long)(time(NULL) ^ (getpid() << 8)), k, d->name);
+        m = va_dns_query(server, probe, tmp, VN_MAXIP, timeout);
+        for (j = 0; j < m && total < VN_MAXIP; j++) {
+            dup = 0;
+            for (x = 0; x < total; x++)
+                if (strcmp(d->ips[x], tmp[j]) == 0) {
+                    dup = 1;
+                    break;
+                }
+            if (!dup) {
+                size_t l = strlen(tmp[j]);
+                if (l > 15)
+                    l = 15;
+                memcpy(d->ips[total], tmp[j], l);
+                d->ips[total][l] = '\0';
+                total++;
+            }
+        }
+    }
+    return total;
+}
+
+static void lower_copy(char *d, const char *s, size_t n)
+{
+    size_t i = 0;
+    for (; s[i] && i + 1 < n; i++)
+        d[i] = (char)tolower((unsigned char)s[i]);
+    d[i] = '\0';
+}
+
+/* Returns 1 if the same zone (with same wildcard flag) is listed in vpn_always. */
+static int zone_in_always(const susanin_config *cfg, const char *name, int wild)
+{
+    FILE *fp;
+    char line[320];
+    int found = 0;
+    if (!cfg->vpn_always_file[0])
+        return 0;
+    fp = fopen(cfg->vpn_always_file, "r");
+    if (!fp)
+        return 0;
+    while (fgets(line, sizeof(line), fp)) {
+        char buf[256], low[256];
+        const char *p = line;
+        int w = 0;
+        trim_line(line);
+        if (line[0] == '\0' || line[0] == '#')
+            continue;
+        if (line[0] == '*' && line[1] == '.') {
+            w = 1;
+            p = line + 2;
+        }
+        lower_copy(low, p, sizeof(low));
+        if (!valid_name(low, buf, sizeof(buf)))
+            continue;
+        if (w == wild && strcmp(buf, name) == 0) {
+            found = 1;
+            break;
+        }
+    }
+    fclose(fp);
+    return found;
+}
+
 int vn_refresh(vpn_never *v, const susanin_config *cfg)
 {
     char names[VN_MAXDOM][256];
+    int wilds[VN_MAXDOM] = { 0 };
     char server[64];
     char desired[VN_TRACK][64];
     char (*des)[64] = desired;
@@ -273,9 +362,15 @@ int vn_refresh(vpn_never *v, const susanin_config *cfg)
     v->warned = 0;
     if (!v->seen_mtime || v->seen_mtime != st.st_mtime ||
         v->seen_size != st.st_size) {
-        int nf = file_load(cfg->vpn_never_file, names, VN_MAXDOM);
-        if (nf >= 0)
-            doms_reconcile(v, names, nf);
+        int nf = file_load(cfg->vpn_never_file, names, wilds, VN_MAXDOM);
+        if (nf >= 0) {
+            doms_reconcile(v, names, wilds, nf);
+            for (i = 0; i < v->nd; i++)
+                if (zone_in_always(cfg, v->dom[i].name, v->dom[i].wild))
+                    slogf(SL_WARN,
+                          "vpn_never: %s%s is also in vpn_always; direct wins",
+                          v->dom[i].wild ? "*." : "", v->dom[i].name);
+        }
         v->seen_mtime = st.st_mtime;
         v->seen_size = st.st_size;
     }
@@ -313,7 +408,7 @@ int vn_refresh(vpn_never *v, const susanin_config *cfg)
                 left = 300;
             if (to > left)
                 to = (int)left;
-            n = va_dns_query(server, d->name, d->ips, VN_MAXIP, to);
+            n = resolve_dom(server, d, to);
         }
         if (n > 0) {
             for (k = 0; k < n; k++)
