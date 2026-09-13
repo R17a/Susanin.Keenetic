@@ -126,6 +126,10 @@ jobs:
               кэша и наборов;
             - установщик находит OpenConnect-сервер (ocserv, `oc0`) и предлагает
               добавить его подсеть в маршрутизацию Susanin;
+            - wildcard-зоны `*.example.com` в `vpn_always.txt` / `vpn_never.txt`:
+              домен и все поддомены (резолв apex + wildcard-пробы); точная строка
+              `example.com` — только сам домен, поддомены — адаптивно; при
+              конфликте зон в обоих файлах приоритет у «напрямую» (`vpn_never`);
             - `vpn_always.txt` / `vpn_never.txt` при install/update не
               перезаписываются.
 
