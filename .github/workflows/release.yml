@@ -126,13 +126,7 @@ jobs:
               «напрямую» (`vpn_never`), в лог пишется предупреждение;
             - **обслуживание**: ротация лога (`susanin.log` >5 МБ →
               `susanin.log.1.gz..3.gz`) и архивация старых каталогов
-              `datapath-*` в `/opt/susanin/var/archive/`;
-            - `vpn_always.txt` / `vpn_never.txt` при install/update не
-              перезаписываются.
-
-            Изменения v0.3.5 (умная политика «ответил → не в VPN»,
-            `vpn_never.txt`, `forget`, автодетект OpenConnect) — без изменений;
-            подробности в релизе v0.3.5.
+              `datapath-*` в `/opt/susanin/var/archive/`.
 
             ### Сборки
             - архивы: `susanin-keenetic-deploy-mipsel.tar.gz`, `…-mips.tar.gz`,
