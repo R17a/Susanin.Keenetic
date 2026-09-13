@@ -36,6 +36,7 @@ struct vpn_never {
     vn_dom dom[VN_MAXDOM];
     int nd;
     char track[VN_TRACK][64];
+    unsigned char tmiss[VN_TRACK];
     int ntrack;
     long long seen_mtime;
     long long seen_size;
@@ -210,6 +211,7 @@ static void tracked_add(vpn_never *v, const char *val)
         l = sizeof(v->track[0]);
     memcpy(v->track[v->ntrack], val, l);
     v->track[v->ntrack][sizeof(v->track[0]) - 1] = '\0';
+    v->tmiss[v->ntrack] = 0;
     v->ntrack++;
 }
 
@@ -219,8 +221,10 @@ static void tracked_remove(vpn_never *v, const char *val)
     for (i = 0; i < v->ntrack; i++) {
         if (strcmp(v->track[i], val) == 0)
             continue;
-        if (w != i)
+        if (w != i) {
             memcpy(v->track[w], v->track[i], 64);
+            v->tmiss[w] = v->tmiss[i];
+        }
         w++;
     }
     v->ntrack = w;
@@ -463,11 +467,17 @@ int vn_refresh(vpn_never *v, const susanin_config *cfg)
             if (strcmp(v->track[i], des[j]) == 0)
                 break;
         if (j == nd) {
+            if (!v->dirty && v->tmiss[i] < 2) {
+                v->tmiss[i]++;
+                i++;
+                continue;
+            }
             backend_set_del(cfg, VN_SET, v->track[i]);
-            slogf(SL_INFO, "vpn_never: allow-direct off %s", v->track[i]);
+            slogf(SL_DEBUG, "vpn_never: allow-direct off %s", v->track[i]);
             removed++;
             tracked_remove(v, v->track[i]);
         } else {
+            v->tmiss[i] = 0;
             i++;
         }
     }

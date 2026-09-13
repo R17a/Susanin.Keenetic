@@ -38,8 +38,10 @@ struct vpn_always {
     va_dom dom[VA_MAXDOM];
     int nd;
     char track[VA_TRACK][16]; /* IP, добавленные нами в ok-наборы */
+    unsigned char tmiss[VA_TRACK]; /* сколько refresh'ей IP не в списке */
     int ntrack;
     char tracknet[VA_TRACK][40]; /* CIDR, добавленные в susanin_ok_net */
+    unsigned char tmissnet[VA_TRACK];
     int ntracknet;
     long long seen_mtime;
     long long seen_size;
@@ -424,7 +426,9 @@ static int tracked_add(vpn_always *v, const char *ip)
 {
     if (v->ntrack >= VA_TRACK)
         return -1;
-    snprintf(v->track[v->ntrack++], 16, "%s", ip);
+    snprintf(v->track[v->ntrack], 16, "%s", ip);
+    v->tmiss[v->ntrack] = 0;
+    v->ntrack++;
     return 0;
 }
 
@@ -434,8 +438,10 @@ static void tracked_remove(vpn_always *v, const char *ip)
     for (i = 0; i < v->ntrack; i++) {
         if (strcmp(v->track[i], ip) == 0)
             continue;
-        if (w != i)
+        if (w != i) {
             memcpy(v->track[w], v->track[i], 16);
+            v->tmiss[w] = v->tmiss[i];
+        }
         w++;
     }
     v->ntrack = w;
@@ -460,6 +466,7 @@ static int trackednet_add(vpn_always *v, const char *cidr)
         l = sizeof(v->tracknet[0]);
     memcpy(v->tracknet[v->ntracknet], cidr, l);
     v->tracknet[v->ntracknet][sizeof(v->tracknet[0]) - 1] = '\0';
+    v->tmissnet[v->ntracknet] = 0;
     v->ntracknet++;
     return 0;
 }
@@ -470,8 +477,10 @@ static void trackednet_remove(vpn_always *v, const char *cidr)
     for (i = 0; i < v->ntracknet; i++) {
         if (strcmp(v->tracknet[i], cidr) == 0)
             continue;
-        if (w != i)
+        if (w != i) {
             memcpy(v->tracknet[w], v->tracknet[i], 40);
+            v->tmissnet[w] = v->tmissnet[i];
+        }
         w++;
     }
     v->ntracknet = w;
@@ -680,12 +689,19 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
             if (strcmp(v->track[i], desired[j]) == 0)
                 break;
         if (j == ndes) {
+            /* hysteresis: drop only if absent for 2 consecutive refreshes */
+            if (!v->dirty && v->tmiss[i] < 2) {
+                v->tmiss[i]++;
+                i++;
+                continue;
+            }
             backend_ipset_del(cfg, 0, 1, v->track[i]);
             backend_ipset_del(cfg, 1, 1, v->track[i]);
-            slogf(SL_INFO, "vpn_always: unpin %s", v->track[i]);
+            slogf(SL_DEBUG, "vpn_always: unpin %s", v->track[i]);
             removed++;
             tracked_remove(v, v->track[i]);
         } else {
+            v->tmiss[i] = 0;
             i++;
         }
     }
@@ -697,11 +713,17 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
             if (strcmp(v->tracknet[i], desired_net[j]) == 0)
                 break;
         if (j == ndesn) {
+            if (!v->dirty && v->tmissnet[i] < 2) {
+                v->tmissnet[i]++;
+                i++;
+                continue;
+            }
             backend_net_del(cfg, v->tracknet[i]);
-            slogf(SL_INFO, "vpn_always: unpin %s", v->tracknet[i]);
+            slogf(SL_DEBUG, "vpn_always: unpin %s", v->tracknet[i]);
             remn++;
             trackednet_remove(v, v->tracknet[i]);
         } else {
+            v->tmissnet[i] = 0;
             i++;
         }
     }
