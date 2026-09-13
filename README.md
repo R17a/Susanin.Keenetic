@@ -1,14 +1,15 @@
 # Susanin.Keenetic
 
-<p align="center">
-  <a href="https://www.donationalerts.com/r/dmitriy_r17a">
-    <img src="https://www.donationalerts.com/img/brand/donationalerts.svg" alt="DonationAlerts" height="44">
-  </a>
-  &nbsp;
-  <a href="https://pay.cloudtips.ru/p/dcbf5f2e">
-    <img src="https://static.tildacdn.com/tild3431-6231-4938-b464-663831306266/Horiz.svg" alt="CloudTips" height="44">
-  </a>
-</p>
+[![Language: C11](https://img.shields.io/badge/C-11-blue?logo=c&logoColor=white)](src)
+[![KeeneticOS 5.1.4-5.1.5](https://img.shields.io/badge/KeeneticOS-5.1.4--5.1.5-orange)](README.md)
+[![Entware required](https://img.shields.io/badge/Entware-required-orange)](README.md)
+[![Architectures](https://img.shields.io/badge/arch-mipsel%20%7C%20mips%20%7C%20aarch64%20%7C%20armv7%20%7C%20x86__64-lightgrey)](README.md)
+[![License](https://img.shields.io/github/license/R17a/Susanin.Keenetic)](LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/R17a/Susanin.Keenetic/total)](https://github.com/R17a/Susanin.Keenetic/releases)
+
+[![Donate CloudTips](https://img.shields.io/badge/donate-CloudTips-598bd7.svg?style=flat)](https://pay.cloudtips.ru/p/dcbf5f2e)
+[![Donate DonationAlerts](https://img.shields.io/badge/donate-DonationAlerts-f5a623.svg?style=flat)](https://www.donationalerts.com/r/dmitriy_r17a)
+[![Join Telegram group](https://img.shields.io/badge/Telegram_group-Join-blue.svg?style=social&logo=telegram)](https://t.me/Susanin_Keenetic)
 
 > Проект разработан на основе статьи на
 > [Habr](https://habr.com/ru/articles/1076620/) и проекта
