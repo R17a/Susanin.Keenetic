@@ -68,6 +68,9 @@ backup() {
     "$IPCMD" rule show > "$bk/ip-rule.txt" 2>/dev/null || true
     "$IPCMD" route show table all > "$bk/ip-route.txt" 2>/dev/null || true
     say "backup: $bk"
+    # keep only the 3 most recent backups
+    ls -1dt "$PREFIX/susanin/var"/datapath-* 2>/dev/null | tail -n +4 | \
+        while read -r old; do rm -rf "$old"; done
 }
 
 ensure_sets() {

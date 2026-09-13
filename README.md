@@ -129,7 +129,8 @@ docker run --rm -v "$PWD/build:/out" ghcr.io/r17a/susanin.keenetic:latest \
   wildcard-пробу (`susanin-XXXX.example.com`), пиня полученные IP; если у зоны
   wildcard нет, учитывается apex, а уникальные IP поддоменов подхватывает
   автообучение (или пинится точной строкой `sub.example.com`);
-- если зона указана и в `vpn_always.txt`, и в `vpn_never.txt`, приоритет у
+- если зона указана и в `vpn_always.txt`, и в `vpn_never.txt` (или зоны
+  пересекаются, например `*.rapo.dev` и `px.rapo.dev`), приоритет у
   «напрямую» (`vpn_never`), в лог пишется предупреждение;
 - только IPv4 (A-записи); CIDR-строки (`a.b.c.d/n`) пинятся как есть;
   резолвер — из `/etc/resolv.conf` или поле `vpn_always_dns`;

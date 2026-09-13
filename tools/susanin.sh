@@ -26,12 +26,24 @@ is_running() {
     ps | grep susanin-agent | grep -v grep >/dev/null 2>&1
 }
 
+# Rotate log when it grows above 5 MiB; keep 3 files (susanin.log.1..3).
+rotate_log() {
+    [ -f "$LOG" ] || return 0
+    _sz=$(wc -c < "$LOG" 2>/dev/null || echo 0)
+    [ "${_sz:-0}" -lt 5242880 ] && return 0
+    [ -f "$LOG.2" ] && mv -f "$LOG.2" "$LOG.3"
+    [ -f "$LOG.1" ] && mv -f "$LOG.1" "$LOG.2"
+    mv -f "$LOG" "$LOG.1"
+    echo "[susanin] log rotated: $LOG -> $LOG.1"
+}
+
 cmd_start() {
     if is_running; then
         echo "[susanin] already running"
         return 0
     fi
     mkdir -p /opt/susanin/var
+    rotate_log
     (
         trap '' HUP
         SUSANIN_CONF="$CONF" SUSANIN_LOG="$LOG" exec "$BIN" run

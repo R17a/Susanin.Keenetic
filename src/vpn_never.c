@@ -291,7 +291,15 @@ static void lower_copy(char *d, const char *s, size_t n)
     d[i] = '\0';
 }
 
-/* Returns 1 if the same zone (with same wildcard flag) is listed in vpn_always. */
+static int is_sub_of(const char *sub, const char *zone)
+{
+    size_t ls = strlen(sub), lz = strlen(zone);
+    if (ls <= lz || sub[ls - lz - 1] != '.')
+        return 0;
+    return strcmp(sub + (ls - lz), zone) == 0;
+}
+
+/* Returns 1 if the same/overlapping zone is listed in vpn_always. */
 static int zone_in_always(const susanin_config *cfg, const char *name, int wild)
 {
     FILE *fp;
@@ -316,7 +324,9 @@ static int zone_in_always(const susanin_config *cfg, const char *name, int wild)
         lower_copy(low, p, sizeof(low));
         if (!valid_name(low, buf, sizeof(buf)))
             continue;
-        if (w == wild && strcmp(buf, name) == 0) {
+        if (strcmp(buf, name) == 0 ||
+            (w == 1 && is_sub_of(name, buf)) ||
+            (wild == 1 && is_sub_of(buf, name))) {
             found = 1;
             break;
         }
@@ -368,7 +378,7 @@ int vn_refresh(vpn_never *v, const susanin_config *cfg)
             for (i = 0; i < v->nd; i++)
                 if (zone_in_always(cfg, v->dom[i].name, v->dom[i].wild))
                     slogf(SL_WARN,
-                          "vpn_never: %s%s is also in vpn_always; direct wins",
+                          "vpn_never: %s%s conflicts with vpn_always; direct wins",
                           v->dom[i].wild ? "*." : "", v->dom[i].name);
         }
         v->seen_mtime = st.st_mtime;
