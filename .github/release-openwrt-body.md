@@ -5,16 +5,21 @@ OpenWRT**. На живом железе не тестировалась — пр
 сообществом. Для штатного KeeneticOS/Entware используйте релиз канала `v*`.
 
 ### Установка
+
+Онлайн (архитектура и версия определяются автоматически):
 ```sh
-# скопировать архив на роутер, распаковать и запустить установщик
-mkdir -p /tmp/owrt && cd /tmp/owrt
-tar -xzf susanin-openwrt-<arch>.tar.gz
-sh install-openwrt.sh
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/{{TAG}}/install-openwrt.sh | sh -s -- --yes
 ```
-Требуются пакеты: `ipset`, `conntrack-tools`, `iptables-legacy` и kmods
-(`kmod-ipset kmod-ipt-conntrack kmod-ipt-connmark kmod-ipt-tcp-mss`).
+`--deps` дополнительно поставит нужные пакеты через `opkg` (`ipset`,
+`conntrack-tools`, `iptables-legacy`, `ip-full`, `ca-bundle` и kmods
+`kmod-ipset kmod-ipt-conntrack kmod-ipt-connmark kmod-ipt-tcp-mss`); без него
+установите их вручную.
+
+Офлайн: возьмите архив под свою архитектуру (см. ниже), распакуйте и выполните
+`sh install-openwrt.sh`.
+
 Сервис: `/etc/init.d/susanin enable && /etc/init.d/susanin start`;
-лог: `/var/lib/susanin/susanin.log`.
+проверка: `/usr/bin/susanin-agent status`; лог: `/var/lib/susanin/susanin.log`.
 
 ### Архитектуры
 | Архив | SoC | Устройства |
