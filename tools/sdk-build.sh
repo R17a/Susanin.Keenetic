@@ -80,7 +80,7 @@ export STAGING_DIR="$SDK_DIR/staging_dir"
        CFLAGS="-O2 -std=c11 -Wall -Wextra -Wpedantic -static" \
        LDFLAGS="-static" )
 
-OUT="$SRC/build/susanin-agent.openwrt-$SUB"
+OUT="$SRC/build/susanin-agent.openwrt-$TARGET-$SUB"
 mkdir -p "$SRC/build"
 cp "$WORK/susanin-agent" "$OUT"
 chmod 0755 "$OUT"

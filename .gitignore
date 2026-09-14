@@ -16,6 +16,10 @@ susanin-agent
 *.state
 /opt/
 
+# OpenWRT artifacts (built by CI / tools/build-openwrt.sh; not committed)
+/deploy-openwrt/
+/build/susanin-agent.openwrt-*
+
 # editors / OS
 .DS_Store
 Thumbs.db
