@@ -48,6 +48,7 @@ struct vpn_always {
     int seen_exists;
     int warned;
     int dirty;              /* ipset мог быть очищен — передобавить пины */
+    long long epoch;        /* номер интервала (now/interval) для hysteresis */
 };
 
 vpn_always *va_new(void)
@@ -544,7 +545,7 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
     struct stat st;
     time_t now = time(NULL);
     int i, ndes = 0, ndesn = 0, added = 0, removed = 0, pending = 0;
-    int addn = 0, remn = 0;
+    int addn = 0, remn = 0, new_epoch = 0;
     long long t0 = now_ms();
     int interval = cfg->vpn_always_interval > 0 ? cfg->vpn_always_interval : 300;
     char (*desired)[16];
@@ -552,6 +553,15 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
 
     if (!v || !cfg->vpn_always_file[0])
         return 0;
+
+    /* Hysteresis считает интервалы, а не вызовы: va_refresh зовётся многократно
+     * за один интервал (добор доменов по бюджету времени). */
+    {
+        long long epoch = (long long)now / interval;
+        new_epoch = (epoch != v->epoch);
+        if (new_epoch)
+            v->epoch = epoch;
+    }
 
     if (stat(cfg->vpn_always_file, &st) != 0) {
         /* Файла нет — функция выключена. Если раньше был список — снимаем. */
@@ -689,11 +699,15 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
             if (strcmp(v->track[i], desired[j]) == 0)
                 break;
         if (j == ndes) {
-            /* hysteresis: drop only if absent for 2 consecutive refreshes */
-            if (!v->dirty && v->tmiss[i] < 2) {
-                v->tmiss[i]++;
-                i++;
-                continue;
+            /* hysteresis: unpin only after 2 consecutive интервала отсутствия
+             * (new_epoch — первый вызов в новом интервале обновления списка) */
+            if (!v->dirty) {
+                if (new_epoch)
+                    v->tmiss[i]++;
+                if (v->tmiss[i] < 2) {
+                    i++;
+                    continue;
+                }
             }
             backend_ipset_del(cfg, 0, 1, v->track[i]);
             backend_ipset_del(cfg, 1, 1, v->track[i]);
@@ -713,10 +727,13 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
             if (strcmp(v->tracknet[i], desired_net[j]) == 0)
                 break;
         if (j == ndesn) {
-            if (!v->dirty && v->tmissnet[i] < 2) {
-                v->tmissnet[i]++;
-                i++;
-                continue;
+            if (!v->dirty) {
+                if (new_epoch)
+                    v->tmissnet[i]++;
+                if (v->tmissnet[i] < 2) {
+                    i++;
+                    continue;
+                }
             }
             backend_net_del(cfg, v->tracknet[i]);
             slogf(SL_DEBUG, "vpn_always: unpin %s", v->tracknet[i]);

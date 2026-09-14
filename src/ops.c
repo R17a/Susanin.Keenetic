@@ -101,18 +101,46 @@ static int cap_contains(const char *exe, char *const argv[], const char *needle)
     return strstr(out, needle) != 0;
 }
 
+/* Count output lines that start with a digit (ipset members). Streamed so a
+ * large set is not truncated by a fixed buffer (ok_max_entries can exceed a
+ * 64 KiB capture). */
 static int cap_count_digits(const char *exe, char *const argv[])
 {
-    char out[65536];
-    char *save = NULL, *line;
-    int count = 0;
-    if (run_capture(exe, argv, out, sizeof(out)) != 0)
+    int p[2];
+    pid_t pid;
+    int st, count = 0, at_bol = 1;
+    if (pipe(p) != 0)
         return 0;
-    for (line = strtok_r(out, "\n", &save); line;
-         line = strtok_r(NULL, "\n", &save)) {
-        if (line[0] >= '0' && line[0] <= '9')
-            count++;
+    pid = fork();
+    if (pid < 0) {
+        close(p[0]); close(p[1]);
+        return 0;
     }
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        close(p[0]);
+        dup2(p[1], 1);
+        if (devnull >= 0) { dup2(devnull, 2); close(devnull); }
+        close(p[1]);
+        execv(exe, argv);
+        _exit(127);
+    }
+    close(p[1]);
+    {
+        char tmp[4096];
+        ssize_t r;
+        size_t i;
+        while ((r = read(p[0], tmp, sizeof(tmp))) > 0) {
+            for (i = 0; i < (size_t)r; i++) {
+                char c = tmp[i];
+                if (at_bol && c >= '0' && c <= '9')
+                    count++;
+                at_bol = (c == '\n');
+            }
+        }
+    }
+    close(p[0]);
+    waitpid(pid, &st, 0);
     return count;
 }
 
@@ -207,13 +235,13 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
 
     printf("ipset sizes:\n");
     {
-        static const char *names[5] = {
+        static const char *names[6] = {
             "susanin_test_tcp", "susanin_test_udp",
             "susanin_ok_tcp", "susanin_ok_udp",
-            "susanin_ok_net"
+            "susanin_ok_net", "susanin_never"
         };
         int k;
-        for (k = 0; k < 5; k++) {
+        for (k = 0; k < 6; k++) {
             char *b[4];
             b[0] = (char *)ipset; b[1] = "list"; b[2] = (char *)names[k]; b[3] = NULL;
             printf("  %-18s = %d\n", names[k], cap_count_digits(ipset, b));

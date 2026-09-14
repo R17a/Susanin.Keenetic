@@ -179,7 +179,7 @@ command_status() {
     fi
     for s in $SETS; do
         if set_exists "$s"; then
-            echo "$s = $("$IPSET" list "$s" 2>/dev/null | grep -c '^[0-9]\.' || true)"
+            echo "$s = $("$IPSET" list "$s" 2>/dev/null | grep -cE '^[0-9]+\.' || true)"
         else
             echo "$s = (absent)"
         fi

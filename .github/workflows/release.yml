@@ -54,12 +54,14 @@ jobs:
           STAGE="pkg-${{ matrix.arch }}"
           mkdir -p "$STAGE"
           cp susanin-agent "$STAGE/susanin-agent"
-          for f in datapath.sh susanin.sh update.sh uninstall.sh install.sh \
-                   config.example.conf vpn_always.txt vpn_never.txt S94susanin \
-                   DEPLOY.md; do
-            [ -f "tools/$f" ] && cp "tools/$f" "$STAGE/$f" || true
-            [ -f "$f" ] && cp "$f" "$STAGE/$f" || true
-          done
+          # Scripts live in tools/, docs/conf/lists in the repo root, and the
+          # init script in init/entware/ (S94susanin used to be missed here).
+          # `set -e` makes any missing file fail the build loudly.
+          cp tools/datapath.sh tools/susanin.sh tools/update.sh \
+             tools/uninstall.sh "$STAGE/"
+          cp install.sh config.example.conf vpn_always.txt vpn_never.txt \
+             DEPLOY.md "$STAGE/"
+          cp init/entware/S94susanin "$STAGE/S94susanin"
           tar -czf "susanin-keenetic-deploy-${{ matrix.arch }}.tar.gz" -C "$STAGE" .
           ls -l "susanin-keenetic-deploy-${{ matrix.arch }}.tar.gz"
       - name: Upload artifact
@@ -72,6 +74,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -82,60 +86,34 @@ jobs:
           cd dist
           sha256sum *.tar.gz > SHA256SUMS
           cat SHA256SUMS
+      - name: Compose release notes
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          # "Что нового" берём из CHANGELOG.md (секция ## vX.Y.Z), чтобы
+          # заметки релиза не были захардкожены под старую версию.
+          awk -v v="$V" '
+            $0 ~ "^## v" v "([[:space:]]|$)" { f=1; next }
+            f && /^## v/ { exit }
+            f { print }
+          ' CHANGELOG.md > /tmp/changes.md
+          if [ ! -s /tmp/changes.md ]; then
+            echo "_Список изменений см. в CHANGELOG.md._" > /tmp/changes.md
+          fi
+          sed "s/{{TAG}}/${GITHUB_REF_NAME}/g" \
+            .github/release-body.template.md > /tmp/body.md
+          while IFS= read -r line; do
+            if [ "$line" = "<!-- CHANGELOG -->" ]; then
+              cat /tmp/changes.md
+            else
+              printf '%s\n' "$line"
+            fi
+          done < /tmp/body.md > release-body.md
+          cat release-body.md
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           draft: false
-          body: |
-            Susanin.Keenetic ${{ github.ref_name }}
-
-            ### Установка (первый раз)
-            ```sh
-            opkg update && opkg install ca-certificates
-            wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
-            ```
-            Установщик скачивает готовый архив под вашу архитектуру, определяет
-            LAN/VPN и (при наличии) OpenConnect, запрашивает подтверждение и
-            запускает демон. Существующие `susanin.conf`, `vpn_always.txt`,
-            `vpn_never.txt` и кэш сохраняются.
-
-            ### Обновление
-            ```sh
-            /opt/susanin/bin/susanin-agent version
-            sh /opt/susanin/tools/susanin.sh update
-            sh /opt/susanin/tools/susanin.sh update ${{ github.ref_name }}
-            /opt/susanin/bin/susanin-agent version
-            ```
-            `update` печатает `installed → target`, делает бэкап `susanin.conf`
-            и `susanin.state` в `/opt/susanin/var/backup/`, заменяет бинарь и
-            скрипты, **не трогая** `etc/` и `var/`, затем перезапускает демон.
-
-            ### Удаление
-            ```sh
-            sh /opt/susanin/tools/susanin.sh uninstall
-            sh /opt/susanin/tools/susanin.sh uninstall --purge
-            ```
-
-            ### Что нового в этой версии
-            - обновление информации и документации (код и поведение демона
-              не менялись):
-              - README: бейджи (язык C11, KeeneticOS, Entware, архитектуры,
-                лицензия, загрузки), кнопки донатов и Telegram-группа в шапке;
-                убран дублирующий нижний блок «Поддержать проект»;
-              - примеры в документации: `keenetic.ru` / `forum.keenetic.ru`;
-              - примеры в `vpn_never.txt` обновлены.
-
-            ### Сборки
-            - архивы: `susanin-keenetic-deploy-mipsel.tar.gz`, `…-mips.tar.gz`,
-              `…-aarch64.tar.gz`, `…-armv7.tar.gz`, `…-x86_64.tar.gz` и
-              `SHA256SUMS`;
-            - контейнер: `ghcr.io/r17a/susanin.keenetic:${{ github.ref_name }}`
-              (+`latest`).
-
-            **Проверено**: mipsel — Keenetic Viva, KeeneticOS 5.1.4–5.1.5,
-            Entware (+ клиент OpenConnect). Остальные архитектуры уже собраны и
-            приложены готовыми архивами, но на живом железе не тестировались —
-            сообщайте об ошибках в Issues.
+          body_path: release-body.md
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS

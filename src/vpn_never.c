@@ -43,6 +43,7 @@ struct vpn_never {
     int seen_exists;
     int warned;
     int dirty;
+    long long epoch;        /* номер интервала (now/interval) для hysteresis */
 };
 
 vpn_never *vn_new(void)
@@ -67,6 +68,12 @@ static void trim_line(char *s)
     while (p > s && (p[-1] == ' ' || p[-1] == '\t' || p[-1] == '\r' ||
                      p[-1] == '\n'))
         *--p = '\0';
+}
+
+static void lower_str(char *s)
+{
+    for (; *s; s++)
+        *s = (char)tolower((unsigned char)*s);
 }
 
 static int valid_cidr(const char *s, char *out, size_t n)
@@ -136,6 +143,7 @@ static int file_load(const char *path, char names[][256], int wilds[],
             wild = 1;
             p = line + 2;
         }
+        lower_str((char *)p);
         if (!valid_name(p, buf, sizeof(buf)))
             continue;
         if (n >= maxnames)
@@ -348,12 +356,20 @@ int vn_refresh(vpn_never *v, const susanin_config *cfg)
     char (*des)[64] = desired;
     struct stat st;
     time_t now = time(NULL);
-    int i, nd = 0, added = 0, removed = 0, pending = 0;
+    int i, nd = 0, added = 0, removed = 0, pending = 0, new_epoch = 0;
     long long t0 = now_ms();
     int interval = cfg->vpn_never_interval > 0 ? cfg->vpn_never_interval : 300;
 
     if (!v || !cfg->vpn_never_file[0])
         return 0;
+
+    /* Hysteresis считает интервалы, а не вызовы (см. vpn_always.c). */
+    {
+        long long epoch = (long long)now / interval;
+        new_epoch = (epoch != v->epoch);
+        if (new_epoch)
+            v->epoch = epoch;
+    }
 
     if (stat(cfg->vpn_never_file, &st) != 0) {
         if (v->seen_exists) {
@@ -467,10 +483,13 @@ int vn_refresh(vpn_never *v, const susanin_config *cfg)
             if (strcmp(v->track[i], des[j]) == 0)
                 break;
         if (j == nd) {
-            if (!v->dirty && v->tmiss[i] < 2) {
-                v->tmiss[i]++;
-                i++;
-                continue;
+            if (!v->dirty) {
+                if (new_epoch)
+                    v->tmiss[i]++;
+                if (v->tmiss[i] < 2) {
+                    i++;
+                    continue;
+                }
             }
             backend_set_del(cfg, VN_SET, v->track[i]);
             slogf(SL_DEBUG, "vpn_never: allow-direct off %s", v->track[i]);
