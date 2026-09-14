@@ -208,6 +208,10 @@ if [ -f "$DIR/datapath.sh" ]; then
     cp "$DIR/datapath.sh" "$TOOLSDIR/datapath.sh"
     chmod 0755 "$TOOLSDIR/datapath.sh"
 fi
+if [ -f "$DIR/owrt-report.sh" ]; then
+    cp "$DIR/owrt-report.sh" "$TOOLSDIR/owrt-report.sh"
+    chmod 0755 "$TOOLSDIR/owrt-report.sh"
+fi
 if [ -f "$DIR/susanin" ]; then
     cp "$DIR/susanin" "$INITD/susanin"
     chmod 0755 "$INITD/susanin"

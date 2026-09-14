@@ -25,6 +25,7 @@ trap 'rm -rf "$STAGE"' EXIT INT TERM
 
 cp "$BIN" "$STAGE/susanin-agent"
 cp "$SRC/tools/datapath.sh" "$STAGE/datapath.sh"
+cp "$SRC/tools/owrt-report.sh" "$STAGE/owrt-report.sh"
 cp "$SRC/init/openwrt/susanin" "$STAGE/susanin"
 cp "$SRC/install-openwrt.sh" "$STAGE/install-openwrt.sh"
 cp "$SRC/config.example.conf" "$STAGE/config.example.conf"
