@@ -73,7 +73,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           prerelease: true
-          name: "OpenWRT ${GITHUB_REF_NAME}"
+          name: "OpenWRT ${{ github.ref_name }}"
           body_path: release-body.md
           files: |
             dist/*.tar.gz
