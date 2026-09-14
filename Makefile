@@ -1,6 +1,8 @@
 CC ?= cc
 CFLAGS ?= -O2 -std=c11 -Wall -Wextra -Wpedantic
 LDFLAGS ?=
+PLATFORM ?= keenetic
+CPPFLAGS += -DSUSANIN_PLATFORM=\"$(PLATFORM)\"
 PREFIX ?= /opt
 BINDIR = $(PREFIX)/susanin/bin
 CONFDIR = $(PREFIX)/susanin/etc
@@ -21,7 +23,7 @@ $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
 
 %.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(CONFDIR) $(DESTDIR)$(VARDIR)
