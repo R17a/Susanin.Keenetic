@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "backend.h"
 #include "log.h"
+#include "platform.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -10,23 +11,35 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+static const char *tool_find(const char *name)
+{
+    static char buf[4][160];
+    static int used = 0;
+    const char *const *dirs = susanin_tool_dirs();
+    char p[160];
+    unsigned i;
+    for (i = 0; dirs[i]; i++) {
+        susanin_join(p, sizeof(p), dirs[i], name);
+        if (access(p, X_OK) == 0) {
+            if (used >= 4) return name;
+            snprintf(buf[used], sizeof(buf[used]), "%s", p);
+            return buf[used++];
+        }
+    }
+    return name;
+}
+
 static const char *tool_ipset(void)
 {
     static const char *p = NULL;
-    if (p) return p;
-    if (access("/opt/sbin/ipset", X_OK) == 0) p = "/opt/sbin/ipset";
-    else if (access("/opt/bin/ipset", X_OK) == 0) p = "/opt/bin/ipset";
-    else p = "ipset";
+    if (!p) p = tool_find("ipset");
     return p;
 }
 
 static const char *tool_conntrack(void)
 {
     static const char *p = NULL;
-    if (p) return p;
-    if (access("/opt/sbin/conntrack", X_OK) == 0) p = "/opt/sbin/conntrack";
-    else if (access("/opt/bin/conntrack", X_OK) == 0) p = "/opt/bin/conntrack";
-    else p = "conntrack";
+    if (!p) p = tool_find("conntrack");
     return p;
 }
 
@@ -76,9 +89,11 @@ static void set_env(const susanin_config *c)
 
 static int run_script(const susanin_config *c, const char *arg)
 {
+    char script[256];
     char *argv[4];
+    susanin_join(script, sizeof(script), susanin_toolsdir(), "datapath.sh");
     argv[0] = "sh";
-    argv[1] = "/opt/susanin/tools/datapath.sh";
+    argv[1] = script;
     argv[2] = (char *)arg;
     argv[3] = NULL;
     set_env(c);
@@ -93,10 +108,7 @@ int backend_provision(const susanin_config *c)
 static const char *tool_iptables(void)
 {
     static const char *p = NULL;
-    if (p) return p;
-    if (access("/opt/sbin/iptables", X_OK) == 0) p = "/opt/sbin/iptables";
-    else if (access("/opt/bin/iptables", X_OK) == 0) p = "/opt/bin/iptables";
-    else p = "iptables";
+    if (!p) p = tool_find("iptables");
     return p;
 }
 
