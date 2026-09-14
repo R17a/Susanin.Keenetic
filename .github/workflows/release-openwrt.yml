@@ -66,7 +66,7 @@ jobs:
           cat SHA256SUMS
       - name: Compose release body
         run: |
-          sed "s/{{TAG}}/${GITHUB_REF_NAME}/g" \\
+          sed "s/{{TAG}}/${GITHUB_REF_NAME}/g" \
             .github/release-openwrt-body.md > release-body.md
           cat release-body.md
       - name: Publish OpenWRT pre-release
