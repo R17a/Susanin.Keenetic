@@ -83,7 +83,7 @@ STAMP=$(date +%Y%m%d-%H%M%S)
 cp "$DIR/$BINFILE" "$PREFIX/bin/susanin-agent.new"
 mv "$PREFIX/bin/susanin-agent.new" "$PREFIX/bin/susanin-agent"
 chmod +x "$PREFIX/bin/susanin-agent"
-for f in datapath.sh susanin.sh update.sh uninstall.sh install.sh; do
+for f in datapath.sh susanin.sh update.sh uninstall.sh install.sh report.sh; do
     [ -f "$DIR/$f" ] && cp "$DIR/$f" "$PREFIX/tools/$f"
 done
 chmod +x "$PREFIX/tools/"*.sh 2>/dev/null || true
