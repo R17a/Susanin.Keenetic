@@ -3,6 +3,7 @@
 #include "backend.h"
 #include "log.h"
 #include "state.h"
+#include "version.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -208,6 +209,7 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
     char *a[8];
     char needle[160];
 
+    printf("susanin-agent %s\n", SUSANIN_VERSION);
     printf("config file: %s (%s)\n", conf_path,
            access(conf_path, R_OK) == 0 ? "present" : "absent");
     printf("egress=%s table=%d lan=%s\n", cfg->egress_interface,

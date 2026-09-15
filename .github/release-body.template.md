@@ -29,6 +29,15 @@ sh /opt/susanin/tools/susanin.sh uninstall --purge
 ### Что нового
 <!-- CHANGELOG -->
 
+### Диагностика
+Если что-то не так — соберите отчёт (в момент проблемы) и приложите вывод:
+```sh
+sh /opt/susanin/tools/report.sh
+# или без установки:
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/{{TAG}}/tools/report.sh | sh
+```
+Отчёт сохраняется в `/opt/susanin/var/report.txt`.
+
 ### Сборки
 - архивы: `susanin-keenetic-deploy-mipsel.tar.gz`, `…-mips.tar.gz`,
   `…-aarch64.tar.gz`, `…-armv7.tar.gz`, `…-x86_64.tar.gz` и `SHA256SUMS`;
