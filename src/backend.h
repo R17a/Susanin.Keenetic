@@ -3,11 +3,16 @@
 
 #include "config.h"
 #include "conntrack.h"
+#include <stddef.h>
 #include <time.h>
 
 int backend_provision(const susanin_config *c);
 int backend_teardown(const susanin_config *c);
 int backend_ready(const susanin_config *c);
+
+/* Environment check for the data plane (tools + egress interface). Returns 0
+ * or -1 with a reason in err. */
+int backend_preflight(const susanin_config *c, char *err, size_t errsz);
 int backend_ipset_add(const susanin_config *c, int proto_udp, int phase_ok,
                       const char *ip, int ttl);
 int backend_ipset_del(const susanin_config *c, int proto_udp, int phase_ok,

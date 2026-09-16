@@ -11,36 +11,38 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
-static const char *tool_find(const char *name)
+/* Resolve an external tool via the platform search path. Returns 0 with the
+ * absolute path in out, or -1 with the bare name (PATH lookup) if not found. */
+static int tool_path(const char *name, char *out, size_t n)
 {
-    static char buf[4][160];
-    static int used = 0;
     const char *const *dirs = susanin_tool_dirs();
     char p[160];
     unsigned i;
     for (i = 0; dirs[i]; i++) {
         susanin_join(p, sizeof(p), dirs[i], name);
         if (access(p, X_OK) == 0) {
-            if (used >= 4) return name;
-            snprintf(buf[used], sizeof(buf[used]), "%s", p);
-            return buf[used++];
+            snprintf(out, n, "%s", p);
+            return 0;
         }
     }
-    return name;
+    snprintf(out, n, "%s", name);
+    return -1;
 }
 
 static const char *tool_ipset(void)
 {
-    static const char *p = NULL;
-    if (!p) p = tool_find("ipset");
-    return p;
+    static char buf[160];
+    if (!buf[0])
+        tool_path("ipset", buf, sizeof(buf));
+    return buf;
 }
 
 static const char *tool_conntrack(void)
 {
-    static const char *p = NULL;
-    if (!p) p = tool_find("conntrack");
-    return p;
+    static char buf[160];
+    if (!buf[0])
+        tool_path("conntrack", buf, sizeof(buf));
+    return buf;
 }
 
 static int run_argv(char *const argv[])
@@ -65,6 +67,80 @@ static int run_argv(char *const argv[])
     if (WIFEXITED(st))
         return WEXITSTATUS(st);
     return -1;
+}
+
+/* Run argv capturing combined stdout+stderr into out (truncated to outsz). */
+static int run_capture_argv(char *const argv[], char *out, size_t outsz)
+{
+    int p[2];
+    pid_t pid;
+    int st = -1;
+    size_t n = 0;
+    if (out && outsz)
+        out[0] = '\0';
+    if (pipe(p) != 0)
+        return -1;
+    pid = fork();
+    if (pid < 0) {
+        close(p[0]);
+        close(p[1]);
+        return -1;
+    }
+    if (pid == 0) {
+        close(p[0]);
+        dup2(p[1], 1);
+        dup2(p[1], 2);
+        if (p[1] > 2)
+            close(p[1]);
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    close(p[1]);
+    {
+        char tmp[512];
+        ssize_t r;
+        while ((r = read(p[0], tmp, sizeof(tmp))) > 0) {
+            if (out && n < outsz - 1) {
+                size_t room = outsz - 1 - n;
+                size_t take = (size_t)r < room ? (size_t)r : room;
+                memcpy(out + n, tmp, take);
+                n += take;
+            }
+        }
+        if (out && outsz)
+            out[n] = '\0';
+    }
+    close(p[0]);
+    if (waitpid(pid, &st, 0) < 0)
+        return -1;
+    if (WIFEXITED(st))
+        return WEXITSTATUS(st);
+    return -1;
+}
+
+/* Log the last non-empty line of captured output (the usual place where the
+ * failing tool's error message lands). */
+static void log_provision_error(int rc, char *buf)
+{
+    char *end, *last, *p;
+    if (!buf || !buf[0]) {
+        slogf(SL_ERROR, "datapath provisioning failed (rc=%d, no output)", rc);
+        return;
+    }
+    end = buf + strlen(buf);
+    while (end > buf && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' ' ||
+                         end[-1] == '\t'))
+        *--end = '\0';
+    last = buf;
+    for (p = buf; p < end; p++)
+        if (*p == '\n')
+            last = p + 1;
+    while (*last == ' ' || *last == '\t')
+        last++;
+    if (*last)
+        slogf(SL_ERROR, "datapath provisioning failed (rc=%d): %s", rc, last);
+    else
+        slogf(SL_ERROR, "datapath provisioning failed (rc=%d)", rc);
 }
 
 static void set_name(char *buf, size_t n, int proto_udp, int phase_ok)
@@ -107,14 +183,26 @@ static int run_script(const susanin_config *c, const char *arg)
 
 int backend_provision(const susanin_config *c)
 {
-    return run_script(c, "up");
+    char *argv[4];
+    char out[2048];
+    int rc;
+    argv[0] = "sh";
+    argv[1] = "/opt/susanin/tools/datapath.sh";
+    argv[2] = "up";
+    argv[3] = NULL;
+    set_env(c);
+    rc = run_capture_argv(argv, out, sizeof(out));
+    if (rc != 0)
+        log_provision_error(rc, out);
+    return rc;
 }
 
 static const char *tool_iptables(void)
 {
-    static const char *p = NULL;
-    if (!p) p = tool_find("iptables");
-    return p;
+    static char buf[160];
+    if (!buf[0])
+        tool_path("iptables", buf, sizeof(buf));
+    return buf;
 }
 
 int backend_ready(const susanin_config *c)
@@ -128,6 +216,39 @@ int backend_ready(const susanin_config *c)
     argv[4] = "SUSANIN";
     argv[5] = NULL;
     return run_argv(argv) == 0;
+}
+
+/* Check the environment the data plane needs: external tools and the egress
+ * interface. Returns 0, or -1 with a human-readable reason in err. */
+int backend_preflight(const susanin_config *c, char *err, size_t errsz)
+{
+    char p[320];
+    if (access(tool_iptables(), X_OK) != 0) {
+        snprintf(err, errsz, "iptables not found (opkg update && opkg install iptables)");
+        return -1;
+    }
+    if (access(tool_ipset(), X_OK) != 0) {
+        snprintf(err, errsz, "ipset not found (opkg update && opkg install ipset)");
+        return -1;
+    }
+    if (access(tool_conntrack(), X_OK) != 0) {
+        snprintf(err, errsz, "conntrack not found (opkg update && opkg install conntrack)");
+        return -1;
+    }
+    if (tool_path("ip", p, sizeof(p)) != 0) {
+        snprintf(err, errsz, "'ip' not found (install iproute2 or busybox ip)");
+        return -1;
+    }
+    if (c->egress_interface[0]) {
+        snprintf(p, sizeof(p), "/sys/class/net/%s", c->egress_interface);
+        if (access(p, F_OK) != 0) {
+            snprintf(err, errsz,
+                     "egress interface '%s' not found (check egress_interface in susanin.conf)",
+                     c->egress_interface);
+            return -1;
+        }
+    }
+    return 0;
 }
 
 int backend_teardown(const susanin_config *c)

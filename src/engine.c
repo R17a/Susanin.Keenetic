@@ -133,10 +133,11 @@ int engine_run(const susanin_config *cfg)
     flowlist L;
     vpn_always *va = NULL;
     vpn_never *nv = NULL;
-    int tunnel_up = 1, miss = 0;
+    int tunnel_up = 1, miss = 0, dp_ok = 0;
     time_t last[4] = { 0, 0, 0, 0 };
     time_t last_save = 0;
     time_t last_recon = 0;
+    time_t next_dp_try = 0;
     time_t last_force = 0;
     time_t last_never = 0;
     int never_pending = 0;
@@ -166,8 +167,17 @@ int engine_run(const susanin_config *cfg)
     ctx.st = &st;
     memset(&L, 0, sizeof(L));
 
-    if (backend_provision(cfg) != 0)
-        slogf(SL_ERROR, "datapath provisioning failed");
+    {
+        char perr[256];
+        if (backend_preflight(cfg, perr, sizeof(perr)) != 0)
+            slogf(SL_ERROR, "preflight: %s", perr);
+    }
+    if (backend_provision(cfg) == 0) {
+        dp_ok = 1;
+    } else {
+        slogf(SL_ERROR, "data plane is NOT active; traffic stays DIRECT until set-up succeeds");
+        next_dp_try = time(NULL) + 60;
+    }
     if (state_load(state_path, &st) == 0)
         slogf(SL_INFO, "restored cache from %s", state_path);
     if (tunnel_up)
@@ -236,13 +246,33 @@ int engine_run(const susanin_config *cfg)
 
         if (now - last_recon >= 15) {
             last_recon = now;
-            if (!backend_ready(cfg)) {
+            if (dp_ok && !backend_ready(cfg)) {
+                /* Was active and disappeared (e.g. NDM/firewall rebuild). */
                 slogf(SL_WARN, "data plane missing (NDM rebuild?), re-provisioning");
-                if (backend_provision(cfg) == 0 && tunnel_up) {
-                    resync_sets(cfg, &st);
-                    last_force = 0;
-                    va_mark_dirty(va);
-                    vn_mark_dirty(nv);
+                if (backend_provision(cfg) == 0) {
+                    if (tunnel_up) {
+                        resync_sets(cfg, &st);
+                        last_force = 0;
+                        va_mark_dirty(va);
+                        vn_mark_dirty(nv);
+                    }
+                } else {
+                    dp_ok = 0;
+                    next_dp_try = now + 60;
+                }
+            } else if (!dp_ok && now >= next_dp_try) {
+                /* Never provisioned (or lost earlier): retry slowly. The exact
+                 * reason is logged by backend_provision() itself. */
+                next_dp_try = now + 60;
+                if (backend_provision(cfg) == 0) {
+                    dp_ok = 1;
+                    slogf(SL_INFO, "data plane provisioned");
+                    if (tunnel_up) {
+                        resync_sets(cfg, &st);
+                        last_force = 0;
+                        va_mark_dirty(va);
+                        vn_mark_dirty(nv);
+                    }
                 }
             }
         }

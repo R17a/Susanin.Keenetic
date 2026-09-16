@@ -58,7 +58,7 @@ jobs:
           # init script in init/entware/ (S94susanin used to be missed here).
           # `set -e` makes any missing file fail the build loudly.
           cp tools/datapath.sh tools/susanin.sh tools/update.sh \
-             tools/uninstall.sh "$STAGE/"
+             tools/uninstall.sh tools/report.sh "$STAGE/"
           cp install.sh config.example.conf vpn_always.txt vpn_never.txt \
              DEPLOY.md "$STAGE/"
           cp init/entware/S94susanin "$STAGE/S94susanin"
