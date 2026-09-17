@@ -199,7 +199,6 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         if (f->ctmark != 0 || ours(f, cfg)) continue;
         if (!from_lan(cfg, f->src)) continue;
         if (is_private_dst(f->dst, NULL)) continue;
-        if (port_excluded(cfg, f->dport)) continue;
 
         if (f->l4proto == 6 && strcmp(f->tcp_state, "ESTABLISHED") == 0) {
             if (f->op >= 5 && f->ob >= 1000 && f->rp <= 2 && f->rb < 256) {
