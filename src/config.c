@@ -113,6 +113,7 @@ void config_set_defaults(susanin_config *c)
     snprintf(c->log_level, sizeof(c->log_level), "%s", "info");
     c->diagnostics = 0;
     snprintf(c->disk_mode, sizeof(c->disk_mode), "%s", "normal");
+    c->soft_state_interval = 12 * 3600;   /* soft: сохранять состояние раз в 12 ч */
     /* Порты, которые не участвуют в автообучении (типовой скан-шум). */
     snprintf(c->learn_exclude_ports, sizeof(c->learn_exclude_ports), "%s",
              "22,23,53,135,137,138,139,445,554,1433,1723,3306,3389,5432,5900,6379,7547,9100,11211,27017");
@@ -224,6 +225,8 @@ int config_load(const char *path, susanin_config *c)
             c->diagnostics = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "disk_mode"))
             set_str(c->disk_mode, sizeof(c->disk_mode), val);
+        else if (!strcmp(key, "soft_state_interval"))
+            c->soft_state_interval = parse_interval(val);
         else if (!strcmp(key, "learn_exclude_ports"))
             set_str(c->learn_exclude_ports, sizeof(c->learn_exclude_ports), val);
     }
@@ -272,6 +275,7 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "log_level=%s\n", c->log_level);
     fprintf(fp, "diagnostics=%d\n", c->diagnostics);
     fprintf(fp, "disk_mode=%s\n", c->disk_mode);
+    fprintf(fp, "soft_state_interval=%ds\n", c->soft_state_interval);
     fprintf(fp, "learn_exclude_ports=%s\n", c->learn_exclude_ports);
     fclose(fp);
     return 0;
@@ -312,5 +316,6 @@ void config_print(const susanin_config *c)
     printf("log_level=%s\n", c->log_level);
     printf("diagnostics=%d\n", c->diagnostics);
     printf("disk_mode=%s\n", c->disk_mode);
+    printf("soft_state_interval=%ds\n", c->soft_state_interval);
     printf("learn_exclude_ports=%s\n", c->learn_exclude_ports);
 }

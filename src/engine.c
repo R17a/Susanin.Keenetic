@@ -260,10 +260,16 @@ int engine_run(const susanin_config *cfg)
             }
         }
 
-        if (now - last_save >= 300) {
-            last_save = now;
-            if (strcmp(cfg->disk_mode, "soft") != 0)
+        {
+            /* Обычный режим — раз в 5 минут. Soft — редко (по умолчанию раз в
+             * 12 часов), чтобы почти не писать на носитель. 0 = не сохранять. */
+            int every = (strcmp(cfg->disk_mode, "soft") == 0)
+                            ? cfg->soft_state_interval
+                            : 300;
+            if (every > 0 && now - last_save >= every) {
+                last_save = now;
                 state_save(state_path, &st);
+            }
         }
 
         if (now - last_trim >= 30) {
