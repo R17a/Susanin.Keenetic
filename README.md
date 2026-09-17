@@ -276,7 +276,7 @@ sh install.sh --yes
 
 ```sh
 sh /opt/susanin/tools/susanin.sh update            # до последнего релиза
-sh /opt/susanin/tools/susanin.sh update v0.3.3     # конкретная версия
+sh /opt/susanin/tools/susanin.sh update v0.3.9     # конкретная версия (актуальную см. в Releases)
 ```
 
 ![Susanin.Keenetic uninstall](demo2.png)
