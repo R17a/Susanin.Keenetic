@@ -29,6 +29,12 @@ health_interval=5s
 # FAST TCP-SYN: сколько SYN без ответа нужно для детекта (1 = быстрее, больше ложных)
 fast_syn_min_op=2
 
+# Порты, которые НЕ участвуют в автообучении (через запятую). Отсекает скан-шум
+# и служебный трафик, чтобы не забивать ok-кэш (22/23/445/554 и т.п.).
+# 80/443/QUIC и прочий веб остаются обучаемыми. Если нужен обход блокировки на
+# каком-то из этих портов (например, SSH) — уберите его из списка.
+learn_exclude_ports=22,23,53,135,137,138,139,445,554,1433,1723,3306,3389,5432,5900,6379,7547,9100,11211,27017
+
 # Cache TTLs. ok_ttl=0 means "never expire" (permanent cache; still self-corrects:
 # a confirmed IP that stops replying via VPN is removed by JUDGE automatically).
 ok_ttl=0

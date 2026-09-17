@@ -44,6 +44,7 @@ typedef struct {
     char log_level[16];
     int diagnostics;
     char disk_mode[8];      /* normal | soft: soft = минимум записей на диск */
+    char learn_exclude_ports[CFG_PATH_MAX]; /* порты, которые не учим (скан-шум) */
 } susanin_config;
 
 void config_set_defaults(susanin_config *c);
