@@ -228,10 +228,11 @@ ndmc -c "show running-config" | grep -i "ip policy"
 
 ## Установка / обновление / удаление
 
-Сначала поставьте сертификаты — иначе `wget` не скачает релиз по HTTPS:
+Сначала поставьте нужные пакеты Entware: сертификаты — чтобы `wget` скачал
+релиз по HTTPS, и зависимости — `ipset`, `iptables`, `conntrack`:
 
 ```sh
-opkg update && opkg install ca-certificates
+opkg update && opkg install ca-certificates ipset iptables conntrack
 ```
 
 Установка **одной строкой**: скачается архив под вашу архитектуру,

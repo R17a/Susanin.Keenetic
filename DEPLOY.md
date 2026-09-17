@@ -28,9 +28,10 @@
 
 ## Установка в один шаг
 
-Зависимости Entware (сертификаты — чтобы `wget` работал по HTTPS с GitHub):
+Зависимости Entware (сертификаты — чтобы `wget` работал по HTTPS с GitHub;
+`ipset`/`iptables`/`conntrack` — для работы самой программы):
 ```sh
-opkg update && opkg install ca-certificates
+opkg update && opkg install ca-certificates ipset iptables conntrack
 ```
 
 Онлайн, прямо на роутере (скачает архив под архитектуру). На Entware `curl`
