@@ -11,6 +11,22 @@
 
 static int is_udp(const ct_flow *f) { return f->l4proto == 17; }
 
+/* Порты из learn_exclude_ports не участвуют в автообучении (типовой скан-шум
+ * на 22/23/445/554 и т.п.): такие потоки пропускаем целиком. */
+static int port_excluded(const susanin_config *cfg, unsigned dport)
+{
+    char buf[256], *save = NULL, *tok;
+    if (!cfg->learn_exclude_ports[0])
+        return 0;
+    snprintf(buf, sizeof(buf), "%s", cfg->learn_exclude_ports);
+    for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        while (*tok == ' ' || *tok == '\t') tok++;
+        if ((unsigned)strtoul(tok, NULL, 10) == dport)
+            return 1;
+    }
+    return 0;
+}
+
 static int ip_in_cidr(const char *ip, const char *cidr)
 {
     char c[64];
@@ -156,6 +172,7 @@ void clr_fast(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         if (f->ctmark != 0 || ours(f, cfg)) continue;
         if (!from_lan(cfg, f->src)) continue;
         if (is_private_dst(f->dst, NULL)) continue;
+        if (port_excluded(cfg, f->dport)) continue;
         if (!candidate_ok(ctx, f, now)) continue;
 
         if (f->l4proto == 6) {
@@ -182,6 +199,7 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         if (f->ctmark != 0 || ours(f, cfg)) continue;
         if (!from_lan(cfg, f->src)) continue;
         if (is_private_dst(f->dst, NULL)) continue;
+        if (port_excluded(cfg, f->dport)) continue;
 
         if (f->l4proto == 6 && strcmp(f->tcp_state, "ESTABLISHED") == 0) {
             if (f->op >= 5 && f->ob >= 1000 && f->rp <= 2 && f->rb < 256) {
