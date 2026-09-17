@@ -448,7 +448,8 @@ int vn_refresh(vpn_never *v, const susanin_config *cfg)
             d->next_try = now + interval;
         } else {
             if (d->nips == 0 && !d->fail_logged) {
-                slogf(SL_INFO, "vpn_never: %s resolve failed (no A records)",
+                slogf(SL_WARN,
+                      "vpn_never: %s resolve failed (no A records) — домен НЕ защищён, может уйти в VPN",
                       d->name);
                 d->fail_logged = 1;
             }
@@ -504,6 +505,15 @@ int vn_refresh(vpn_never *v, const susanin_config *cfg)
         if (tracked_has(v, des[i]) && !v->dirty)
             continue;
         backend_set_add(cfg, VN_SET, des[i], 0);
+        if (!strchr(des[i], '/')) {
+            /* Сбросить старые VPN-потоки и убрать из ok/test-кэша: адрес должен
+             * идти напрямую (важно при FASTNAT и при позднем добавлении домена). */
+            backend_ct_flush_ip(des[i]);
+            backend_ipset_del(cfg, 0, 1, des[i]);
+            backend_ipset_del(cfg, 0, 0, des[i]);
+            backend_ipset_del(cfg, 1, 1, des[i]);
+            backend_ipset_del(cfg, 1, 0, des[i]);
+        }
         if (!tracked_has(v, des[i]))
             tracked_add(v, des[i]);
         added++;

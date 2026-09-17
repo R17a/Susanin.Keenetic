@@ -18,6 +18,8 @@ int backend_preflight(const susanin_config *c, char *err, size_t errsz);
 int backend_set_egress(const susanin_config *c, const char *iface);
 /* Drop conntrack entries carrying the VPN mark (after an egress switch). */
 int backend_ct_flush_vpn(const susanin_config *c);
+/* Drop conntrack entries to a single IP (after vpn_never pin changes). */
+int backend_ct_flush_ip(const char *ip);
 int backend_ipset_add(const susanin_config *c, int proto_udp, int phase_ok,
                       const char *ip, int ttl);
 int backend_ipset_del(const susanin_config *c, int proto_udp, int phase_ok,

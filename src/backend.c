@@ -286,6 +286,21 @@ int backend_ct_flush_vpn(const susanin_config *c)
     return run_argv(argv);
 }
 
+/* Удалить из conntrack все потоки к указанному IP (после смены списка
+ * vpn_never: адрес должен идти напрямую, а не по старому VPN-маршруту). */
+int backend_ct_flush_ip(const char *ip)
+{
+    char *argv[6];
+    if (!ip || !ip[0])
+        return -1;
+    argv[0] = (char *)tool_conntrack();
+    argv[1] = "-D";
+    argv[2] = "-d";
+    argv[3] = (char *)ip;
+    argv[4] = NULL;
+    return run_argv(argv);
+}
+
 int backend_ipset_add(const susanin_config *c, int proto_udp, int phase_ok,
                       const char *ip, int ttl)
 {
