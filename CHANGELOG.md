@@ -64,7 +64,7 @@
 - только тексты/информация (код и поведение не менялись):
   - README: бейджи (C11, KeeneticOS, Entware, архитектуры, License, Downloads),
     кнопки донатов и Telegram-группа в шапке; убран дублирующий нижний блок;
-  - примеры в документации: `keenetic.ru` / `forum.keenetic.ru` вместо `rapo.dev`;
+  - примеры в документации обновлены (`keenetic.ru` / `forum.keenetic.ru`);
   - примеры в `vpn_never.txt` обновлены.
 
 ## v0.3.6
