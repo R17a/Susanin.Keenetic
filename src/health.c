@@ -92,10 +92,11 @@ static int probe_one(const char *dst, const char *src, unsigned long mark)
     return 0;
 }
 
-int health_probe(const susanin_config *c, int *ok, int *total)
+int health_probe(const susanin_config *c, const char *src, int *ok, int *total)
 {
     char buf[512], *save = NULL, *tok;
     int o = 0, t = 0;
+    const char *psrc = (src && src[0]) ? src : c->egress_address;
     if (ok) *ok = 0;
     if (total) *total = 0;
     snprintf(buf, sizeof(buf), "%s", c->health_probe);
@@ -103,7 +104,7 @@ int health_probe(const susanin_config *c, int *ok, int *total)
         int r;
         while (*tok == ' ') tok++;
         t++;
-        r = probe_one(tok, c->egress_address, c->mark_test);
+        r = probe_one(tok, psrc, c->mark_test);
         if (r > 0) o++;
         else if (r < 0)
             slogf(SL_DEBUG, "health probe to %s failed (%d)", tok, r);

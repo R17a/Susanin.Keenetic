@@ -132,7 +132,7 @@ int engine_run(const susanin_config *cfg)
     flowlist L;
     vpn_always *va = NULL;
     vpn_never *nv = NULL;
-    int tunnel_up = 1, miss = 0, dp_ok = 0;
+    int tunnel_up = 1, miss = 0, dp_ok = 0, ei = 0, efails = 0;
     time_t last[4] = { 0, 0, 0, 0 };
     time_t last_save = 0;
     time_t last_recon = 0;
@@ -173,6 +173,9 @@ int engine_run(const susanin_config *cfg)
         if (backend_preflight(cfg, perr, sizeof(perr)) != 0)
             slogf(SL_ERROR, "preflight: %s", perr);
     }
+    /* Стартуем с первого egress из списка (фейловер переключит при падении). */
+    if (cfg->n_egress > 0)
+        backend_set_egress(cfg, cfg->egress_list[0]);
     if (backend_provision(cfg) == 0) {
         dp_ok = 1;
     } else {
@@ -211,26 +214,46 @@ int engine_run(const susanin_config *cfg)
 
         if (now - last[3] >= cfg->health_interval) {
             int ok = 0, total = 0;
+            const char *psrc = cfg->egress_addr[ei][0] ? cfg->egress_addr[ei]
+                                                       : cfg->egress_address;
             last[3] = now;
-            health_probe(cfg, &ok, &total);
+            health_probe(cfg, psrc, &ok, &total);
             if (ok > 0) {
                 miss = 0;
+                efails = 0;
                 if (!tunnel_up) {
                     tunnel_up = 1;
-                    slogf(SL_INFO, "tunnel UP, recovery");
+                    slogf(SL_INFO, "tunnel UP via %s, recovery", cfg->egress_list[ei]);
                     resync_sets(cfg, &st);
                     sweep_direct(cfg, &st, L.v, L.n);
                     last_force = 0;
                 }
             } else {
                 miss++;
-                if (miss >= cfg->health_miss_debounce && tunnel_up) {
-                    tunnel_up = 0;
+                if (miss >= cfg->health_miss_debounce) {
                     miss = 0;
-                    slogf(SL_ERROR, "tunnel DOWN, fail-open DIRECT");
-                    backend_ipset_flush(cfg);
-                    va_mark_dirty(va);
-                    vn_mark_dirty(nv);
+                    if (cfg->n_egress > 1 && efails + 1 < cfg->n_egress) {
+                        /* Фейловер: переключаем default в таблице на следующий egress. */
+                        efails++;
+                        ei = (ei + 1) % cfg->n_egress;
+                        slogf(SL_WARN, "egress %s DOWN, failover -> %s",
+                              cfg->egress_list[(ei + cfg->n_egress - 1) % cfg->n_egress],
+                              cfg->egress_list[ei]);
+                        backend_set_egress(cfg, cfg->egress_list[ei]);
+                        backend_ct_flush_vpn(cfg);
+                    } else if (tunnel_up) {
+                        tunnel_up = 0;
+                        efails = 0;
+                        slogf(SL_ERROR, "all egress DOWN, fail-open DIRECT");
+                        backend_ipset_flush(cfg);
+                        va_mark_dirty(va);
+                        vn_mark_dirty(nv);
+                    } else if (cfg->n_egress > 1) {
+                        /* Уже fail-open: по кругу пробуем следующий кандидат. */
+                        ei = (ei + 1) % cfg->n_egress;
+                        backend_set_egress(cfg, cfg->egress_list[ei]);
+                        backend_ct_flush_vpn(cfg);
+                    }
                 }
             }
         }

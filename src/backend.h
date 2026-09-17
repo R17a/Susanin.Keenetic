@@ -13,6 +13,11 @@ int backend_ready(const susanin_config *c);
 /* Environment check for the data plane (tools + egress interface). Returns 0
  * or -1 with a reason in err. */
 int backend_preflight(const susanin_config *c, char *err, size_t errsz);
+
+/* Failover: switch the VPN table default route to another egress interface. */
+int backend_set_egress(const susanin_config *c, const char *iface);
+/* Drop conntrack entries carrying the VPN mark (after an egress switch). */
+int backend_ct_flush_vpn(const susanin_config *c);
 int backend_ipset_add(const susanin_config *c, int proto_udp, int phase_ok,
                       const char *ip, int ttl);
 int backend_ipset_del(const susanin_config *c, int proto_udp, int phase_ok,

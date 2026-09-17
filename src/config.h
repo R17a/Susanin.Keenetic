@@ -3,10 +3,16 @@
 
 #define CFG_MAX_LAN 8
 #define CFG_PATH_MAX 256
+#define CFG_MAX_EGRESS 4
 
 typedef struct {
     char egress_interface[CFG_PATH_MAX];
     char egress_address[64];
+    /* Parsed egress lists (comma-separated config, aligned by index).
+     * egress_list[i] — interface, egress_addr[i] — its tunnel address. */
+    char egress_list[CFG_MAX_EGRESS][64];
+    char egress_addr[CFG_MAX_EGRESS][64];
+    int n_egress;
     char lan_interfaces[CFG_PATH_MAX];
     char lan_subnets[CFG_PATH_MAX];
     int routing_table;

@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "config.h"
 
 #include <errno.h>
@@ -22,6 +23,55 @@ static int parse_interval(const char *s)
     if (end && *end == 'w')
         return (int)(v * 604800);
     return (int)v;
+}
+
+/* Копирование строки с ограничением (без -Wformat-truncation). */
+static void copy_str(char *dst, size_t n, const char *src)
+{
+    size_t i = 0;
+    if (!n)
+        return;
+    while (src && src[i] && i + 1 < n) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
+/* Разбор списков egress_interface / egress_address (через запятую).
+ * Значения выравниваются по индексу; допускается один адрес на все интерфейсы. */
+static void parse_egress(susanin_config *c)
+{
+    char buf[CFG_PATH_MAX], abuf[CFG_PATH_MAX];
+    char *save = NULL, *asave = NULL, *tok, *atok;
+    int i = 0;
+
+    c->n_egress = 0;
+    snprintf(buf, sizeof(buf), "%s", c->egress_interface);
+    snprintf(abuf, sizeof(abuf), "%s", c->egress_address);
+    tok = strtok_r(buf, ",", &save);
+    atok = strtok_r(abuf, ",", &asave);
+    while (tok && i < CFG_MAX_EGRESS) {
+        while (*tok == ' ' || *tok == '\t') tok++;
+        if (*tok) {
+            copy_str(c->egress_list[i], sizeof(c->egress_list[i]), tok);
+            if (atok) {
+                while (*atok == ' ' || *atok == '\t') atok++;
+            }
+            copy_str(c->egress_addr[i], sizeof(c->egress_addr[i]),
+                     atok ? atok : "");
+            i++;
+        }
+        tok = strtok_r(NULL, ",", &save);
+        atok = atok ? strtok_r(NULL, ",", &asave) : NULL;
+    }
+    if (i == 0) {
+        copy_str(c->egress_list[0], sizeof(c->egress_list[0]),
+                 c->egress_interface[0] ? c->egress_interface : "nwg0");
+        copy_str(c->egress_addr[0], sizeof(c->egress_addr[0]), c->egress_address);
+        i = 1;
+    }
+    c->n_egress = i;
 }
 
 void config_set_defaults(susanin_config *c)
@@ -62,6 +112,7 @@ void config_set_defaults(susanin_config *c)
     snprintf(c->log_level, sizeof(c->log_level), "%s", "info");
     c->diagnostics = 0;
     snprintf(c->disk_mode, sizeof(c->disk_mode), "%s", "normal");
+    parse_egress(c);
 }
 
 static void set_str(char *dst, size_t n, const char *v)
@@ -172,6 +223,7 @@ int config_load(const char *path, susanin_config *c)
     }
 
     fclose(fp);
+    parse_egress(c);
     return 0;
 }
 
