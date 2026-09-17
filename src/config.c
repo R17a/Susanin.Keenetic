@@ -61,6 +61,7 @@ void config_set_defaults(susanin_config *c)
     c->vpn_never_interval = 300;
     snprintf(c->log_level, sizeof(c->log_level), "%s", "info");
     c->diagnostics = 0;
+    snprintf(c->disk_mode, sizeof(c->disk_mode), "%s", "normal");
 }
 
 static void set_str(char *dst, size_t n, const char *v)
@@ -166,6 +167,8 @@ int config_load(const char *path, susanin_config *c)
             set_str(c->log_level, sizeof(c->log_level), val);
         else if (!strcmp(key, "diagnostics"))
             c->diagnostics = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "disk_mode"))
+            set_str(c->disk_mode, sizeof(c->disk_mode), val);
     }
 
     fclose(fp);
@@ -210,6 +213,7 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "vpn_never_interval=%ds\n", c->vpn_never_interval);
     fprintf(fp, "log_level=%s\n", c->log_level);
     fprintf(fp, "diagnostics=%d\n", c->diagnostics);
+    fprintf(fp, "disk_mode=%s\n", c->disk_mode);
     fclose(fp);
     return 0;
 }
@@ -248,4 +252,5 @@ void config_print(const susanin_config *c)
     printf("vpn_never_interval=%ds\n", c->vpn_never_interval);
     printf("log_level=%s\n", c->log_level);
     printf("diagnostics=%d\n", c->diagnostics);
+    printf("disk_mode=%s\n", c->disk_mode);
 }

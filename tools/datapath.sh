@@ -44,6 +44,7 @@ LAN=${SUSANIN_LAN:-"br0 br1"}
 LAN=$(printf '%s' "$LAN" | tr ',' ' ')
 TTL_TEST=${SUSANIN_TTL_TEST:-60}
 TTL_OK=${SUSANIN_TTL_OK:-21600}
+DISK_MODE=${SUSANIN_DISK_MODE:-normal}
 
 CHAIN=SUSANIN
 SETS="susanin_ok_tcp susanin_ok_udp susanin_test_tcp susanin_test_udp"
@@ -60,6 +61,10 @@ iprule() { "$IPCMD" rule del "$@" >/dev/null 2>&1 || true; "$IPCMD" rule add "$@
 set_exists() { "$IPSET" list "$1" >/dev/null 2>&1; }
 
 backup() {
+    if [ "$DISK_MODE" = "soft" ]; then
+        say "disk_mode=soft: backup/archiving skipped"
+        return 0
+    fi
     mkdir -p "$PREFIX/susanin/var"
     bk="$PREFIX/susanin/var/datapath-$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$bk"

@@ -148,7 +148,8 @@ int engine_run(const susanin_config *cfg)
     signal(SIGTERM, on_sig);
     {
         const char *lf = getenv("SUSANIN_LOG");
-        if (lf && *lf) {
+        /* disk_mode=soft: файл лога не ведём (минимум записей на носитель). */
+        if (lf && *lf && strcmp(cfg->disk_mode, "soft") != 0) {
             int fd = open(lf, O_WRONLY | O_CREAT | O_APPEND, 0644);
             if (fd >= 0) {
                 dup2(fd, 1);
@@ -159,6 +160,8 @@ int engine_run(const susanin_config *cfg)
         }
     }
     slog_init(cfg->log_level);
+    if (strcmp(cfg->disk_mode, "soft") == 0)
+        slogf(SL_INFO, "disk_mode=soft: log file off, state not saved, no backups");
 
     state_init(&st);
     ctx.cfg = cfg;
@@ -234,7 +237,8 @@ int engine_run(const susanin_config *cfg)
 
         if (now - last_save >= 300) {
             last_save = now;
-            state_save(state_path, &st);
+            if (strcmp(cfg->disk_mode, "soft") != 0)
+                state_save(state_path, &st);
         }
 
         if (now - last_trim >= 30) {
