@@ -26,7 +26,7 @@
 
 set -eu
 
-PREFIX=/opt
+VARDIR=${SUSANIN_VARDIR:-/opt/susanin/var}
 find_bin() { for b in /opt/sbin /opt/bin /usr/sbin /usr/bin; do [ -x "$b/$1" ] && { echo "$b/$1"; return; }; done; command -v "$1" 2>/dev/null || true; }
 IPT=$(find_bin iptables); IPSET=$(find_bin ipset); IPCMD=$(find_bin ip)
 [ -n "$IPT" ] || { echo "iptables not found" >&2; exit 2; }
@@ -65,8 +65,8 @@ backup() {
         say "disk_mode=soft: backup/archiving skipped"
         return 0
     fi
-    mkdir -p "$PREFIX/susanin/var"
-    bk="$PREFIX/susanin/var/datapath-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$VARDIR"
+    bk="$VARDIR/datapath-$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$bk"
     "$IPT" -t mangle -S > "$bk/mangle.txt" 2>/dev/null || true
     "$IPT" -t nat -S > "$bk/nat.txt" 2>/dev/null || true
@@ -74,9 +74,9 @@ backup() {
     "$IPCMD" route show table all > "$bk/ip-route.txt" 2>/dev/null || true
     say "backup: $bk"
     # keep the 3 most recent dirs; archive older ones (keep 5 archives)
-    arc="$PREFIX/susanin/var/archive"
+    arc="$VARDIR/archive"
     mkdir -p "$arc"
-    ls -1dt "$PREFIX/susanin/var"/datapath-* 2>/dev/null | tail -n +4 | \
+    ls -1dt "$VARDIR"/datapath-* 2>/dev/null | tail -n +4 | \
         while read -r old; do
             base=$(basename "$old")
             if tar -czf "$arc/$base.tar.gz" -C "$(dirname "$old")" "$base" 2>/dev/null; then

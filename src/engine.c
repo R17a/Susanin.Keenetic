@@ -5,6 +5,7 @@
 #include "conntrack.h"
 #include "health.h"
 #include "log.h"
+#include "platform.h"
 #include "state.h"
 #include "vpn_always.h"
 #include "vpn_never.h"
@@ -142,8 +143,9 @@ int engine_run(const susanin_config *cfg)
     int never_pending = 0;
     time_t last_trim = 0;
     int force_pending = 0;
-    const char *state_path = "/opt/susanin/var/susanin.state";
+    char state_path[256];
 
+    susanin_join(state_path, sizeof(state_path), susanin_vardir(), "susanin.state");
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
     {
