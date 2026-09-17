@@ -24,7 +24,7 @@
 Keenetic).
 
 > **Статус: активная разработка, идёт обкатка на реальных роутерах.**
-> Проверено на Keenetic Viva (MT7621, MIPS), KeeneticOS 5.1.4, Entware,
+> Проверено на Keenetic Viva (MT7621, MIPS), KeeneticOS 5.1.4–5.1.5, Entware,
 > туннель WireGuard/AmneziaWG `nwg0`. Работает на старых правилах
 > iptables + ipset (nftables на этом ядре нет).
 
