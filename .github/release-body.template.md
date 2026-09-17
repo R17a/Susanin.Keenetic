@@ -11,14 +11,13 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.s
 
 ### Обновление
 ```sh
-/opt/susanin/bin/susanin-agent version
 sh /opt/susanin/tools/susanin.sh update
 sh /opt/susanin/tools/susanin.sh update {{TAG}}
-/opt/susanin/bin/susanin-agent version
 ```
 `update` печатает `installed → target`, делает бэкап `susanin.conf` и
 `susanin.state` в `/opt/susanin/var/backup/`, заменяет бинарь и скрипты,
 **не трогая** `etc/` и `var/`, затем перезапускает демон.
+Версию после обновления видно первой строкой в `susanin-agent status`.
 
 ### Удаление
 ```sh
