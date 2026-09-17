@@ -20,9 +20,42 @@ SUBNETS=""
 YES=0
 FORCE=0
 NO_START=0
+DISK_MODE=""
 
 say() { echo "[susanin] $*"; }
 die() { echo "[susanin] ERROR: $*" >&2; exit 1; }
+
+# Detect whether /opt lives on a removable flash (USB/SD) or on the router's
+# internal memory (NAND/UBIFS/overlay). Internal -> soft disk mode (minimal writes).
+detect_disk_mode() {
+    dev=""; fst=""; mnt=""
+    if command -v findmnt >/dev/null 2>&1; then
+        mnt=$(findmnt -n -o TARGET --target /opt 2>/dev/null | head -n1)
+        fst=$(findmnt -n -o FSTYPE --target /opt 2>/dev/null | head -n1)
+        dev=$(findmnt -n -o SOURCE --target /opt 2>/dev/null | head -n1)
+    fi
+    if [ -z "$mnt" ] && [ -r /proc/mounts ]; then
+        line=$(grep -E ' /opt ' /proc/mounts 2>/dev/null | head -n1)
+        if [ -n "$line" ]; then
+            dev=$(printf '%s' "$line" | awk '{print $1}')
+            fst=$(printf '%s' "$line" | awk '{print $3}')
+            mnt=/opt
+        fi
+    fi
+    # /opt — не отдельная точка монтирования => часть rootfs (внутренняя память).
+    if [ "$mnt" != "/opt" ]; then
+        echo soft; return
+    fi
+    case "$fst" in
+        ubifs|squashfs|jffs2|overlay|ramfs|tmpfs) echo soft; return ;;
+    esac
+    case "$dev" in
+        *mtdblock*|*ubiblock*|*overlay*|*rootfs*|/storage*) echo soft; return ;;
+        /dev/sd*|/dev/mmcblk*|/dev/nvme*|/dev/usb*) echo normal; return ;;
+    esac
+    # Не смогли определить носитель — безопаснее мягкий режим.
+    echo soft
+}
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -32,13 +65,18 @@ while [ $# -gt 0 ]; do
         --lan) LAN="$2"; shift ;;
         --subnets) SUBNETS="$2"; shift ;;
         --prefix) PREFIX="$2"; shift ;;
+        --disk-mode) DISK_MODE="$2"; shift ;;
         --yes|-y) YES=1 ;;
         --force) FORCE=1 ;;
         --no-start) NO_START=1 ;;
         -h|--help)
             echo "usage: $0 [--arch mipsel|mips|aarch64|armv7|x86_64] [--version latest|vX.Y.Z]"
             echo "          [--egress IF] [--lan IF,IF] [--subnets CIDR,CIDR] [--prefix DIR]"
+            echo "          [--disk-mode normal|soft]"
             echo "          [--yes] [--force] [--no-start]"
+            echo
+            echo "  --disk-mode  normal (USB/SD) | soft (internal flash; no logs/state/backups)."
+            echo "               Default: autodetect by /opt mount."
             echo
             echo "  Prompts: answer 'y' (or 'yes'); --yes|-y skips all prompts."
             exit 0 ;;
@@ -207,9 +245,18 @@ if [ -n "$oc_if" ]; then
 fi
 say "lan=$LAN subnets=${SUBNETS:-n/a}"
 
+if [ -z "$DISK_MODE" ]; then
+    DISK_MODE=$(detect_disk_mode)
+fi
+case "$DISK_MODE" in
+    normal) say "disk mode: normal (flash/USB)" ;;
+    soft)   say "disk mode: soft (внутренняя память: логи/state/бэкапы отключены)" ;;
+    *)      die "bad --disk-mode: $DISK_MODE (normal|soft)" ;;
+esac
+
 if [ "$YES" -ne 1 ] && [ -r /dev/tty ]; then
-    printf "[susanin] Install to %s ?\n  egress:  %s\n  lan:     %s\n  subnets: %s\nProceed? [y/N]: " \
-        "$PREFIX" "$EGRESS" "$LAN" "${SUBNETS:-n/a}" >&2
+    printf "[susanin] Install to %s ?\n  egress:  %s\n  lan:     %s\n  subnets: %s\n  disk:    %s\nProceed? [y/N]: " \
+        "$PREFIX" "$EGRESS" "$LAN" "${SUBNETS:-n/a}" "$DISK_MODE" >&2
     read _ok < /dev/tty || _ok=n
     case "$_ok" in y|Y|yes|YES) ;; *) die "aborted" ;; esac
 fi
@@ -231,6 +278,16 @@ if [ ! -f "$PREFIX/etc/susanin.conf" ] || [ "$FORCE" = 1 ]; then
     say "config written: $PREFIX/etc/susanin.conf"
 else
     say "config kept: $PREFIX/etc/susanin.conf"
+fi
+
+# disk_mode применяем всегда (в т.ч. когда конфиг уже существовал).
+if [ -f "$PREFIX/etc/susanin.conf" ]; then
+    if grep -q '^disk_mode=' "$PREFIX/etc/susanin.conf" 2>/dev/null; then
+        sed -i "s|^disk_mode=.*|disk_mode=$DISK_MODE|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
+    else
+        echo "disk_mode=$DISK_MODE" >> "$PREFIX/etc/susanin.conf"
+    fi
+    say "disk_mode=$DISK_MODE -> $PREFIX/etc/susanin.conf"
 fi
 if [ ! -f "$PREFIX/etc/vpn_always.txt" ] && [ -f "$DIR/vpn_always.txt" ]; then
     cp "$DIR/vpn_always.txt" "$PREFIX/etc/vpn_always.txt"

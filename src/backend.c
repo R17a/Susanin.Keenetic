@@ -149,10 +149,22 @@ static void set_name(char *buf, size_t n, int proto_udp, int phase_ok)
              proto_udp ? "udp" : "tcp");
 }
 
+/* Активный egress (меняется движком при фейловере; по умолчанию — первый). */
+static char g_active_egress[64];
+
+static const char *active_egress(const susanin_config *c)
+{
+    if (g_active_egress[0])
+        return g_active_egress;
+    if (c->egress_interface[0])
+        return c->egress_interface;
+    return "nwg0";
+}
+
 static void set_env(const susanin_config *c)
 {
     char v[64];
-    setenv("SUSANIN_EGRESS", c->egress_interface[0] ? c->egress_interface : "nwg0", 1);
+    setenv("SUSANIN_EGRESS", active_egress(c), 1);
     setenv("SUSANIN_TABLE", (snprintf(v, sizeof(v), "%d", c->routing_table), v), 1);
     setenv("SUSANIN_MARK_OK", (snprintf(v, sizeof(v), "0x%lx", c->mark_ok), v), 1);
     setenv("SUSANIN_MARK_TEST", (snprintf(v, sizeof(v), "0x%lx", c->mark_test), v), 1);
@@ -166,17 +178,19 @@ static void set_env(const susanin_config *c)
     setenv("SUSANIN_ETCDIR", susanin_etcdir(), 1);
     setenv("SUSANIN_VARDIR", susanin_vardir(), 1);
     setenv("SUSANIN_TOOLSDIR", susanin_toolsdir(), 1);
+    setenv("SUSANIN_DISK_MODE", c->disk_mode[0] ? c->disk_mode : "normal", 1);
 }
 
-static int run_script(const susanin_config *c, const char *arg)
+static int run_script(const susanin_config *c, const char *a1, const char *a2)
 {
     char script[256];
-    char *argv[4];
+    char *argv[5];
     susanin_join(script, sizeof(script), susanin_toolsdir(), "datapath.sh");
     argv[0] = "sh";
     argv[1] = script;
-    argv[2] = (char *)arg;
-    argv[3] = NULL;
+    argv[2] = (char *)a1;
+    argv[3] = (char *)a2;
+    argv[4] = NULL;
     set_env(c);
     return run_argv(argv);
 }
@@ -253,7 +267,45 @@ int backend_preflight(const susanin_config *c, char *err, size_t errsz)
 
 int backend_teardown(const susanin_config *c)
 {
-    return run_script(c, "down");
+    return run_script(c, "down", NULL);
+}
+
+/* Переключить default в таблице VPN на указанный egress (фейловер). */
+int backend_set_egress(const susanin_config *c, const char *iface)
+{
+    if (!iface || !iface[0])
+        return -1;
+    snprintf(g_active_egress, sizeof(g_active_egress), "%s", iface);
+    return run_script(c, "egress", iface);
+}
+
+/* Удалить из conntrack все потоки с нашей VPN-меткой (при фейловере). */
+int backend_ct_flush_vpn(const susanin_config *c)
+{
+    char *argv[6];
+    char m[64];
+    snprintf(m, sizeof(m), "0x%lx/0x%lx", c->mark_ok, c->mark_mask);
+    argv[0] = (char *)tool_conntrack();
+    argv[1] = "-D";
+    argv[2] = "--mark";
+    argv[3] = m;
+    argv[4] = NULL;
+    return run_argv(argv);
+}
+
+/* Удалить из conntrack все потоки к указанному IP (после смены списка
+ * vpn_never: адрес должен идти напрямую, а не по старому VPN-маршруту). */
+int backend_ct_flush_ip(const char *ip)
+{
+    char *argv[6];
+    if (!ip || !ip[0])
+        return -1;
+    argv[0] = (char *)tool_conntrack();
+    argv[1] = "-D";
+    argv[2] = "-d";
+    argv[3] = (char *)ip;
+    argv[4] = NULL;
+    return run_argv(argv);
 }
 
 int backend_ipset_add(const susanin_config *c, int proto_udp, int phase_ok,

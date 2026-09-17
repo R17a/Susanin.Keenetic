@@ -44,6 +44,7 @@ LAN=${SUSANIN_LAN:-"br0 br1"}
 LAN=$(printf '%s' "$LAN" | tr ',' ' ')
 TTL_TEST=${SUSANIN_TTL_TEST:-60}
 TTL_OK=${SUSANIN_TTL_OK:-21600}
+DISK_MODE=${SUSANIN_DISK_MODE:-normal}
 
 CHAIN=SUSANIN
 SETS="susanin_ok_tcp susanin_ok_udp susanin_test_tcp susanin_test_udp"
@@ -60,6 +61,10 @@ iprule() { "$IPCMD" rule del "$@" >/dev/null 2>&1 || true; "$IPCMD" rule add "$@
 set_exists() { "$IPSET" list "$1" >/dev/null 2>&1; }
 
 backup() {
+    if [ "$DISK_MODE" = "soft" ]; then
+        say "disk_mode=soft: backup/archiving skipped"
+        return 0
+    fi
     mkdir -p "$VARDIR"
     bk="$VARDIR/datapath-$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$bk"
@@ -197,6 +202,14 @@ command_status() {
     "$IPCMD" rule show | grep -E "lookup $TABLE" || echo "no ip rule for table $TABLE"
 }
 
+command_egress() {
+    iface="$1"
+    [ -n "$iface" ] || { echo "usage: $0 egress <iface>" >&2; exit 2; }
+    "$IPCMD" route del default table "$TABLE" >/dev/null 2>&1 || true
+    "$IPCMD" route add default dev "$iface" table "$TABLE"
+    say "egress -> $iface (table=$TABLE)"
+}
+
 command_flush() {
     for s in $SETS; do set_exists "$s" && "$IPSET" flush "$s" || true; done
     set_exists "$NETSET" && "$IPSET" flush "$NETSET" || true
@@ -227,9 +240,10 @@ case "${1:-}" in
     down) command_down ;;
     status) command_status ;;
     flush) command_flush ;;
+    egress) command_egress "${2:-}" ;;
     add) command_add "$2" "$3" "$4" ;;
     del) command_del "$2" "$3" ;;
     *)
-        echo "usage: $0 {up|down|status|flush|add <ip> <tcp|udp> <test|ok>|del <ip> <tcp|udp>}" >&2
+        echo "usage: $0 {up|down|status|flush|egress <iface>|add <ip> <tcp|udp> <test|ok>|del <ip> <tcp|udp>}" >&2
         exit 2 ;;
 esac
