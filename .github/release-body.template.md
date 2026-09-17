@@ -28,8 +28,8 @@ sh /opt/susanin/tools/susanin.sh uninstall --purge
 
 ### Что нового
 <!-- CHANGELOG -->
-
 ### Диагностика
+
 Если что-то не так — соберите отчёт (в момент проблемы) и приложите вывод:
 ```sh
 sh /opt/susanin/tools/report.sh
