@@ -263,7 +263,7 @@ fi
 
 mkdir -p "$PREFIX/bin" "$PREFIX/tools" "$PREFIX/etc" "$PREFIX/var" "$INITD"
 cp "$DIR/$BINFILE" "$PREFIX/bin/susanin-agent"
-for f in datapath.sh susanin.sh update.sh uninstall.sh install.sh report.sh; do
+for f in datapath.sh susanin.sh update.sh uninstall.sh install.sh report.sh check-lists.sh; do
     [ -f "$DIR/$f" ] && cp "$DIR/$f" "$PREFIX/tools/$f"
 done
 chmod +x "$PREFIX/bin/susanin-agent" "$PREFIX/tools/"*.sh 2>/dev/null || true
