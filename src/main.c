@@ -126,7 +126,7 @@ int main(int argc, char **argv)
 
     if (!strcmp(cmd, "run")) {
         slog_init(cfg.log_level);
-        return engine_run(&cfg);
+        return engine_run(&cfg, cfg_path());
     }
 
     if (!strcmp(cmd, "setup"))

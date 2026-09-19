@@ -149,6 +149,11 @@ struct ofslot { char ip[64]; int udp; int miss; int seen; };
 static struct ofslot of[OFCAP];
 static int of_n;
 
+/* Сводка OK-CHURN: пишем в лог не каждое событие, а раз в ~5 минут. */
+static time_t oc_last = 0;
+static int oc_cnt = 0;
+static char oc_name[80];
+
 static struct ofslot *of_find(const char *ip, int udp)
 {
     int i;
@@ -182,11 +187,31 @@ static void of_forget(const char *ip, int udp)
         s->seen = 0;
 }
 
+/* Ограничитель «проб»: не более promo_per_min новых переводов в VPN в минуту
+ * (0 = без лимита). Защита от лавины ложных заворотов при агрессивном детекте. */
+static int promo_ok(const susanin_config *cfg, time_t now)
+{
+    static time_t win = 0;
+    static int cnt = 0;
+    if (cfg->promo_per_min <= 0)
+        return 1;
+    if (!win || now - win >= 60) {
+        win = now;
+        cnt = 0;
+    }
+    if (cnt >= cfg->promo_per_min)
+        return 0;
+    cnt++;
+    return 1;
+}
+
 static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
                          const char *stage, const char *reason)
 {
     int udp = is_udp(f);
     const susanin_config *cfg = ctx->cfg;
+    if (!promo_ok(cfg, now))
+        return;
     state_add(st_test(ctx->st, udp), f->dst, now, cfg->test_ttl, 0);
     state_remove(st_watch(ctx->st, udp), f->dst);
     backend_ipset_add(cfg, udp, 0, f->dst, cfg->test_ttl);
@@ -244,6 +269,13 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
             if (f->op >= 5 && f->ob >= 1000 && f->rp <= 2 && f->rb < 256) {
                 if (candidate_ok(ctx, f, now))
                     promote_test(ctx, f, now, "SOFT", "TCP-STALL");
+                continue;
+            }
+            /* Быстрый late-stall для HTTPS: ответы есть, но объём мизерный —
+             * типичный троттлинг. Не ждём окна наблюдения (watch). */
+            if (f->dport == 443 && f->op >= 8 && f->rp > 0 && f->rb < 256) {
+                if (candidate_ok(ctx, f, now))
+                    promote_test(ctx, f, now, "SOFT", "TCP-STALL-443");
                 continue;
             }
             if (f->op >= 8 && f->rp > 0) {
@@ -360,7 +392,17 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 state_remove(st_watch(ctx->st, udp), f->dst);
                 state_add(st_cool(ctx->st, udp), f->dst, now, cfg->cooldown_ok_ttl, 0);
                 backend_ipset_del(cfg, udp, 1, f->dst);
-                slogf(SL_INFO, "AUTO-SUSANIN: OK-CHURN %s:%u", f->dst, f->dport);
+                slogf(SL_DEBUG, "AUTO-SUSANIN: OK-CHURN %s:%u", f->dst, f->dport);
+                oc_cnt++;
+                snprintf(oc_name, sizeof(oc_name), "%s:%u", f->dst, f->dport);
+                if (!oc_last) {
+                    oc_last = now;
+                } else if (now - oc_last >= 300) {
+                    slogf(SL_INFO, "AUTO-SUSANIN: OK-CHURN: %d за ~5 мин (последний %s)",
+                          oc_cnt, oc_name);
+                    oc_cnt = 0;
+                    oc_last = now;
+                }
                 backend_ct_delete(f);
             } else if (healthy && !failed) {
                 of_forget(f->dst, udp);

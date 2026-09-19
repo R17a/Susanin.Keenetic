@@ -3,6 +3,6 @@
 
 #include "config.h"
 
-int engine_run(const susanin_config *c);
+int engine_run(susanin_config *c, const char *conf_path);
 
 #endif

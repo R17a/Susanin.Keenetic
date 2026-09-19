@@ -266,10 +266,14 @@ int backend_teardown(const susanin_config *c)
 /* Переключить default в таблице VPN на указанный egress (фейловер). */
 int backend_set_egress(const susanin_config *c, const char *iface)
 {
+    int rc;
     if (!iface || !iface[0])
         return -1;
     snprintf(g_active_egress, sizeof(g_active_egress), "%s", iface);
-    return run_script(c, "egress", iface);
+    rc = run_script(c, "egress", iface);
+    if (rc != 0)
+        slogf(SL_ERROR, "egress %s: переключение не удалось (rc=%d)", iface, rc);
+    return rc;
 }
 
 /* Удалить из conntrack все потоки с нашей VPN-меткой (при фейловере). */
