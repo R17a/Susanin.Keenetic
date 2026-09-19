@@ -94,6 +94,7 @@ void config_set_defaults(susanin_config *c)
     c->ok_ttl = 6 * 3600;
     c->ok_refresh_below = 3 * 3600;
     c->ok_max_entries = 4096;
+    c->ok_evict_misses = 3;
     c->test_ttl = 60;
     c->cooldown_ttl = 5 * 60;
     c->cooldown_ok_ttl = 30;
@@ -192,6 +193,8 @@ int config_load(const char *path, susanin_config *c)
             c->ok_refresh_below = parse_interval(val);
         else if (!strcmp(key, "ok_max_entries"))
             c->ok_max_entries = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "ok_evict_misses"))
+            c->ok_evict_misses = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "test_ttl"))
             c->test_ttl = parse_interval(val);
         else if (!strcmp(key, "cooldown_ttl"))
@@ -258,6 +261,7 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "ok_ttl=%ds\n", c->ok_ttl);
     fprintf(fp, "ok_refresh_below=%ds\n", c->ok_refresh_below);
     fprintf(fp, "ok_max_entries=%d\n", c->ok_max_entries);
+    fprintf(fp, "ok_evict_misses=%d\n", c->ok_evict_misses);
     fprintf(fp, "test_ttl=%ds\n", c->test_ttl);
     fprintf(fp, "cooldown_ttl=%ds\n", c->cooldown_ttl);
     fprintf(fp, "cooldown_ok_ttl=%ds\n", c->cooldown_ok_ttl);
@@ -299,6 +303,7 @@ void config_print(const susanin_config *c)
     printf("ok_ttl=%ds\n", c->ok_ttl);
     printf("ok_refresh_below=%ds\n", c->ok_refresh_below);
     printf("ok_max_entries=%d\n", c->ok_max_entries);
+    printf("ok_evict_misses=%d\n", c->ok_evict_misses);
     printf("test_ttl=%ds\n", c->test_ttl);
     printf("cooldown_ttl=%ds\n", c->cooldown_ttl);
     printf("cooldown_ok_ttl=%ds\n", c->cooldown_ok_ttl);

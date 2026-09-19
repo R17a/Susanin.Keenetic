@@ -142,6 +142,46 @@ static int rate_delta(const ct_flow *f, time_t now, int *orig_active, int *repl_
     return 0;
 }
 
+/* Гистерезис снятия из ok: считаем подряд идущие «сбои» по адресу, чтобы не
+ * дёргать один и тот же адрес (OK-CHURN) из-за одного наблюдения. */
+#define OFCAP 256
+struct ofslot { char ip[64]; int udp; int miss; int seen; };
+static struct ofslot of[OFCAP];
+static int of_n;
+
+static struct ofslot *of_find(const char *ip, int udp)
+{
+    int i;
+    for (i = 0; i < of_n; i++)
+        if (of[i].seen && of[i].udp == udp && strcmp(of[i].ip, ip) == 0)
+            return &of[i];
+    return NULL;
+}
+
+static struct ofslot *of_touch(const char *ip, int udp)
+{
+    struct ofslot *s = of_find(ip, udp);
+    if (s) {
+        s->miss++;
+        return s;
+    }
+    if (of_n >= OFCAP)
+        of_n = 0;
+    s = &of[of_n++];
+    snprintf(s->ip, sizeof(s->ip), "%s", ip);
+    s->udp = udp;
+    s->miss = 1;
+    s->seen = 1;
+    return s;
+}
+
+static void of_forget(const char *ip, int udp)
+{
+    struct ofslot *s = of_find(ip, udp);
+    if (s)
+        s->seen = 0;
+}
+
 static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
                          const char *stage, const char *reason)
 {
@@ -309,6 +349,12 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 if (f->dport == 443 && f->op >= 16 && f->rp == 0) failed = 1;
             }
             if (failed && !healthy) {
+                if (cfg->ok_evict_misses > 1) {
+                    struct ofslot *os = of_touch(f->dst, udp);
+                    if (os->miss < cfg->ok_evict_misses)
+                        continue;   /* ещё наблюдаем — из ok не снимаем */
+                    os->seen = 0;
+                }
                 state_remove(st_ok(ctx->st, udp), f->dst);
                 state_remove(st_test(ctx->st, udp), f->dst);
                 state_remove(st_watch(ctx->st, udp), f->dst);
@@ -317,6 +363,7 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 slogf(SL_INFO, "AUTO-SUSANIN: OK-CHURN %s:%u", f->dst, f->dport);
                 backend_ct_delete(f);
             } else if (healthy && !failed) {
+                of_forget(f->dst, udp);
                 time_t at = state_at(st_ok(ctx->st, udp), f->dst, now);
                 if (at && (int)(at - now) <= cfg->ok_refresh_below) {
                     state_add(st_ok(ctx->st, udp), f->dst, now, cfg->ok_ttl, 1);

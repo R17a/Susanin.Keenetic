@@ -44,6 +44,10 @@ ok_ttl=0
 ok_refresh_below=3h
 # Bounded GC (like upstream Susanin v0.12): per-proto ok-cache limit, 0=off.
 ok_max_entries=4096
+# Гистерезис снятия из ok: сколько ПОДРЯД «сбоев» по адресу нужно, чтобы убрать
+# его из VPN-кэша. Больше — меньше «мельтешения» (OK-CHURN), но медленнее
+# реакция на реально умерший маршрут. 1 = снимать сразу (как раньше).
+ok_evict_misses=3
 test_ttl=1m
 cooldown_ttl=5m
 cooldown_ok_ttl=30s
