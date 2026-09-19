@@ -21,6 +21,7 @@ YES=0
 FORCE=0
 NO_START=0
 DISK_MODE=""
+DEPS=0
 
 say() { echo "[susanin] $*"; }
 die() { echo "[susanin] ERROR: $*" >&2; exit 1; }
@@ -66,17 +67,19 @@ while [ $# -gt 0 ]; do
         --subnets) SUBNETS="$2"; shift ;;
         --prefix) PREFIX="$2"; shift ;;
         --disk-mode) DISK_MODE="$2"; shift ;;
+        --deps) DEPS=1 ;;
         --yes|-y) YES=1 ;;
         --force) FORCE=1 ;;
         --no-start) NO_START=1 ;;
         -h|--help)
             echo "usage: $0 [--arch mipsel|mips|aarch64|armv7|x86_64] [--version latest|vX.Y.Z]"
             echo "          [--egress IF] [--lan IF,IF] [--subnets CIDR,CIDR] [--prefix DIR]"
-            echo "          [--disk-mode normal|soft]"
+            echo "          [--disk-mode normal|soft] [--deps]"
             echo "          [--yes] [--force] [--no-start]"
             echo
             echo "  --disk-mode  normal (USB/SD) | soft (internal flash; no logs/state/backups)."
             echo "               Default: autodetect by /opt mount."
+            echo "  --deps       доустановить недостающие пакеты через opkg без вопроса"
             echo
             echo "  Prompts: answer 'y' (or 'yes'); --yes|-y skips all prompts."
             exit 0 ;;
@@ -84,6 +87,32 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+# --- зависимости (Entware) ---------------------------------------------------
+need=""
+for t in ipset conntrack iptables; do
+    command -v "$t" >/dev/null 2>&1 || need="$need $t"
+done
+[ -f /opt/etc/ssl/certs/ca-certificates.crt ] || need="$need ca-certificates"
+need=$(printf '%s' "$need" | sed 's/^ *//')
+if [ -n "$need" ]; then
+    say "не хватает пакетов:$need"
+    install_them=0
+    if [ "$DEPS" -eq 1 ]; then
+        install_them=1
+    elif [ "$YES" -ne 1 ] && [ -r /dev/tty ]; then
+        printf "[susanin] Доустановить через opkg? [y/N]: " >&2
+        read _ok < /dev/tty || _ok=n
+        case "$_ok" in y|Y|yes|YES) install_them=1 ;; esac
+    fi
+    if [ "$install_them" -eq 1 ]; then
+        say "opkg update && opkg install$need"
+        opkg update || true
+        opkg install $need || true
+    else
+        say "пропускаю. Установите вручную: opkg update && opkg install$need"
+    fi
+fi
 
 if [ -z "$ARCH" ]; then
     _m=$(uname -m 2>/dev/null || echo unknown)

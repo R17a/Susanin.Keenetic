@@ -6,8 +6,10 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +31,7 @@ typedef struct {
     char ips[VA_MAXIP][16]; /* последние успешно отресолвленные A-записи */
     int nips;
     int fail_logged;        /* INFO об ошибке уже печатали (не спамим) */
+    int fails;              /* подряд неудачных резолвов (backoff) */
     int is_net;             /* строка файла — CIDR (a.b.c.d/n), не домен */
     int wild;               /* *.domain: домен и все поддомены */
     time_t next_try;        /* когда перепроверять домен */
@@ -394,6 +397,29 @@ int va_dns_query(const char *server, const char *domain, char ips[][16],
     return dns_query_a(server, domain, ips, max, timeout_ms);
 }
 
+/* IPv4-адрес интерфейса (для резолвера-по-умолчанию). */
+static int iface_addr(const char *name, char *out, size_t n)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    struct ifreq ifr;
+    struct sockaddr_in *sin;
+    if (fd < 0)
+        return -1;
+    memset(&ifr, 0, sizeof(ifr));
+    snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", name);
+    if (ioctl(fd, SIOCGIFADDR, &ifr) != 0) {
+        close(fd);
+        return -1;
+    }
+    sin = (struct sockaddr_in *)&ifr.ifr_addr;
+    if (inet_ntop(AF_INET, &sin->sin_addr, out, n) == NULL) {
+        close(fd);
+        return -1;
+    }
+    close(fd);
+    return 0;
+}
+
 void va_pick_resolver(const susanin_config *cfg, char *out, size_t n)
 {
     struct in_addr a;
@@ -403,6 +429,22 @@ void va_pick_resolver(const susanin_config *cfg, char *out, size_t n)
         return;
     }
     resolv_server(out, n);
+    if (!out[0] || strcmp(out, "127.0.0.1") == 0) {
+        /* Локальная петля (NDM) или пусто: пробуем адрес LAN-моста —
+         * он отвечает надёжнее в ряде сборок. */
+        char ifs[256], lan[64];
+        char *save = NULL, *tok;
+        snprintf(ifs, sizeof(ifs), "%s", cfg->lan_interfaces);
+        for (tok = strtok_r(ifs, ",", &save); tok;
+             tok = strtok_r(NULL, ",", &save)) {
+            while (*tok == ' ' || *tok == '\t')
+                tok++;
+            if (*tok && iface_addr(tok, lan, sizeof(lan)) == 0) {
+                snprintf(out, n, "%s", lan);
+                return;
+            }
+        }
+    }
     if (!out[0])
         snprintf(out, n, "%s", "8.8.8.8");
 }
@@ -506,12 +548,13 @@ static int resolve_dom(const char *server, va_dom *d, int timeout)
     int n, total = 0, k;
     char tmp[VA_MAXIP][16];
     char probe[300];
-    if (!d->wild)
-        return dns_query_a(server, d->name, d->ips, VA_MAXIP, timeout);
-    /* *.domain: apex + a couple of random subdomain probes (wildcard DNS) */
     n = dns_query_a(server, d->name, d->ips, VA_MAXIP, timeout);
     if (n > 0)
         total = n;
+    /* *.domain — всегда зона; обычный домен без A на apex — возможно, это
+     * тоже зона/CDN, поэтому пробуем пару случайных поддоменов. */
+    if (!d->wild && total > 0)
+        return total;
     for (k = 0; k < 2 && total < VA_MAXIP; k++) {
         int m, j, x, dup;
         snprintf(probe, sizeof(probe), "susanin-%08lx%d.%s",
@@ -546,6 +589,8 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
     time_t now = time(NULL);
     int i, ndes = 0, ndesn = 0, added = 0, removed = 0, pending = 0;
     int addn = 0, remn = 0, new_epoch = 0;
+    int nfail = 0, nex = 0;
+    char exa[3][64] = { "", "", "" };
     long long t0 = now_ms();
     int interval = cfg->vpn_always_interval > 0 ? cfg->vpn_always_interval : 300;
     char (*desired)[16];
@@ -654,19 +699,22 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
             }
             d->nips = n;
             d->fail_logged = 0;
+            d->fails = 0;
             d->next_try = now + interval;
         } else {
-            if (d->nips > 0)
+            if (d->nips > 0) {
                 slogf(SL_DEBUG,
                       "vpn_always: %s resolve failed (keep %d old ip)",
                       d->name, d->nips);
-            else if (!d->fail_logged) {
-                slogf(SL_INFO,
-                      "vpn_always: %s resolve failed (no A records)",
-                      d->name);
-                d->fail_logged = 1;
+            } else {
+                /* нет A-записей: не спамим по каждому домену — одна сводка
+                 * в конце прохода; повторяющиеся неудачи реже дёргаем. */
+                d->fails++;
+                nfail++;
+                if (nex < 3)
+                    snprintf(exa[nex++], sizeof(exa[0]), "%s", d->name);
             }
-            d->next_try = now + VA_BACKOFF_S;
+            d->next_try = now + (d->fails >= 3 ? 3600 : VA_BACKOFF_S);
         }
     }
 
@@ -777,6 +825,26 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
     else if (slog_enabled(SL_DEBUG))
         slogf(SL_DEBUG, "vpn_always: no changes (%d ip + %d net pinned)",
               v->ntrack, v->ntracknet);
+
+    if (nfail > 0) {
+        /* одна сводка вместо строки на каждый домен (и не чаще раза в час,
+         * если число не меняется) */
+        static int last_nfail = -1;
+        static time_t last_tsum = 0;
+        if (nfail != last_nfail || now - last_tsum >= 3600) {
+            char ex[200];
+            int k;
+            ex[0] = '\0';
+            for (k = 0; k < nex; k++) {
+                size_t l = strlen(ex);
+                snprintf(ex + l, sizeof(ex) - l, "%s%s", l ? ", " : "", exa[k]);
+            }
+            slogf(SL_INFO, "vpn_always: %d домен(ов) без A-записей (напр.: %s)",
+                  nfail, ex);
+            last_nfail = nfail;
+            last_tsum = now;
+        }
+    }
 
     free(desired);
     free(desired_net);

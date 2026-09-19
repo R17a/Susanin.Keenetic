@@ -21,7 +21,9 @@
 #include <unistd.h>
 
 static volatile sig_atomic_t g_stop = 0;
+static volatile sig_atomic_t g_reload = 0;
 static void on_sig(int s) { (void)s; g_stop = 1; }
+static void on_hup(int s) { (void)s; g_reload = 1; }
 
 typedef struct { ct_flow *v; int n; int cap; } flowlist;
 
@@ -126,7 +128,7 @@ static void trim_ok(const susanin_config *cfg, susanin_state *st)
     }
 }
 
-int engine_run(const susanin_config *cfg)
+int engine_run(susanin_config *cfg, const char *conf_path)
 {
     susanin_state st;
     classifier_ctx ctx;
@@ -148,6 +150,7 @@ int engine_run(const susanin_config *cfg)
     susanin_join(state_path, sizeof(state_path), susanin_vardir(), "susanin.state");
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
+    signal(SIGHUP, on_hup);     /* reload конфига */
     {
         const char *lf = getenv("SUSANIN_LOG");
         /* disk_mode=soft: файл лога не ведём (минимум записей на носитель). */
@@ -204,6 +207,35 @@ int engine_run(const susanin_config *cfg)
 
     while (!g_stop) {
         time_t now = time(NULL);
+
+        if (g_reload) {
+            susanin_config nc;
+            g_reload = 0;
+            if (conf_path && config_load(conf_path, &nc) == 0) {
+                *cfg = nc;
+                slogf(SL_INFO, "config reloaded: %s", conf_path);
+                {
+                    char perr[256];
+                    if (backend_preflight(cfg, perr, sizeof(perr)) != 0)
+                        slogf(SL_ERROR, "preflight: %s", perr);
+                }
+                ei = 0;
+                efails = 0;
+                miss = 0;
+                if (cfg->n_egress > 0)
+                    backend_set_egress(cfg, cfg->egress_list[0]);
+                if (backend_provision(cfg) == 0)
+                    dp_ok = 1;
+                else
+                    dp_ok = 0;
+                last_force = 0;
+                last_never = 0;
+            } else {
+                slogf(SL_ERROR, "config reload failed: %s",
+                      conf_path ? conf_path : "?");
+            }
+        }
+
         L.n = 0;
         if (conntrack_scan("/proc/net/nf_conntrack", collect, &L) < 0)
             slogf(SL_DEBUG, "conntrack scan failed");
@@ -219,6 +251,39 @@ int engine_run(const susanin_config *cfg)
             const char *psrc = cfg->egress_addr[ei][0] ? cfg->egress_addr[ei]
                                                        : cfg->egress_address;
             last[3] = now;
+            /* Команда re-scan egress: интерфейс мог исчезнуть (VPN удалили). */
+            if (cfg->n_egress > 0) {
+                char np[256];
+                snprintf(np, sizeof(np), "/sys/class/net/%s",
+                         cfg->egress_list[ei]);
+                if (access(np, F_OK) != 0) {
+                    int k, ni = -1;
+                    for (k = 1; k <= cfg->n_egress; k++) {
+                        int idx = (ei + k) % cfg->n_egress;
+                        snprintf(np, sizeof(np), "/sys/class/net/%s",
+                                 cfg->egress_list[idx]);
+                        if (access(np, F_OK) == 0) {
+                            ni = idx;
+                            break;
+                        }
+                    }
+                    if (ni >= 0) {
+                        slogf(SL_WARN, "egress %s отсутствует — переключаюсь на %s",
+                              cfg->egress_list[ei], cfg->egress_list[ni]);
+                        ei = ni;
+                        backend_set_egress(cfg, cfg->egress_list[ei]);
+                        backend_ct_flush_vpn(cfg);
+                    } else if (tunnel_up) {
+                        tunnel_up = 0;
+                        efails = 0;
+                        slogf(SL_ERROR, "нет живых egress — fail-open DIRECT");
+                        backend_ipset_flush(cfg);
+                        va_mark_dirty(va);
+                        vn_mark_dirty(nv);
+                    }
+                    continue;     /* в этом тике пробу не делаем */
+                }
+            }
             health_probe(cfg, psrc, &ok, &total);
             if (ok > 0) {
                 miss = 0;

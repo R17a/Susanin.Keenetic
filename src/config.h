@@ -28,6 +28,7 @@ typedef struct {
     int ok_ttl;
     int ok_refresh_below;
     int ok_evict_misses;    /* сколько подряд «сбоев» до снятия из ok (гистерезис) */
+    int promo_per_min;      /* лимит новых «проб» (перевод в VPN) в минуту; 0=без лимита */
     int ok_max_entries;     /* bounded GC: per-proto ok-cache limit (0=off) */
     int test_ttl;
     int cooldown_ttl;
