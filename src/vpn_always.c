@@ -51,6 +51,7 @@ struct vpn_always {
     int seen_exists;
     int warned;
     int dirty;              /* ipset мог быть очищен — передобавить пины */
+    int populated;          /* первый проход уже был (не рвать conntrack на старте) */
     long long epoch;        /* номер интервала (now/interval) для hysteresis */
 };
 
@@ -803,6 +804,11 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
         backend_ipset_add(cfg, 1, 1, desired[i], 0);
         if (!known)
             tracked_add(v, desired[i]);
+        /* Адрес только что переведён в VPN: рвём уже открытые прямые потоки,
+         * чтобы клиент переподключился через туннель (не на первом проходе,
+         * чтобы не рвать активные соединения при старте демона). */
+        if (v->populated)
+            backend_ct_flush_ip(desired[i]);
         slogf(SL_DEBUG, "vpn_always: pin %s", desired[i]);
         added++;
     }
@@ -817,6 +823,7 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
         addn++;
     }
     v->dirty = 0;
+    v->populated = 1;
 
     if (added || removed || addn || remn)
         slogf(SL_INFO, "vpn_always: +%d/-%d ip, +%d/-%d net, %d domain(s), "

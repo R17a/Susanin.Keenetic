@@ -88,7 +88,7 @@ void config_set_defaults(susanin_config *c)
     c->mark_mask = 0x30000000UL;
     c->ip_rule_priority_start = 2000;
     c->fast_interval = 1;
-    c->soft_interval = 2;
+    c->soft_interval = 1;
     c->judge_interval = 1;
     c->health_interval = 5;
     c->fast_syn_min_op = 2;

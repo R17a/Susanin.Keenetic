@@ -64,7 +64,7 @@ Keenetic).
   в отдельную таблицу маршрутизации (по умолчанию `100`; номер должен быть
   маленьким — busybox `ip` не понимает большие). Адреса хранятся в наборах
   ipset `susanin_{test,ok}_{tcp,udp}`.
-- **Таймеры.** Проверки идут по расписанию: FAST 1 с, SOFT 2 с, JUDGE 1 с,
+- **Таймеры.** Проверки идут по расписанию: FAST 1 с, SOFT 1 с, JUDGE 1 с,
   HEALTH 5 с. «Зависшие» соединения удаляются из conntrack, чтобы клиент
   подключился заново — уже через VPN. Пороги взяты из проекта Susanin.MikroTik.
 
@@ -277,7 +277,7 @@ sh install.sh --yes
 
 ```sh
 sh /opt/susanin/tools/susanin.sh update            # до последнего релиза
-sh /opt/susanin/tools/susanin.sh update v0.3.9     # конкретная версия (актуальную см. в Releases)
+sh /opt/susanin/tools/susanin.sh update v0.3.10    # конкретная версия (актуальную см. в Releases)
 ```
 
 ![Susanin.Keenetic uninstall](demo2.png)
@@ -432,6 +432,8 @@ sh /opt/susanin/tools/diagnose.sh
 ## Документы
 
 - [CHANGELOG.md](CHANGELOG.md) — что нового по версиям;
+- [USER_GUIDE.md](USER_GUIDE.md) — руководство: быстрый старт, задачи, настройки;
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — если что-то не работает;
 - [DEPLOY.md](DEPLOY.md) — установка/обновление/удаление на роутере;
 - `tools/susanin.sh`, `tools/datapath.sh` — управление демоном и правилами.
 

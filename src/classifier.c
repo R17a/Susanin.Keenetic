@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "classifier.h"
 #include "backend.h"
+#include "vpn_never.h"
 #include "log.h"
 
 #include <arpa/inet.h>
@@ -210,6 +211,13 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
 {
     int udp = is_udp(f);
     const susanin_config *cfg = ctx->cfg;
+    /* Не учим в VPN адрес, недавно бывший в vpn_never: он должен идти напрямую,
+     * иначе возможен «прыжок» direct <-> VPN (план п.8.3). */
+    if (vn_is_recently_never(f->dst, now)) {
+        slogf(SL_DEBUG, "AUTO-SUSANIN: skip %s:%u (recently vpn_never)",
+              f->dst, f->dport);
+        return;
+    }
     if (!promo_ok(cfg, now))
         return;
     state_add(st_test(ctx->st, udp), f->dst, now, cfg->test_ttl, 0);
@@ -373,9 +381,12 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
             healthy = failed = 0;
             if (f->l4proto == 6) {
                 if (f->rp >= 2 || f->rb >= 128) healthy = 1;
+                /* rp==0 (а не rp<=1): любой ответ означает живой адрес — так
+                 * долгоживущие соединения мессенджеров (Telegram/WhatsApp) не
+                 * вылетают из ok из-за одного «тихого» среза. */
                 if ((strcmp(f->tcp_state, "SYN_SENT") == 0 && f->op >= 4 && f->rp == 0) ||
                     (strcmp(f->tcp_state, "ESTABLISHED") == 0 && f->op >= 15 &&
-                     f->ob >= 5000 && f->rp <= 1 && f->rb < 128)) failed = 1;
+                     f->ob >= 5000 && f->rp == 0 && f->rb < 128)) failed = 1;
             } else {
                 if (f->rp >= 1) healthy = 1;
                 if (f->dport == 443 && f->op >= 16 && f->rp == 0) failed = 1;
