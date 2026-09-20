@@ -43,6 +43,11 @@
 # ---------------------------------------------------------------------------
 set -u
 
+# Прогресс показываем только в интерактивном терминале (stderr — tty), чтобы не
+# засорять вывод при перенаправлении (например, в report.sh).
+ttyst=0
+[ -t 2 ] && ttyst=1
+
 ETCDIR=""
 DNS=""
 while [ $# -gt 0 ]; do
@@ -191,12 +196,20 @@ check_list() {
         return
     fi
     echo "$label ($f):"
-    tot=0; ok=0; zone=0
+    n_all=$(grep -vcE '^[[:space:]]*(#|$)' "$f" 2>/dev/null)
+    [ -n "$n_all" ] || n_all=0
+    if [ "$ttyst" = 1 ] && [ "$n_all" -gt 0 ]; then
+        printf '  проверяю %s строк (DNS-запрос к каждому домену; может занять ~минуту, Ctrl+C — прервать)\n' \
+               "$n_all" >&2
+    fi
+    tot=0; ok=0; zone=0; idx=0
     zex=""
     while IFS= read -r raw; do
         e=$(printf '%s' "$raw" | sed 's/#.*//' | tr -d ' \t\r')
         [ -z "$e" ] && continue
         tot=$((tot + 1))
+        idx=$((idx + 1))
+        [ "$ttyst" = 1 ] && printf '\r  [%d/%d] %-45s' "$idx" "$n_all" "$e" >&2
         if is_ip4 "$e" || is_cidr "$e"; then
             ok=$((ok + 1))
             continue
@@ -210,6 +223,7 @@ check_list() {
             [ -z "$zex" ] && zex="$name"
         fi
     done < "$f"
+    [ "$ttyst" = 1 ] && printf '\r                                                                      \r' >&2
     echo "  итог: строк $tot, с адресами $ok, без A на apex $zone"
     if [ "$zone" -gt 0 ]; then
         echo "  ($zone доменов без A на apex — для CDN это норма, демон проверит поддомены: напр. $zex)"
