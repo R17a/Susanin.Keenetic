@@ -91,7 +91,7 @@ if [ -n "$A" ] && [ -x "$A" ]; then
     echo "agent: $("$A" version 2>/dev/null)"
 else
     echo "agent: НЕ НАЙДЕН"
-    rec "susanin-agent не найден — проверьте установку/обновление"
+            rec "Программа (susanin-agent) не найдена — проверьте установку или обновление."
 fi
 
 for t in iptables ipset conntrack ip; do
@@ -99,7 +99,7 @@ for t in iptables ipset conntrack ip; do
         echo "tool $t: ok"
     else
         echo "tool $t: НЕТ"
-        rec "установите пакет: opkg update && opkg install $t"
+        rec "Не хватает пакета '$t'. Установите: opkg update && opkg install $t"
     fi
 done
 
@@ -125,7 +125,7 @@ if [ -n "$EGR" ]; then
             echo "egress $i: существует"
         else
             echo "egress $i: ОТСУТСТВУЕТ"
-            rec "интерфейс '$i' отсутствует — исправьте egress_interface или поднимите VPN"
+            rec "VPN-интерфейс '$i' не найден. Включите VPN-подключение или укажите верное имя в egress_interface."
         fi
         IFS=','
     done
@@ -139,7 +139,7 @@ if command -v iptables >/dev/null 2>&1; then
         echo "цепочка SUSANIN: ok"
     else
         echo "цепочка SUSANIN: НЕТ"
-        rec "правила не созданы — проверьте ipset/iptables и egress, затем: susanin.sh restart"
+        rec "Правила Susanin не созданы. Проверьте, что установлены ipset и iptables, затем: susanin.sh restart"
     fi
 fi
 if command -v ip >/dev/null 2>&1; then
@@ -147,17 +147,17 @@ if command -v ip >/dev/null 2>&1; then
         echo "ip rule -> table $TBL: ok"
     else
         echo "ip rule -> table $TBL: НЕТ"
-        rec "нет ip rule на таблицу $TBL — правила не применены"
+        rec "Нет правила ip rule на таблицу $TBL — трафик идёт мимо VPN. Перезапустите: susanin.sh restart"
     fi
     if ip route show table "$TBL" 2>/dev/null | grep -q '^default'; then
         echo "default в table $TBL: ok"
     else
         echo "default в table $TBL: НЕТ"
-        rec "в таблице $TBL нет default-маршрута (проверьте egress/VPN)"
+        rec "В таблице $TBL нет маршрута по умолчанию — проверьте, что VPN-подключение включено."
     fi
     if ip rule show 2>/dev/null | grep -qE 'fwmark 0xffffa'; then
         echo "политики Keenetic (fwmark 0xffffaXX): есть"
-        rec "клиенты/сегменты на «Приоритетах подключений» идут мимо Susanin — уберите политику либо оставьте её единственным решающим механизмом"
+        rec "У части устройств включён «Приоритет подключений» Keenetic. Для них маршрут выбирает Keenetic, а Susanin не участвует. Если устройство должно управляться Susanin — снимите у него политику (оставьте «по умолчанию»)."
     fi
 fi
 if command -v ipset >/dev/null 2>&1; then
@@ -165,7 +165,7 @@ if command -v ipset >/dev/null 2>&1; then
     okn=$(ipset list susanin_ok_net 2>/dev/null | grep -cE '^[0-9]+\.')
     echo "наборы: ok_tcp=$okc, ok_net=$okn"
     if [ "${okc:-0}" -eq 0 ] && [ "${okn:-0}" -eq 0 ]; then
-        rec "наборы susanin_ok_* пусты — автообучение не работает (проверьте пакеты/правила и что трафик идёт через роутер)"
+        rec "Список выученных адресов пуст — обучение не работает. Проверьте пакеты и правила и что через роутер идёт трафик."
     fi
 fi
 
@@ -226,7 +226,7 @@ check_list() {
     [ "$ttyst" = 1 ] && printf '\r                                                                      \r' >&2
     echo "  итог: строк $tot, с адресами $ok, без A на apex $zone"
     if [ "$zone" -gt 0 ]; then
-        echo "  ($zone доменов без A на apex — для CDN это норма, демон проверит поддомены: напр. $zex)"
+        echo "  без A на apex: $zone (для CDN это норма, демон проверит поддомены; напр. $zex)"
     fi
 }
 
@@ -244,13 +244,12 @@ if [ -f "$ETCDIR/vpn_always.txt" ] && [ -f "$ETCDIR/vpn_never.txt" ]; then
     if [ -n "$conf" ]; then
         echo "  конфликты always/never (приоритет — «напрямую»):"
         printf '    %s\n' $conf
-        rec "уберите дубли always/never: они конфликтуют (например, $(printf '%s' "$conf" | head -n1))"
+        rec "Один и тот же адрес есть и в vpn_always, и в vpn_never — побеждает «напрямую». Уберите лишнюю строку: $(printf '%s' "$conf" | head -n1)"
     fi
 fi
 
 if [ -z "$DNS_CFG" ] && [ -z "$DNS" ]; then
-    echo "  резолвер списка: auto (из resolv.conf)"
-    rec "если много «нет A/не резолвится» — задайте vpn_always_dns (например, IP LAN-моста)"
+    echo "  DNS для списков: auto (системный, при 127.0.0.1 — адрес LAN-моста)"
 fi
 
 # ------------------------------------------------------------- рекомендации
