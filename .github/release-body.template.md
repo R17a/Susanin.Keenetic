@@ -11,7 +11,6 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.s
 
 ### Обновление
 ```sh
-sh /opt/susanin/tools/susanin.sh update
 sh /opt/susanin/tools/susanin.sh update {{TAG}}
 ```
 `update` печатает `installed → target`, делает бэкап `susanin.conf` и

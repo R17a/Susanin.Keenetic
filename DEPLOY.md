@@ -64,6 +64,17 @@ sh /opt/susanin/tools/datapath.sh status
 SUSANIN_CONF=/opt/susanin/etc/susanin.conf /opt/susanin/bin/susanin-agent run
 ```
 
+## Обновление
+
+```sh
+sh /opt/susanin/tools/susanin.sh update v0.3.10
+```
+
+`update` печатает `installed → target`, сохраняет `susanin.conf` и
+`susanin.state` (бэкап в `/opt/susanin/var/backup/`), заменяет бинарь и скрипты,
+**не трогая** `etc/` и `var/`, затем перезапускает демон. Версию после
+обновления видно первой строкой в `susanin-agent status`.
+
 ## Ручная раскладка (если без скрипта)
 | Откуда (в архиве) | Куда на роутере |
 |---|---|

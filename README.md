@@ -276,8 +276,7 @@ sh install.sh --yes
 **Обновление** (конфиг и состояние сохраняются):
 
 ```sh
-sh /opt/susanin/tools/susanin.sh update            # до последнего релиза
-sh /opt/susanin/tools/susanin.sh update v0.3.10    # конкретная версия (актуальную см. в Releases)
+sh /opt/susanin/tools/susanin.sh update v0.3.10    # версия (актуальную см. в Releases)
 ```
 
 ![Susanin.Keenetic uninstall](demo2.png)
@@ -310,7 +309,7 @@ sh /opt/susanin/tools/susanin.sh install    # datapath up + setup
 | Лог | `sh /opt/susanin/tools/susanin.sh log` |
 | Снять правила | `sh /opt/susanin/tools/susanin.sh down` |
 | Убрать IP из кэша | `sh /opt/susanin/tools/susanin.sh forget <ip>` |
-| Обновление | `sh /opt/susanin/tools/susanin.sh update` |
+| Обновление | `sh /opt/susanin/tools/susanin.sh update vX.Y.Z` |
 | Удаление | `sh /opt/susanin/tools/susanin.sh uninstall [--purge]` |
 | Добавить IP в VPN вручную | `sh /opt/susanin/tools/susanin.sh add <ip> tcp test` |
 

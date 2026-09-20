@@ -93,8 +93,7 @@ egress_address=10.8.1.1,10.8.1.2
 ## Обновление и удаление
 
 ```sh
-sh /opt/susanin/tools/susanin.sh update          # до последнего релиза
-sh /opt/susanin/tools/susanin.sh update v0.3.10  # конкретная версия
+sh /opt/susanin/tools/susanin.sh update v0.3.10  # версия (актуальную см. в Releases)
 sh /opt/susanin/tools/susanin.sh uninstall        # снять, конфиг сохранить
 sh /opt/susanin/tools/susanin.sh uninstall --purge # удалить всё
 ```
