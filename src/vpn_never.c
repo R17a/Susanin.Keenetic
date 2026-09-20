@@ -20,6 +20,9 @@
 #define VN_BUDGET_MS 4000
 #define VN_QUERY_MAX_MS 2000
 #define VN_BACKOFF_S 60
+#define VN_FAIL_BACKOFF_S 3600  /* после 3 неудач подряд — проверять раз в час */
+#define VN_RECENT 512           /* кэш адресов, недавно снятых из susanin_never */
+#define VN_RECENT_TTL_S 3600
 #define VN_SET "susanin_never"
 
 typedef struct {
@@ -28,9 +31,48 @@ typedef struct {
     int nips;
     int is_net;
     int wild;               /* *.domain: домен и все поддомены */
-    int fail_logged;
+    int fails;              /* подряд неудачных резолвов (backoff) */
     time_t next_try;
 } vn_dom;
+
+/* Адреса, недавно снятые из susanin_never: их не учим в VPN какое-то время,
+ * чтобы адрес не «прыгал» direct <-> VPN (план п.8.3). */
+struct vn_recent { char ip[64]; time_t until; };
+static struct vn_recent vn_recent[VN_RECENT];
+static int vn_recent_n;
+
+static void recent_note(const char *ip, time_t now)
+{
+    int i, oldest = 0;
+    if (!ip || !ip[0] || strchr(ip, '/'))
+        return;
+    for (i = 0; i < vn_recent_n; i++) {
+        if (strcmp(vn_recent[i].ip, ip) == 0) {
+            vn_recent[i].until = now + VN_RECENT_TTL_S;
+            return;
+        }
+        if (vn_recent[i].until < vn_recent[oldest].until)
+            oldest = i;
+    }
+    if (vn_recent_n < VN_RECENT)
+        i = vn_recent_n++;
+    else {
+        i = oldest;
+        if (vn_recent[i].until > now)
+            return;             /* все свежие — не вытесняем */
+    }
+    snprintf(vn_recent[i].ip, sizeof(vn_recent[i].ip), "%s", ip);
+    vn_recent[i].until = now + VN_RECENT_TTL_S;
+}
+
+int vn_is_recently_never(const char *ip, time_t now)
+{
+    int i;
+    for (i = 0; i < vn_recent_n; i++)
+        if (strcmp(vn_recent[i].ip, ip) == 0)
+            return now < vn_recent[i].until;
+    return 0;
+}
 
 struct vpn_never {
     vn_dom dom[VN_MAXDOM];
@@ -357,6 +399,8 @@ int vn_refresh(vpn_never *v, const susanin_config *cfg)
     struct stat st;
     time_t now = time(NULL);
     int i, nd = 0, added = 0, removed = 0, pending = 0, new_epoch = 0;
+    int nfail = 0, nex = 0;
+    char exa[3][64] = { "", "", "" };
     long long t0 = now_ms();
     int interval = cfg->vpn_never_interval > 0 ? cfg->vpn_never_interval : 300;
 
@@ -379,6 +423,7 @@ int vn_refresh(vpn_never *v, const susanin_config *cfg)
                 backend_set_del(cfg, VN_SET, v->track[0]);
                 slogf(SL_INFO, "vpn_never: unpin %s (file removed)",
                       v->track[0]);
+                recent_note(v->track[0], time(NULL));
                 tracked_remove(v, v->track[0]);
             }
         } else if (!v->warned) {
@@ -444,16 +489,40 @@ int vn_refresh(vpn_never *v, const susanin_config *cfg)
             for (k = 0; k < n; k++)
                 slogf(SL_DEBUG, "vpn_never: %s -> %s", d->name, d->ips[k]);
             d->nips = n;
-            d->fail_logged = 0;
+            d->fails = 0;
             d->next_try = now + interval;
         } else {
-            if (d->nips == 0 && !d->fail_logged) {
-                slogf(SL_WARN,
-                      "vpn_never: %s resolve failed (no A records) — домен НЕ защищён, может уйти в VPN",
-                      d->name);
-                d->fail_logged = 1;
+            if (d->nips == 0) {
+                d->fails++;
+                nfail++;
+                if (nex < 3)
+                    snprintf(exa[nex++], sizeof(exa[0]), "%s", d->name);
+            } else {
+                slogf(SL_DEBUG, "vpn_never: %s resolve failed (keep %d old ip)",
+                      d->name, d->nips);
             }
-            d->next_try = now + VN_BACKOFF_S;
+            d->next_try = now + (d->fails >= 3 ? VN_FAIL_BACKOFF_S
+                                               : VN_BACKOFF_S);
+        }
+    }
+
+    if (nfail > 0) {
+        /* Одна сводка вместо строки на каждый домен; не чаще раза в час,
+         * если число не меняется (как в vpn_always). */
+        static int last_nfail = -1;
+        static time_t last_tsum = 0;
+        if (nfail != last_nfail || now - last_tsum >= 3600) {
+            char ex[200];
+            int k;
+            ex[0] = '\0';
+            for (k = 0; k < nex; k++) {
+                size_t l = strlen(ex);
+                snprintf(ex + l, sizeof(ex) - l, "%s%s", l ? ", " : "", exa[k]);
+            }
+            slogf(SL_WARN, "vpn_never: %d домен(ов) без A-записей — НЕ защищены, "
+                  "могут уйти в VPN (напр.: %s)", nfail, ex);
+            last_nfail = nfail;
+            last_tsum = now;
         }
     }
 
@@ -494,6 +563,7 @@ int vn_refresh(vpn_never *v, const susanin_config *cfg)
             }
             backend_set_del(cfg, VN_SET, v->track[i]);
             slogf(SL_DEBUG, "vpn_never: allow-direct off %s", v->track[i]);
+            recent_note(v->track[i], now);
             removed++;
             tracked_remove(v, v->track[i]);
         } else {
