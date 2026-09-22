@@ -318,6 +318,39 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     fi
     say "disk_mode=$DISK_MODE -> $PREFIX/etc/susanin.conf"
 fi
+# Дополнить существующий список новыми строками из пакета. Ничего не удаляем и
+# не перезаписываем: добавляем только те «чистые» строки (домены/IP/CIDR), которых
+# ещё нет. Идемпотентно: повторный запуск ничего не меняет.
+merge_list() { # merge_list <user_file> <package_file> <label>
+    _uf="$1"; _pf="$2"; _label="$3"
+    [ -f "$_uf" ] && [ -f "$_pf" ] || return 0
+    _tmp=$(mktemp 2>/dev/null) || _tmp="/tmp/susanin-merge.$$"
+    sed 's/#.*//' "$_uf" | tr -d ' \t\r' | grep -v '^$' | sort -u > "$_tmp" || true
+    _added=0
+    while IFS= read -r _line; do
+        _e=$(printf '%s' "$_line" | sed 's/#.*//' | tr -d ' \t\r')
+        if [ -z "$_e" ]; then
+            continue
+        fi
+        if grep -qxF "$_e" "$_tmp"; then
+            continue
+        fi
+        if [ "$_added" -eq 0 ]; then
+            if ! grep -qF 'susanin-update:' "$_uf"; then
+                printf '\n# susanin-update: added missing default entries\n' >> "$_uf"
+            fi
+        fi
+        printf '%s\n' "$_e" >> "$_uf"
+        printf '%s\n' "$_e" >> "$_tmp"
+        _added=$((_added + 1))
+    done < "$_pf"
+    rm -f "$_tmp"
+    if [ "$_added" -gt 0 ]; then
+        say "$_label: добавлено новых строк: $_added"
+    fi
+    return 0
+}
+
 if [ ! -f "$PREFIX/etc/vpn_always.txt" ] && [ -f "$DIR/vpn_always.txt" ]; then
     cp "$DIR/vpn_always.txt" "$PREFIX/etc/vpn_always.txt"
     say "vpn_always list installed: $PREFIX/etc/vpn_always.txt"
@@ -329,6 +362,7 @@ if [ ! -f "$PREFIX/etc/vpn_never.txt" ] && [ -f "$DIR/vpn_never.txt" ]; then
     say "vpn_never list installed: $PREFIX/etc/vpn_never.txt"
 else
     say "vpn_never list kept (not overwritten)"
+    merge_list "$PREFIX/etc/vpn_never.txt" "$DIR/vpn_never.txt" "vpn_never"
 fi
 
 if [ -f "$DIR/S94susanin" ]; then

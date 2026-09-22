@@ -12,6 +12,39 @@ VERSION="latest"
 say() { echo "[susanin] $*"; }
 die() { echo "[susanin] ERROR: $*" >&2; exit 1; }
 
+# Дополнить существующий список новыми строками из пакета. Ничего не удаляем и
+# не перезаписываем: добавляем только те «чистые» строки (домены/IP/CIDR), которых
+# ещё нет. Идемпотентно: повторный запуск ничего не меняет.
+merge_list() { # merge_list <user_file> <package_file> <label>
+    _uf="$1"; _pf="$2"; _label="$3"
+    [ -f "$_uf" ] && [ -f "$_pf" ] || return 0
+    _tmp=$(mktemp 2>/dev/null) || _tmp="/tmp/susanin-merge.$$"
+    sed 's/#.*//' "$_uf" | tr -d ' \t\r' | grep -v '^$' | sort -u > "$_tmp" || true
+    _added=0
+    while IFS= read -r _line; do
+        _e=$(printf '%s' "$_line" | sed 's/#.*//' | tr -d ' \t\r')
+        if [ -z "$_e" ]; then
+            continue
+        fi
+        if grep -qxF "$_e" "$_tmp"; then
+            continue
+        fi
+        if [ "$_added" -eq 0 ]; then
+            if ! grep -qF 'susanin-update:' "$_uf"; then
+                printf '\n# susanin-update: added missing default entries\n' >> "$_uf"
+            fi
+        fi
+        printf '%s\n' "$_e" >> "$_uf"
+        printf '%s\n' "$_e" >> "$_tmp"
+        _added=$((_added + 1))
+    done < "$_pf"
+    rm -f "$_tmp"
+    if [ "$_added" -gt 0 ]; then
+        say "$_label: добавлено новых строк: $_added"
+    fi
+    return 0
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --arch) ARCH="$2"; shift ;;
@@ -83,10 +116,18 @@ STAMP=$(date +%Y%m%d-%H%M%S)
 cp "$DIR/$BINFILE" "$PREFIX/bin/susanin-agent.new"
 mv "$PREFIX/bin/susanin-agent.new" "$PREFIX/bin/susanin-agent"
 chmod +x "$PREFIX/bin/susanin-agent"
-for f in datapath.sh susanin.sh update.sh uninstall.sh install.sh report.sh diagnose.sh; do
-    [ -f "$DIR/$f" ] && cp "$DIR/$f" "$PREFIX/tools/$f"
+# Копируем все скрипты из пакета (не жёстким списком): так новые файлы,
+# добавленные в релизе, не теряются при обновлении старым update.sh.
+for f in "$DIR"/*.sh; do
+    [ -f "$f" ] || continue
+    cp "$f" "$PREFIX/tools/"
 done
 chmod +x "$PREFIX/tools/"*.sh 2>/dev/null || true
+
+# Дополнить существующие списки новыми строками из пакета (идемпотентно).
+if [ -f "$DIR/vpn_never.txt" ]; then
+    merge_list "$PREFIX/etc/vpn_never.txt" "$DIR/vpn_never.txt" "vpn_never"
+fi
 
 if [ -x "$PREFIX/tools/susanin.sh" ]; then
     sh "$PREFIX/tools/susanin.sh" start || true
