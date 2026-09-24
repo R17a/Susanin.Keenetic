@@ -43,6 +43,15 @@ say() { echo "[xray-egress] $*"; }
 xray_running()  { pidof xray >/dev/null 2>&1; }
 agent_running() { pidof susanin-agent >/dev/null 2>&1; }
 net_ok()        { nslookup ya.ru >/dev/null 2>&1; }
+# Ждать, пока TCP-порт начнёт слушаться (иначе агент стартует раньше Xray).
+wait_listen() { # wait_listen PORT [seconds]
+    _p="$1"; _n=${2:-15}; _i=0
+    while [ "$_i" -lt "$_n" ]; do
+        netstat -lnt 2>/dev/null | grep -q ":$_p " && return 0
+        sleep 1; _i=$((_i + 1))
+    done
+    return 1
+}
 
 ensure_tproxy_cfg() {
     grep -q '^egress_type=' "$CONF" 2>/dev/null \
@@ -167,13 +176,8 @@ case "${1:-}" in
         agent_running && sh "$SH" flush >/dev/null 2>&1 || true
 
         start_xray
-        i=0
-        while [ "$i" -lt 15 ]; do
-            netstat -lnt 2>/dev/null | grep -q '127.0.0.1:1080' && break
-            sleep 1; i=$((i + 1))
-        done
-        netstat -lnt 2>/dev/null | grep -q '127.0.0.1:1080' \
-            || say "ВНИМАНИЕ: Xray socks 1080 не поднялся"
+        wait_listen 1080 15 || say "ВНИМАНИЕ: Xray socks 1080 не поднялся"
+        wait_listen "$port" 15 || say "ВНИМАНИЕ: Xray tproxy :$port не слушает"
 
         sh "$SH" restart || true
         sleep 3
@@ -198,6 +202,8 @@ case "${1:-}" in
         [ -x /opt/sbin/xray ] || say "ВНИМАНИЕ: нет /opt/sbin/xray (положите бинарь Xray)"
         [ -f "$XCFG" ] || say "ВНИМАНИЕ: нет $XCFG (положите конфиг Xray)"
         start_xray
+        # Дать Xray забиндить порт, иначе агент стартует раньше и уходит в fail-open.
+        wait_listen "$port" 15 || say "ВНИМАНИЕ: Xray :$port не слушает — агент уйдёт в fail-open"
         sh "$SH" restart || true
         sleep 3
         if ! net_ok; then
@@ -208,8 +214,10 @@ case "${1:-}" in
         status
         r=$(iptables -t nat -S PREROUTING 2>/dev/null | grep -c 'REDIRECT --to-ports' || true)
         if [ "${r:-0}" -eq 0 ]; then
-            say "ВНИМАНИЕ: nat REDIRECT-правил нет — агент не поднял tproxy."
-            say "         проверьте: grep -iE 'tproxy|data plane' /opt/susanin/var/susanin.log | tail"
+            say "НЕ ВКЛЮЧЕНО: nat REDIRECT-правил нет — агент не поднял tproxy."
+            say "проверьте: grep -iE 'tproxy|data plane' /opt/susanin/var/susanin.log | tail"
+            say "повторите: sh $0 enable"
+            exit 1
         fi
         say "tproxy ВКЛЮЧЁН: трафик ok/vpn_always идёт через XRay (TCP REDIRECT + UDP relay)."
         say "откат: sh $0 disable"
