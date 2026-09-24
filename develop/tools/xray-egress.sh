@@ -206,6 +206,11 @@ case "${1:-}" in
             exit 1
         fi
         status
+        r=$(iptables -t nat -S PREROUTING 2>/dev/null | grep -c 'REDIRECT --to-ports' || true)
+        if [ "${r:-0}" -eq 0 ]; then
+            say "ВНИМАНИЕ: nat REDIRECT-правил нет — агент не поднял tproxy."
+            say "         проверьте: grep -iE 'tproxy|data plane' /opt/susanin/var/susanin.log | tail"
+        fi
         say "tproxy ВКЛЮЧЁН: трафик ok/vpn_always идёт через XRay (TCP REDIRECT + UDP relay)."
         say "откат: sh $0 disable"
         ;;
