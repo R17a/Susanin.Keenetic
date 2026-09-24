@@ -122,6 +122,18 @@ sh /opt/susanin/tools/susanin.sh status       # строка mode=tproxy ... (Xr
    бинарь 1.8.24 softfloat.
 6. **Вернуть DIRECT:** `sh /opt/susanin/tools/xray-egress.sh disable`.
 
+## xray.log быстро растёт (строки `from … accepted …`)
+
+Это access-лог Xray (уровень `info`) — строка на каждое соединение/датаграмму.
+В бою нужен `xray_loglevel=warning` (или `error`/`none`) в `susanin.conf`.
+Уровень читается только при старте, поэтому примените его с перезапуском Xray:
+```sh
+sed -i 's/^xray_loglevel=.*/xray_loglevel=warning/' /opt/susanin/etc/susanin.conf
+sh /opt/susanin/tools/xray-egress.sh enable     # перезапустит Xray
+: > /opt/susanin/var/xray.log                    # обрезать старый
+```
+(`log_level` Susanin и `xray_loglevel` Xray — независимые ключи.)
+
 ## XKeen и Susanin вместе
 
 **XKeen** — отдельный перехватчик трафика, у него свои правила и маршруты. Если он
@@ -169,6 +181,8 @@ sh /opt/susanin/tools/susanin.sh status       # строка mode=tproxy ... (Xr
   ```
   (в свежих сборках `datapath.sh` делает это сам). Если модуля .ko нет — UDP
   через XRay не пойдёт, это не мешает TCP.
+- Если пишет `xray.log` (много `accepted`-строк) — понизьте уровень Xray, см.
+  раздел «xray.log быстро растёт».
 - Убрать поток записей на носитель:
   ```sh
   sed -i 's/^disk_mode=.*/disk_mode=soft/' /opt/susanin/etc/susanin.conf

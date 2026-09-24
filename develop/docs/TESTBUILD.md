@@ -58,6 +58,9 @@ Xray через `REDIRECT`, UDP — через релей в демоне. TUN �
    sh /opt/susanin/tools/xray-egress.sh enable
    ```
    Ключи (`egress_type=tproxy`, `udp_relay=1` и др.) прописываются сами.
+   Логи Xray — отдельным ключом `xray_loglevel` (по умолчанию `warning`):
+   `enable`/`run` применяют его и перезапускают Xray. Не ставьте `info` — иначе
+   Xray пишет строку на каждое соединение (`from … accepted …`).
 
 **Проверка**
 Безопасно проверить один адрес (в туннель уйдёт только он):

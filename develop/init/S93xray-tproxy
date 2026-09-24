@@ -15,10 +15,20 @@ PORT=12345
 start() {
     [ -x "$XRAY" ] && [ -f "$XCFG" ] || { echo "xray-tproxy: нет Xray/конфига — пропуск"; return 0; }
     mkdir -p /opt/susanin/var
+    # Уровень логов Xray (независимо от log_level Susanin) — из susanin.conf.
+    # Xray читает уровень только при старте, поэтому применяем его до запуска,
+    # а для уже запущенного процесса нужен restart.
+    _lvl=$(sed -n 's/^xray_loglevel=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
+    [ -n "$_lvl" ] || _lvl=warning
+    if grep -q '"loglevel"' "$XCFG" 2>/dev/null; then
+        sed -i "s|\"loglevel\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"loglevel\": \"$_lvl\"|" "$XCFG" 2>/dev/null || true
+    fi
     if ! pidof xray >/dev/null 2>&1; then
         "$XRAY" run -config "$XCFG" >>"$LOGF" 2>&1 &
+        echo "xray-tproxy: started (port=$PORT, loglevel=$_lvl)"
+    else
+        echo "xray-tproxy: уже запущен; новый loglevel=$_lvl применится после 'restart'"
     fi
-    echo "xray-tproxy: started (port=$PORT)"
 }
 
 stop() {

@@ -69,6 +69,10 @@ sh /opt/susanin/tools/susanin.sh status
 Обычный режим (VPN из «Других подключений», `egress_type=interface`) работает
 как обычно и ничего дополнительно настраивать не нужно.
 
+Логи: у Susanin — `log_level` (файл `/opt/susanin/var/susanin.log`), у Xray —
+отдельный `xray_loglevel` (применяется к `xray-tproxy.json` при
+`xray-egress.sh enable|run`). Подробнее — [XRAY.md](XRAY.md), раздел «Логи».
+
 ## Остановка и удаление
 ```sh
 sh /opt/susanin/tools/susanin.sh stop          # остановить демон

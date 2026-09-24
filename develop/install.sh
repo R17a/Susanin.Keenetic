@@ -441,7 +441,9 @@ fi
 # агента, иначе агент не станет поднимать tproxy-правила (fail-open -> DIRECT).
 if grep -q '^egress_type=tproxy' "$PREFIX/etc/susanin.conf" 2>/dev/null; then
     if [ -x /opt/sbin/xray ] && [ -f "$PREFIX/etc/xray-tproxy.json" ]; then
-        [ -x "$INITD/S93xray-tproxy" ] && sh "$INITD/S93xray-tproxy" start >/dev/null 2>&1 || true
+        # restart (не start): чтобы применился свежий уровень логов Xray и конфиг,
+        # даже если Xray уже был запущен с прошлых тестов.
+        [ -x "$INITD/S93xray-tproxy" ] && sh "$INITD/S93xray-tproxy" restart >/dev/null 2>&1 || true
         say "tproxy: Xray поднят перед стартом агента"
     else
         say "ВНИМАНИЕ: egress_type=tproxy, но нет /opt/sbin/xray или $PREFIX/etc/xray-tproxy.json"

@@ -38,6 +38,10 @@ urp=$(sed -n 's/^udp_relay_port=//p' "$CONF" 2>/dev/null | tail -n1)
 [ -n "$urp" ] || urp=1081
 et=$(sed -n 's/^egress_type=//p' "$CONF" 2>/dev/null | tail -n1)
 [ -n "$et" ] || et=interface
+# Уровень логов Xray — ОТДЕЛЬНО от log_level Susanin. Применяется к
+# xray-tproxy.json при enable/run (Xray читает уровень только при старте).
+xlog=$(sed -n 's/^xray_loglevel=//p' "$CONF" 2>/dev/null | tail -n1)
+[ -n "$xlog" ] || xlog=warning
 
 say() { echo "[xray-egress] $*"; }
 xray_running()  { pidof xray >/dev/null 2>&1; }
@@ -69,6 +73,20 @@ ensure_tproxy_cfg() {
     grep -q '^socks_port=' "$CONF" 2>/dev/null \
         || echo 'socks_port=1080' >> "$CONF"
     et=tproxy
+}
+
+apply_xray_loglevel() {
+    [ -f "$XCFG" ] || return 0
+    if grep -q '"loglevel"' "$XCFG" 2>/dev/null; then
+        sed -i "s|\"loglevel\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"loglevel\": \"$xlog\"|" "$XCFG" 2>/dev/null || true
+        say "xray loglevel -> $xlog"
+    fi
+}
+
+restart_xray() {
+    apply_xray_loglevel
+    stop_xray
+    start_xray
 }
 
 start_xray() {
@@ -175,7 +193,7 @@ case "${1:-}" in
         : > "$VA" 2>/dev/null || true
         agent_running && sh "$SH" flush >/dev/null 2>&1 || true
 
-        start_xray
+        restart_xray
         wait_listen 1080 15 || say "ВНИМАНИЕ: Xray socks 1080 не поднялся"
         wait_listen "$port" 15 || say "ВНИМАНИЕ: Xray tproxy :$port не слушает"
 
@@ -201,7 +219,7 @@ case "${1:-}" in
         ensure_tproxy_cfg
         [ -x /opt/sbin/xray ] || say "ВНИМАНИЕ: нет /opt/sbin/xray (положите бинарь Xray)"
         [ -f "$XCFG" ] || say "ВНИМАНИЕ: нет $XCFG (положите конфиг Xray)"
-        start_xray
+        restart_xray
         # Дать Xray забиндить порт, иначе агент стартует раньше и уходит в fail-open.
         wait_listen "$port" 15 || say "ВНИМАНИЕ: Xray :$port не слушает — агент уйдёт в fail-open"
         sh "$SH" restart || true

@@ -90,6 +90,25 @@ sh /opt/susanin/tools/xray-egress.sh disable    # выключить, верну
 - **Не запускайте XKeen вместе с Susanin** — это два перехватчика одного
   трафика; для Reality используйте встроенный режим Susanin.
 
+## Логи (Susanin и Xray — раздельно)
+
+- **Susanin** — ключ `log_level` в `susanin.conf`
+  (`quiet|error|warn|info|debug|trace`), пишет в `/opt/susanin/var/susanin.log`.
+- **Xray** — ключ `xray_loglevel` в `susanin.conf` (`debug|info|warning|none`).
+  Он применяется к `xray-tproxy.json` при `xray-egress.sh enable|run`, при этом
+  Xray **перезапускается** (уровень читается только при старте). Уровни
+  независимы: `log_level` не влияет на Xray и наоборот.
+
+Рекомендации:
+- в бою держите `xray_loglevel=warning` (по умолчанию) или `error`/`none`: при
+  `info` Xray пишет строку `from … accepted …` на каждое соединение и лог быстро
+  растёт;
+- если `/opt/susanin/var/xray.log` растёт `accepted`-строками — работает старый
+  процесс Xray; примените уровень с перезапуском:
+  `sh /opt/susanin/tools/xray-egress.sh enable` (или
+  `/opt/etc/init.d/S93xray-tproxy restart`);
+- обрезать лог: `: > /opt/susanin/var/xray.log`.
+
 ## Если не работает
 
 - Xray не запущен/не слушает: `netstat -lntu | grep -E ':(12345|1080)'`.
