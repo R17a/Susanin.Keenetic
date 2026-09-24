@@ -12,16 +12,16 @@ XRay-egress (VLESS/REALITY), веб-панель, профили маршрут�
 
 ## Установка
 
-Сборка лежит в папке **Develop** репозитория:
-`https://github.com/R17a/Susanin.Keenetic/tree/main/Develop`.
+Сборка лежит в папке **develop** репозитория:
+`https://github.com/R17a/Susanin.Keenetic/tree/main/develop`.
 
 1. Создать папку на роутере и скачать туда архив:
    ```sh
    mkdir -p /opt/tmp/sus-dist && cd /opt/tmp/sus-dist
    wget -O susanin-dev.tar.gz \
-     https://github.com/R17a/Susanin.Keenetic/raw/main/Develop/susanin-keenetic-0.4.0-dev1.tar.gz
+     https://github.com/R17a/Susanin.Keenetic/raw/main/develop/susanin-keenetic-0.4.0-dev1.tar.gz
    ```
-   (короткая ссылка на файл: `…/raw/main/Develop/susanin-keenetic-0.4.0-dev1.tar.gz`)
+   (короткая ссылка на файл: `…/raw/main/develop/susanin-keenetic-0.4.0-dev1.tar.gz`)
 2. Распаковать и установить:
    ```sh
    tar -xzf susanin-dev.tar.gz
