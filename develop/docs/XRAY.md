@@ -94,20 +94,20 @@ sh /opt/susanin/tools/xray-egress.sh disable    # выключить, верну
 
 - **Susanin** — ключ `log_level` в `susanin.conf`
   (`quiet|error|warn|info|debug|trace`), пишет в `/opt/susanin/var/susanin.log`.
-- **Xray** — ключ `xray_loglevel` в `susanin.conf` (`debug|info|warning|none`).
-  Он применяется к `xray-tproxy.json` при `xray-egress.sh enable|run`, при этом
-  Xray **перезапускается** (уровень читается только при старте). Уровни
-  независимы: `log_level` не влияет на Xray и наоборот.
+- **Xray** — два параметра в его `xray-tproxy.json`:
+  - `"loglevel"` — общий уровень (`debug|info|warning|error|none`);
+  - `"access"` — access-лог (строки `from … accepted …`); при `"none"` не пишется.
+  В `susanin.conf` задаётся `xray_loglevel`; при `xray-egress.sh enable|run`
+  он применяется к `xray-tproxy.json` (вместе с `"access": "none"`), и Xray
+  **перезапускается** (уровень читается только при старте). Уровни Susanin и
+  Xray независимы.
 
-Рекомендации:
-- в бою держите `xray_loglevel=warning` (по умолчанию) или `error`/`none`: при
-  `info` Xray пишет строку `from … accepted …` на каждое соединение и лог быстро
-  растёт;
-- если `/opt/susanin/var/xray.log` растёт `accepted`-строками — работает старый
-  процесс Xray; примените уровень с перезапуском:
-  `sh /opt/susanin/tools/xray-egress.sh enable` (или
-  `/opt/etc/init.d/S93xray-tproxy restart`);
-- обрезать лог: `: > /opt/susanin/var/xray.log`.
+Важно: `from … accepted …` — это **access-лог**, он **не управляется
+`loglevel`**. Чтобы этих строк не было, нужен именно `"access": "none"`:
+```json
+"log": { "access": "none", "loglevel": "warning" },
+```
+Обрезать лог: `: > /opt/susanin/var/xray.log`.
 
 ## Если не работает
 

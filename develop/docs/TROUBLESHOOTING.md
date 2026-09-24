@@ -124,11 +124,16 @@ sh /opt/susanin/tools/susanin.sh status       # строка mode=tproxy ... (Xr
 
 ## xray.log быстро растёт (строки `from … accepted …`)
 
-Это access-лог Xray (уровень `info`) — строка на каждое соединение/датаграмму.
-В бою нужен `xray_loglevel=warning` (или `error`/`none`) в `susanin.conf`.
-Уровень читается только при старте, поэтому примените его с перезапуском Xray:
+Это **access-лог Xray**. Он **не управляется `loglevel`** — выключается
+отдельным параметром `"access": "none"` в блоке `log` файла
+`/opt/susanin/etc/xray-tproxy.json`:
+```json
+"log": { "access": "none", "loglevel": "warning" },
+```
+В свежих сборках `xray-egress.sh enable|run` выставляет это сам и перезапускает
+Xray. Вручную:
 ```sh
-sed -i 's/^xray_loglevel=.*/xray_loglevel=warning/' /opt/susanin/etc/susanin.conf
+sed -i 's|"log"[[:space:]]*:[[:space:]]*{|"log": { "access": "none",|' /opt/susanin/etc/xray-tproxy.json
 sh /opt/susanin/tools/xray-egress.sh enable     # перезапустит Xray
 : > /opt/susanin/var/xray.log                    # обрезать старый
 ```

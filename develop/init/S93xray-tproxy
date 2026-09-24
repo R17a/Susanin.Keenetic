@@ -23,6 +23,12 @@ start() {
     if grep -q '"loglevel"' "$XCFG" 2>/dev/null; then
         sed -i "s|\"loglevel\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"loglevel\": \"$_lvl\"|" "$XCFG" 2>/dev/null || true
     fi
+    # access-лог («accepted …») не зависит от loglevel — выключаем отдельно.
+    if grep -q '"access"' "$XCFG" 2>/dev/null; then
+        sed -i "s|\"access\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"access\": \"none\"|" "$XCFG" 2>/dev/null || true
+    elif grep -q '"log"[[:space:]]*:[[:space:]]*{' "$XCFG" 2>/dev/null; then
+        sed -i "s|\"log\"[[:space:]]*:[[:space:]]*{|\"log\": { \"access\": \"none\",|" "$XCFG" 2>/dev/null || true
+    fi
     if ! pidof xray >/dev/null 2>&1; then
         "$XRAY" run -config "$XCFG" >>"$LOGF" 2>&1 &
         echo "xray-tproxy: started (port=$PORT, loglevel=$_lvl)"

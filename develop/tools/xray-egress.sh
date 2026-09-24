@@ -79,8 +79,14 @@ apply_xray_loglevel() {
     [ -f "$XCFG" ] || return 0
     if grep -q '"loglevel"' "$XCFG" 2>/dev/null; then
         sed -i "s|\"loglevel\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"loglevel\": \"$xlog\"|" "$XCFG" 2>/dev/null || true
-        say "xray loglevel -> $xlog"
     fi
+    # access-лог («from … accepted …») не зависит от loglevel — выключаем отдельно.
+    if grep -q '"access"' "$XCFG" 2>/dev/null; then
+        sed -i "s|\"access\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"access\": \"none\"|" "$XCFG" 2>/dev/null || true
+    elif grep -q '"log"[[:space:]]*:[[:space:]]*{' "$XCFG" 2>/dev/null; then
+        sed -i "s|\"log\"[[:space:]]*:[[:space:]]*{|\"log\": { \"access\": \"none\",|" "$XCFG" 2>/dev/null || true
+    fi
+    say "xray loglevel -> $xlog, access log -> none"
 }
 
 restart_xray() {
