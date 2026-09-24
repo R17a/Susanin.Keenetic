@@ -1,0 +1,41 @@
+#!/bin/sh
+# Entware init script for the built-in Susanin web panel (Keenetic/Entware).
+# Install as /opt/etc/init.d/S95susanin-web and make executable.
+# Runs `susanin-agent web` only when web_enable=1 in susanin.conf.
+# Test: /opt/etc/init.d/S95susanin-web start|stop|restart
+
+AGENT=/opt/susanin/bin/susanin-agent
+CONF=/opt/susanin/etc/susanin.conf
+PIDFILE=/opt/susanin/var/susanin-web.pid
+LOGFILE=/opt/susanin/var/susanin-web.log
+
+start() {
+    [ -x "$AGENT" ] || { echo "susanin-web: no agent"; return 1; }
+    [ -f "$CONF" ] || { echo "susanin-web: no config"; return 1; }
+    _en=$(sed -n 's/^web_enable=//p' "$CONF" 2>/dev/null | tail -n 1)
+    [ "$_en" = "1" ] || { echo "susanin-web: web_enable!=1, skip"; return 0; }
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        echo "susanin-web: already running (pid $(cat "$PIDFILE"))"
+        return 0
+    fi
+    mkdir -p /opt/susanin/var
+    SUSANIN_CONF="$CONF" "$AGENT" web >>"$LOGFILE" 2>&1 &
+    echo "$!" > "$PIDFILE"
+    echo "susanin-web: started (pid $(cat "$PIDFILE"))"
+}
+
+stop() {
+    if [ -f "$PIDFILE" ]; then
+        _p=$(cat "$PIDFILE" 2>/dev/null)
+        [ -n "$_p" ] && kill "$_p" 2>/dev/null
+        rm -f "$PIDFILE"
+    fi
+    echo "susanin-web: stopped"
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; sleep 1; start ;;
+    *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

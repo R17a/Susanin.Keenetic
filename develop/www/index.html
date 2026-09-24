@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Susanin.Keenetic</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Susanin.Keenetic <span id="ver" class="muted"></span></h1>
+  <div class="row">
+    <label>Токен: <input id="token" type="password" placeholder="web_token" autocomplete="off"></label>
+    <button id="save">Сохранить</button>
+    <button id="refresh">Обновить</button>
+  </div>
+</header>
+
+<main>
+  <section id="cards" class="cards"></section>
+
+  <section>
+    <h2>Управление</h2>
+    <div class="row">
+      <button id="reload">Reload</button>
+      <button id="rescan">Rescan</button>
+      <button id="restart">Restart</button>
+      <input id="fip" placeholder="IP для forget" size="16">
+      <button id="forget">Forget</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <select id="lname"><option>vpn_always</option><option>vpn_never</option></select>
+      <input id="lval" placeholder="домен / IP / CIDR" size="24">
+      <button id="ladd">В список</button>
+      <button id="ldel">Из списка</button>
+    </div>
+    <div id="act" class="muted" style="margin-top:8px"></div>
+  </section>
+
+  <section>
+    <h2>VPN-наборы (ipset)</h2>
+    <table id="sets">
+      <thead><tr><th>Набор</th><th>Записей</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Списки</h2>
+    <table id="lists">
+      <thead><tr><th>Список</th><th>Строк</th><th>Файл</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Лог</h2>
+    <pre id="log" class="log">…</pre>
+  </section>
+</main>
+
+<p class="foot muted">Локальная панель, только LAN. Данные: <code>/api/status</code>, <code>/api/log</code>.</p>
+<script src="app.js"></script>
+</body>
+</html>

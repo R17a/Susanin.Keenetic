@@ -1,0 +1,48 @@
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": 12345,
+      "protocol": "dokodemo-door",
+      "settings": { "network": "tcp", "followRedirect": true },
+      "streamSettings": { "sockopt": { "tproxy": "redirect" } },
+      "tag": "redirect"
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 1080,
+      "protocol": "socks",
+      "settings": { "auth": "noauth", "udp": true },
+      "tag": "socks-in"
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "<SERVER>",
+            "port": 443,
+            "users": [
+              { "id": "<UUID>", "encryption": "none", "flow": "xtls-rprx-vision" }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "sockopt": { "mark": 1073741824 },
+        "realitySettings": {
+          "serverName": "<SNI>",
+          "fingerprint": "chrome",
+          "publicKey": "<PBK>",
+          "shortId": "<SID>",
+          "spiderX": "/"
+        }
+      }
+    }
+  ]
+}
