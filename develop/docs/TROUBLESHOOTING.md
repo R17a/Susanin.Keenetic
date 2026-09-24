@@ -147,6 +147,36 @@ sh /opt/susanin/tools/susanin.sh status       # строка mode=tproxy ... (Xr
   `sh /opt/susanin/tools/profiles.sh status`;
 - адрес обрабатывается **первым совпавшим** профилем.
 
+## Постоянно мигает носитель (флешка/USB), система подтормаживает
+
+Частая причина — `datapath.sh up` падает, а агент повторяет его (с записью
+бэкапа на носитель). В логе видно строки `datapath provisioning failed`.
+
+- Посмотреть причину:
+  ```sh
+  grep -c 'provisioning failed' /opt/susanin/var/susanin.log
+  tail -40 /opt/susanin/var/susanin.log
+  ```
+- Частый конкретный случай — не загружен модуль ядра для UDP-релея:
+  `iptables ... -j TPROXY` → `iptables: No chain/target/match by that name`.
+  TCP при этом работает. На Keenetic `modprobe` обычно нет — грузите `insmod`:
+  ```sh
+  K=/lib/modules/$(uname -r)
+  insmod $K/nf_tproxy_ipv4.ko 2>/dev/null
+  insmod $K/xt_socket.ko 2>/dev/null
+  insmod $K/xt_TPROXY.ko 2>/dev/null
+  cat /proc/modules | grep -iE 'tproxy|socket'
+  ```
+  (в свежих сборках `datapath.sh` делает это сам). Если модуля .ko нет — UDP
+  через XRay не пойдёт, это не мешает TCP.
+- Убрать поток записей на носитель:
+  ```sh
+  sed -i 's/^disk_mode=.*/disk_mode=soft/' /opt/susanin/etc/susanin.conf
+  sh /opt/susanin/tools/susanin.sh restart
+  rm -rf /opt/susanin/var/datapath-* /opt/susanin/var/archive/*
+  ```
+  (в свежих сборках бэкапы уже ограничены — не чаще раза в час).
+
 ## Отчёт для Issue
 
 ```sh

@@ -29,6 +29,9 @@ set -eu
 PREFIX=/opt
 find_bin() { for b in /opt/sbin /opt/bin /usr/sbin /usr/bin; do [ -x "$b/$1" ] && { echo "$b/$1"; return; }; done; command -v "$1" 2>/dev/null || true; }
 IPT=$(find_bin iptables); IPSET=$(find_bin ipset); IPCMD=$(find_bin ip)
+MODPROBE=$(find_bin modprobe); INSMOD=$(find_bin insmod)
+KVER=$(uname -r 2>/dev/null || echo "")
+KDIR="/lib/modules/$KVER"
 [ -n "$IPT" ] || { echo "iptables not found" >&2; exit 2; }
 [ -n "$IPSET" ] || { echo "ipset not found" >&2; exit 2; }
 [ -n "$IPCMD" ] || { echo "ip not found" >&2; exit 2; }
@@ -59,6 +62,16 @@ NETSET=susanin_ok_net
 NEVERSET=susanin_never
 
 say() { echo "[susanin] $*"; }
+# Best-effort подгрузка модуля ядра. На Keenetic `modprobe` обычно НЕТ, но
+# есть `insmod` (busybox) и .ko в /lib/modules/$(uname -r) — после выгрузки
+# xt_TPROXY иначе не вернуть (без модуля TPROXY-правила не ставятся).
+load_mod() {
+    _m="$1"
+    [ -n "$MODPROBE" ] && "$MODPROBE" "$_m" >/dev/null 2>&1 && return 0
+    [ -n "$INSMOD" ] && [ -f "$KDIR/$_m.ko" ] && "$INSMOD" "$KDIR/$_m.ko" >/dev/null 2>&1 && return 0
+    return 1
+}
+ensure_mod() { load_mod "$1" || true; }
 
 # Run iptables -t mangle with delete-first (idempotent). "$@" = full -A spec.
 mangle() { "$IPT" -t mangle -D "$@" >/dev/null 2>&1 || true; "$IPT" -t mangle -A "$@"; }
@@ -73,6 +86,16 @@ backup() {
         return 0
     fi
     mkdir -p "$PREFIX/susanin/var"
+    # Не бэкапим чаще BACKUP_MIN_INTERVAL (по умолчанию 1 час): при циклах
+    # ре-провижена это писало на носитель непрерывно. Маркер — крошечный файл.
+    _mark="$PREFIX/susanin/var/.last-backup"
+    _now=$(date +%s)
+    _last=$(cat "$_mark" 2>/dev/null || echo 0)
+    case "$_last" in ''|*[!0-9]*) _last=0;; esac
+    if [ $((_now - _last)) -lt "${BACKUP_MIN_INTERVAL:-3600}" ]; then
+        return 0
+    fi
+    printf '%s\n' "$_now" > "$_mark" 2>/dev/null || true
     bk="$PREFIX/susanin/var/datapath-$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$bk"
     "$IPT" -t mangle -S > "$bk/mangle.txt" 2>/dev/null || true
@@ -186,15 +209,25 @@ redirect_rules() {
 # UDP-релей: помеченные UDP → TPROXY на порт демона (+ локальная доставка).
 udp_relay_rules() {
     [ "${UDP_RELAY_PORT:-0}" -gt 0 ] 2>/dev/null || return 0
+    # TPROXY — модуль ядра; после выгрузки/ребута его может не быть. Пробуем
+    # подгрузить; если target всё равно недоступен — весь up НЕ валим (TCP
+    # REDIRECT продолжает работать), просто UDP через XRay не пойдёт.
+    ensure_mod nf_tproxy_ipv4
+    ensure_mod xt_socket
+    ensure_mod xt_TPROXY
     iprule fwmark "$TPROXY_MARK" priority "$((PRI_OK + 2))" lookup "$TABLE" 2>/dev/null || true
     "$IPCMD" route replace local default dev lo table "$TABLE" 2>/dev/null || true
     for m in "$MARK_OK" "$MARK_TEST"; do
         "$IPT" -t mangle -D PREROUTING -p udp -m mark --mark "$m/$MASK" \
             -j TPROXY --on-port "$UDP_RELAY_PORT" --tproxy-mark "$TPROXY_MARK/$MASK" \
             >/dev/null 2>&1 || true
-        "$IPT" -t mangle -A PREROUTING -p udp -m mark --mark "$m/$MASK" \
-            -j TPROXY --on-port "$UDP_RELAY_PORT" --tproxy-mark "$TPROXY_MARK/$MASK"
+        if ! "$IPT" -t mangle -A PREROUTING -p udp -m mark --mark "$m/$MASK" \
+                -j TPROXY --on-port "$UDP_RELAY_PORT" --tproxy-mark "$TPROXY_MARK/$MASK" 2>/dev/null; then
+            say "UDP relay: target TPROXY недоступен (нет модуля xt_TPROXY?) — UDP через XRay не пойдёт, TCP работает"
+            return 0
+        fi
     done
+    say "udp-relay rules ready (port=$UDP_RELAY_PORT)"
 }
 
 tproxy_clean() {

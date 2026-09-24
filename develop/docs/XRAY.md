@@ -20,6 +20,12 @@
   (образец — `xray-tproxy.json.example`).
 - Рабочий Xray-сервер VLESS+REALITY (на VPS). На роутере под него ничего
   настраивать не нужно.
+- Для UDP-релея нужен модуль ядра **`xt_TPROXY`** (плюс `xt_socket`,
+  `nf_tproxy_ipv4`). `datapath.sh` подгружает его сам: `modprobe`, а если его
+  нет — `insmod /lib/modules/$(uname -r)/<модуль>.ko` (на Keenetic `modprobe`
+  часто отсутствует, `insmod` из busybox есть). Если модуль всё равно
+  недоступен, TCP-ветка работает, а UDP через XRay не пойдёт — `datapath.sh`
+  напишет предупреждение и не станет валить правила.
 
 ## Настройка
 
