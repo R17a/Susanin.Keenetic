@@ -198,12 +198,15 @@ udp_relay_rules() {
 }
 
 tproxy_clean() {
-    if [ "${TPROXY_PORT:-0}" -gt 0 ] 2>/dev/null; then
-        for m in "$MARK_OK" "$MARK_TEST"; do
-            "$IPT" -t nat -D PREROUTING -p tcp -m mark --mark "$m/$MASK" \
-                -j REDIRECT --to-ports "$TPROXY_PORT" >/dev/null 2>&1 || true
-        done
-    fi
+    # Наши REDIRECT-правила (mangle-метка -> nat REDIRECT --to-ports) снимаем ВСЕГДА,
+    # независимо от env SUSANIN_TPROXY_PORT: `datapath.sh down` из shell идёт без env,
+    # и раньше эти правила оставались «висеть» (без метки они инертны, но мусор).
+    "$IPT" -t nat -S PREROUTING 2>/dev/null | grep -- '-j REDIRECT --to-ports' | \
+        grep -- '--mark 0x' | \
+        while read -r line; do
+            spec=$(printf '%s' "$line" | sed 's/^-A PREROUTING //')
+            "$IPT" -t nat -D PREROUTING $spec >/dev/null 2>&1 || true
+        done || true
     # на случай прежних TPROXY-правил из ранних версий
     "$IPT" -t mangle -S PREROUTING 2>/dev/null | grep -- '-j TPROXY' | \
         while read -r line; do

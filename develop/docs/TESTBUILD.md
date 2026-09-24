@@ -83,6 +83,10 @@ sh /opt/susanin/tools/xray-egress.sh default      # вернуть всё в DIR
 Важно: UDP проверяйте **с компьютера**, а не с роутера — трафик самого роутера
 в этот механизм не попадает.
 
+Если Xray не запущен, Susanin сам не поднимает tproxy-правила и пускает трафик
+напрямую (fail-open) — в `status` это видно как `(Xray NOT LISTENING)`. Поднять
+Xray: `/opt/etc/init.d/S93xray-tproxy start` или `xray-egress.sh enable`.
+
 ## Веб-панель
 
 **Включение** — в `/opt/susanin/etc/susanin.conf`:

@@ -437,6 +437,18 @@ if [ -n "$_s95" ]; then
     chmod +x "$INITD/S95susanin-web"
 fi
 
+# Если оставшийся/выбранный конфиг в tproxy-режиме — поднять Xray ДО старта
+# агента, иначе агент не станет поднимать tproxy-правила (fail-open -> DIRECT).
+if grep -q '^egress_type=tproxy' "$PREFIX/etc/susanin.conf" 2>/dev/null; then
+    if [ -x /opt/sbin/xray ] && [ -f "$PREFIX/etc/xray-tproxy.json" ]; then
+        [ -x "$INITD/S93xray-tproxy" ] && sh "$INITD/S93xray-tproxy" start >/dev/null 2>&1 || true
+        say "tproxy: Xray поднят перед стартом агента"
+    else
+        say "ВНИМАНИЕ: egress_type=tproxy, но нет /opt/sbin/xray или $PREFIX/etc/xray-tproxy.json"
+        say "         пока Xray не готов, агент оставит трафик в DIRECT (fail-open)"
+    fi
+fi
+
 if [ "$NO_START" -ne 1 ]; then
     if ps 2>/dev/null | grep '[s]usanin-agent' >/dev/null 2>&1; then
         sh "$PREFIX/tools/susanin.sh" restart || true

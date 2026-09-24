@@ -87,6 +87,9 @@ sh /opt/susanin/tools/xray-egress.sh disable    # выключить, верну
 ## Если не работает
 
 - Xray не запущен/не слушает: `netstat -lntu | grep -E ':(12345|1080)'`.
+  Важно: если Xray не запущен, Susanin **не поднимает** tproxy-правила и пускает
+  трафик напрямую (fail-open) — чёрной дыры не будет. Поднять Xray:
+  `/opt/etc/init.d/S93xray-tproxy start` (или `xray-egress.sh enable`).
 - Нет правил: `iptables -t nat -S PREROUTING | grep REDIRECT` и
   `iptables -t mangle -S PREROUTING | grep TPROXY`; если пусто — повторите
   `xray-egress.sh enable`.

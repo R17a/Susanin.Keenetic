@@ -79,6 +79,29 @@ Keenetic пересобирает правила при изменениях в 
 Включите `disk_mode=soft` — лог не ведётся, бэкапов нет, состояние сохраняется
 редко. Установщик включает его сам при установке во внутреннюю память.
 
+## После установки/перезагрузки часть сайтов не открывается (tproxy + Xray)
+
+Симптом: в конфиге `egress_type=tproxy`, но Xray не запущен — тогда выученные
+(помеченные) сайты уходят в никуда. Признак: `ps | grep '[x]ray'` пусто и
+`netstat -lnt | grep 12345` пусто.
+
+Что делает Susanin: при старте проверяет порт `tproxy_port`; если Xray не
+слушает — правила tproxy **не поднимает** и пускает трафик напрямую (fail-open),
+в лог пишет предупреждение. Так что «глухой» чёрной дыры быть не должно; если
+она возникла — значит правила остались с прошлого запуска:
+
+```sh
+sh /opt/susanin/tools/datapath.sh down        # снять правила (вернуть DIRECT)
+sed -i 's/^egress_type=.*/egress_type=interface/' /opt/susanin/etc/susanin.conf
+sh /opt/susanin/tools/susanin.sh restart      # обычный режим, пока Xray не готов
+```
+Либо поднимите Xray и оставьте tproxy:
+```sh
+/opt/etc/init.d/S93xray-tproxy start
+sh /opt/susanin/tools/susanin.sh restart
+sh /opt/susanin/tools/susanin.sh status       # строка mode=tproxy ... (Xray LISTEN)
+```
+
 ## XRay-режим: не идёт через туннель
 
 Режим XRay — `egress_type=tproxy`. Проверяйте по шагам:
