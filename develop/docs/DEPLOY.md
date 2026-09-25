@@ -69,7 +69,7 @@ sh /opt/susanin/tools/susanin.sh status
 Обычный режим (VPN из «Других подключений», `egress_type=interface`) работает
 как обычно и ничего дополнительно настраивать не нужно.
 
-Логи: у Susanin — `log_level` (файл `/opt/susanin/var/susanin.log`), у Xray —
+Логи: у Susanin.Keenetic — `log_level` (файл `/opt/susanin/var/susanin.log`), у Xray —
 отдельный `xray_loglevel` (применяется к `xray-tproxy.json` при
 `xray-egress.sh enable|run`). Подробнее — [XRAY.md](XRAY.md), раздел «Логи».
 
@@ -77,7 +77,7 @@ sh /opt/susanin/tools/susanin.sh status
 ```sh
 sh /opt/susanin/tools/susanin.sh stop          # остановить демон
 sh /opt/susanin/tools/xray-egress.sh disable    # выключить XRay и вернуть DIRECT
-sh /opt/susanin/tools/datapath.sh down          # снять правила Susanin
+sh /opt/susanin/tools/datapath.sh down          # снять правила Susanin.Keenetic
 sh /opt/susanin/tools/uninstall.sh              # удалить (конфиг сохранить)
 sh /opt/susanin/tools/uninstall.sh --purge      # удалить всё
 ```
@@ -95,5 +95,5 @@ sh /opt/susanin/tools/uninstall.sh --purge      # удалить всё
 
 ## Приоритеты подключений Keenetic
 Keenetic умеет сам заворачивать устройства в VPN (Web → «Приоритеты
-подключений»). Это **отдельный** механизм, он **перекрывает** Susanin: у
-клиента должна быть системная политика «по умолчанию», чтобы решал Susanin.
+подключений»). Это **отдельный** механизм, он **перекрывает** Susanin.Keenetic: у
+клиента должна быть системная политика «по умолчанию», чтобы решал Susanin.Keenetic.

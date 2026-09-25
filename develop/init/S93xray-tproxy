@@ -1,5 +1,5 @@
 #!/bin/sh
-# XRay-egress (tproxy): Xray dokodemo-door (tproxy) ДО старта Susanin
+# XRay-egress (tproxy): Xray dokodemo-door (tproxy) ДО старта Susanin.Keenetic
 # (init.d запускает скрипты по имени: S93 < S94). Без TUN/tun2socks.
 # Порт должен совпадать с tproxy_port в susanin.conf.
 # Если бинаря/конфига нет — тихо выходит (режим не используется).
@@ -15,7 +15,7 @@ PORT=12345
 start() {
     [ -x "$XRAY" ] && [ -f "$XCFG" ] || { echo "xray-tproxy: нет Xray/конфига — пропуск"; return 0; }
     mkdir -p /opt/susanin/var
-    # Уровень логов Xray (независимо от log_level Susanin) — из susanin.conf.
+    # Уровень логов Xray (независимо от log_level Susanin.Keenetic) — из susanin.conf.
     # Xray читает уровень только при старте, поэтому применяем его до запуска,
     # а для уже запущенного процесса нужен restart.
     _lvl=$(sed -n 's/^xray_loglevel=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)

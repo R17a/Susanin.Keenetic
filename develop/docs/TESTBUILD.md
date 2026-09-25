@@ -39,7 +39,7 @@ XRay-egress (VLESS/REALITY), веб-панель, профили маршрут�
 
 ## XRay (VLESS/REALITY)
 
-XRay подключается как egress: Susanin помечает нужные соединения, TCP уходит в
+XRay подключается как egress: Susanin.Keenetic помечает нужные соединения, TCP уходит в
 Xray через `REDIRECT`, UDP — через релей в демоне. TUN не нужен.
 
 **Настройка**
@@ -86,7 +86,7 @@ sh /opt/susanin/tools/xray-egress.sh default      # вернуть всё в DIR
 Важно: UDP проверяйте **с компьютера**, а не с роутера — трафик самого роутера
 в этот механизм не попадает.
 
-Если Xray не запущен, Susanin сам не поднимает tproxy-правила и пускает трафик
+Если Xray не запущен, Susanin.Keenetic сам не поднимает tproxy-правила и пускает трафик
 напрямую (fail-open) — в `status` это видно как `(Xray NOT LISTENING)`. Поднять
 Xray: `/opt/etc/init.d/S93xray-tproxy start` или `xray-egress.sh enable`.
 
@@ -118,11 +118,11 @@ netstat -lnt | grep 8087
 
 ## qWDTT_Server_Keenetic
 
-Это совместимость, а не интеграция: клиентами qWDTT Susanin не занимается.
+Это совместимость, а не интеграция: клиентами qWDTT Susanin.Keenetic не занимается.
 
 - серверные туннели qWDTT (`wdtt0`/`wdttraw0`) не должны попадать в
   `lan_interfaces`/`lan_subnets`/`egress_interface` — они в `discover_exclude`;
-- подсеть Susanin (`egress_address`) не должна пересекаться с сетями qWDTT
+- подсеть Susanin.Keenetic (`egress_address`) не должна пересекаться с сетями qWDTT
   (`10.66.66.0/24`, `10.70.66.0/16`).
 
 **Проверка**

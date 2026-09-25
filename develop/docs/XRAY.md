@@ -1,11 +1,11 @@
-# XRay (VLESS-REALITY) + Susanin
+# XRay (VLESS-REALITY) + Susanin.Keenetic
 
-Коротко: **Susanin решает, что заворачивать, а Xray на роутере выносит это
+Коротко: **Susanin.Keenetic решает, что заворачивать, а Xray на роутере выносит это
 наружу.** Работает в режиме `egress_type=tproxy` — без TUN.
 
 ## Как это работает (в двух словах)
 
-- Susanin помечает нужные соединения (из `vpn_always` и из выученных адресов).
+- Susanin.Keenetic помечает нужные соединения (из `vpn_always` и из выученных адресов).
 - Помеченный **TCP** уходит в Xray через `REDIRECT` (перенаправление на
   локальный порт Xray), а Xray гонит его в VLESS/REALITY.
 - Помеченный **UDP** заворачивается на локальный порт демона («релей»), демон
@@ -80,26 +80,26 @@ sh /opt/susanin/tools/xray-egress.sh disable    # выключить, верну
 ## Тонкости
 
 - **Политики Keenetic.** Если у клиента назначена политика («Приоритеты
-  подключений»), она перекрывает Susanin. Для таких клиентов уберите политику.
+  подключений»), она перекрывает Susanin.Keenetic. Для таких клиентов уберите политику.
 - **Не проверяйте DNS-адресом «на бою».** `1.1.1.1`/`8.8.8.8` без ограничения
   могут «положить» разрешение имён; для проверки используйте
   `xray-egress.sh run <IP>` (адрес метится на 60 секунд).
 - **IPv6.** Схема работает по IPv4; часть трафика через IPv6 может идти мимо.
 - **Нагрузка.** Шифрование Xray идёт на процессоре роутера. При большом списке
   адресов возможна перегрузка — держите под рукой `xray-egress.sh disable`.
-- **Не запускайте XKeen вместе с Susanin** — это два перехватчика одного
-  трафика; для Reality используйте встроенный режим Susanin.
+- **Не запускайте XKeen вместе с Susanin.Keenetic** — это два перехватчика одного
+  трафика; для Reality используйте встроенный режим Susanin.Keenetic.
 
-## Логи (Susanin и Xray — раздельно)
+## Логи (Susanin.Keenetic и Xray — раздельно)
 
-- **Susanin** — ключ `log_level` в `susanin.conf`
+- **Susanin.Keenetic** — ключ `log_level` в `susanin.conf`
   (`quiet|error|warn|info|debug|trace`), пишет в `/opt/susanin/var/susanin.log`.
 - **Xray** — два параметра в его `xray-tproxy.json`:
   - `"loglevel"` — общий уровень (`debug|info|warning|error|none`);
   - `"access"` — access-лог (строки `from … accepted …`); при `"none"` не пишется.
   В `susanin.conf` задаётся `xray_loglevel`; при `xray-egress.sh enable|run`
   он применяется к `xray-tproxy.json` (вместе с `"access": "none"`), и Xray
-  **перезапускается** (уровень читается только при старте). Уровни Susanin и
+  **перезапускается** (уровень читается только при старте). Уровни Susanin.Keenetic и
   Xray независимы.
 
 Важно: `from … accepted …` — это **access-лог**, он **не управляется
@@ -112,7 +112,7 @@ sh /opt/susanin/tools/xray-egress.sh disable    # выключить, верну
 ## Если не работает
 
 - Xray не запущен/не слушает: `netstat -lntu | grep -E ':(12345|1080)'`.
-  Важно: если Xray не запущен, Susanin **не поднимает** tproxy-правила и пускает
+  Важно: если Xray не запущен, Susanin.Keenetic **не поднимает** tproxy-правила и пускает
   трафик напрямую (fail-open) — чёрной дыры не будет. Поднять Xray:
   `/opt/etc/init.d/S93xray-tproxy start` (или `xray-egress.sh enable`).
 - Нет правил: `iptables -t nat -S PREROUTING | grep REDIRECT` и

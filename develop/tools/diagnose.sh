@@ -29,7 +29,7 @@
 #     - нет цепочки SUSANIN, нет ip rule на таблицу VPN, нет default в таблице —
 #       трафик идёт мимо VPN (частый симптом «ничего не работает»);
 #     - обнаружены правила политик Keenetic (fwmark 0xffffaXX) — клиенты,
-#       привязанные к «Приоритетам подключений», Susanin не обрабатывает
+#       привязанные к «Приоритетам подключений», Susanin.Keenetic не обрабатывает
 #       (в логах это видно как mark=0xffffaXX в conntrack);
 #     - наборы susanin_ok_* пусты — автообучение не работает.
 #  4) Списки vpn_always / vpn_never
@@ -139,7 +139,7 @@ if command -v iptables >/dev/null 2>&1; then
         echo "цепочка SUSANIN: ok"
     else
         echo "цепочка SUSANIN: НЕТ"
-        rec "Правила Susanin не созданы. Проверьте, что установлены ipset и iptables, затем: susanin.sh restart"
+        rec "Правила Susanin.Keenetic не созданы. Проверьте, что установлены ipset и iptables, затем: susanin.sh restart"
     fi
 fi
 if command -v ip >/dev/null 2>&1; then
@@ -157,7 +157,7 @@ if command -v ip >/dev/null 2>&1; then
     fi
     if ip rule show 2>/dev/null | grep -qE 'fwmark 0xffffa'; then
         echo "политики Keenetic (fwmark 0xffffaXX): есть"
-        rec "У части устройств включён «Приоритет подключений» Keenetic. Для них маршрут выбирает Keenetic, а Susanin не участвует. Если устройство должно управляться Susanin — снимите у него политику (оставьте «по умолчанию»)."
+        rec "У части устройств включён «Приоритет подключений» Keenetic. Для них маршрут выбирает Keenetic, а Susanin.Keenetic не участвует. Если устройство должно управляться Susanin.Keenetic — снимите у него политику (оставьте «по умолчанию»)."
     fi
 fi
 if command -v ipset >/dev/null 2>&1; then
@@ -269,17 +269,17 @@ if [ "$QW" = 1 ]; then
     case ",$LAN," in
         *,wdtt0,*|*,wdttraw0,*)
             echo "lan_interfaces: содержит wdtt*"
-            rec "Уберите wdtt*/wdttraw* из lan_interfaces/lan_subnets — иначе Susanin начнёт обрабатывать клиентов qWDTT (двойной туннель)." ;;
+            rec "Уберите wdtt*/wdttraw* из lan_interfaces/lan_subnets — иначе Susanin.Keenetic начнёт обрабатывать клиентов qWDTT (двойной туннель)." ;;
     esac
     if command -v iptables >/dev/null 2>&1; then
         if iptables -t nat -S POSTROUTING 2>/dev/null | grep -qE '\-s 10\.(66|70)\.'; then
             echo "nat POSTROUTING: MASQUERADE qWDTT по источнику"
-            rec "У qWDTT NAT «по источнику, без -o» (10.66.66.0/24, 10.70.66.0/16). Если egress_address Susanin попадает в эти сети — туннель сломается; разведите подсети."
+            rec "У qWDTT NAT «по источнику, без -o» (10.66.66.0/24, 10.70.66.0/16). Если egress_address Susanin.Keenetic попадает в эти сети — туннель сломается; разведите подсети."
         fi
     fi
     case "$(cfg egress_address)" in
         10.66.66.*|10.70.*)
-            rec "egress_address Susanin пересекается с сетями qWDTT (10.66.66.0/24 / 10.70.66.0/16). Возьмите VPN-подсеть вне них (напр. 10.8.1.0/24)." ;;
+            rec "egress_address Susanin.Keenetic пересекается с сетями qWDTT (10.66.66.0/24 / 10.70.66.0/16). Возьмите VPN-подсеть вне них (напр. 10.8.1.0/24)." ;;
     esac
 else
     echo "qWDTT: не обнаружен"

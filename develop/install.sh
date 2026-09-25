@@ -259,7 +259,7 @@ if [ -z "$SUBNETS" ]; then
     done
 fi
 
-# OpenConnect (ocserv) server, if present, can be routed through Susanin too.
+# OpenConnect (ocserv) server, if present, can be routed through Susanin.Keenetic too.
 oc_if=""
 for i in $(ifaces); do
     case "$i" in oc[0-9]*) oc_if=$i ;; esac
@@ -280,7 +280,7 @@ if [ -n "$oc_if" ]; then
             if [ "$YES" -eq 1 ]; then
                 add_oc=1
             elif [ -r /dev/tty ]; then
-                printf "[susanin] OpenConnect server detected (%s). Add it to Susanin routing? [y/N]: " "$oc_if" >&2
+                printf "[susanin] OpenConnect server detected (%s). Add it to Susanin.Keenetic routing? [y/N]: " "$oc_if" >&2
                 read _oc < /dev/tty || _oc=n
                 case "$_oc" in y|Y|yes|YES) add_oc=1 ;; esac
             fi

@@ -1,38 +1,24 @@
 #!/bin/sh
 # datapath.sh — Susanin.Keenetic data plane (iptables + ipset) on/off + manual words.
 #
-# Implements the scheme resolved in docs/RECON.md section 9:
-#   - chain SUSANIN added as the LAST jump in mangle PREROUTING (after NDM);
-#   - guarded: only fully-unmarked (skb mark==0) new LAN connections are marked;
-#   - own fwmarks -> routing table (default 100) via egress (nwg0);
-#   - automatic NAT is done by NDM (_NDM_MASQ), so no explicit SNAT.
-# Fail-open = flush the SUSANIN ipset sets (rules remain, sets empty -> DIRECT).
+# Учитываем ТОЛЬКО свои биты метки (mark_mask, по умолчанию 0x30000000): guard
+# "не помечено", CONNMARK restore и ip rule используют маску, поэтому метки
+# сторонних подсистем (qWDTT/NDM, 0xffffaXX и т.п.) нам не мешают и не затираются.
 #
-# POSIX sh (busybox ash compatible). Idempotent (delete-then-add). On `up` a
-# netfilter backup (iptables-save / ip rule / ip route) is made first.
-#
-# Usage:
-#   datapath.sh up                 # install rules, ipsets, table, ip rule
-#   datapath.sh down               # remove everything SUSANIN-managed
-#   datapath.sh status             # show jump presence + set sizes
-#   datapath.sh add   <ip> tcp|udp test|ok
-#   datapath.sh del   <ip> tcp|udp
-#   datapath.sh flush              # empty the sets (fail-open / DIRECT)
-#
-# Overrides via env:
-#   SUSANIN_EGRESS (nwg0), SUSANIN_TABLE (100),
-#   SUSANIN_MARK_OK (0x20000000), SUSANIN_MARK_TEST (0x10000000),
-#   SUSANIN_PRI_OK (2000), SUSANIN_PRI_TEST (2001), SUSANIN_LAN ("br0 br1")
+# POSIX sh (busybox ash compatible).
 
 set -eu
 
 PREFIX=/opt
 find_bin() { for b in /opt/sbin /opt/bin /usr/sbin /usr/bin; do [ -x "$b/$1" ] && { echo "$b/$1"; return; }; done; command -v "$1" 2>/dev/null || true; }
 IPT=$(find_bin iptables); IPSET=$(find_bin ipset); IPCMD=$(find_bin ip)
+# Все вызовы iptables — через `-w`: ждать xtables-lock, а не падать
+# ("Another app is currently holding the xtables lock" при параллели с NDM).
+ipt() { "$IPT" -w "$@"; }
 MODPROBE=$(find_bin modprobe); INSMOD=$(find_bin insmod)
 KVER=$(uname -r 2>/dev/null || echo "")
 KDIR="/lib/modules/$KVER"
-[ -n "$IPT" ] || { echo "iptables not found" >&2; exit 2; }
+[ -n "ipt" ] || { echo "iptables not found" >&2; exit 2; }
 [ -n "$IPSET" ] || { echo "ipset not found" >&2; exit 2; }
 [ -n "$IPCMD" ] || { echo "ip not found" >&2; exit 2; }
 
@@ -40,7 +26,11 @@ EGRESS=${SUSANIN_EGRESS:-nwg0}
 TABLE=${SUSANIN_TABLE:-100}
 MARK_OK=${SUSANIN_MARK_OK:-0x20000000}
 MARK_TEST=${SUSANIN_MARK_TEST:-0x10000000}
-MASK=0xffffffff
+# Наши биты метки (как в susanin.conf mark_mask). Всё, что вне маски (метки
+# qWDTT/NDM), нас не касается и НЕ мешает маркировке.
+MARK_MASK=${SUSANIN_MARK_MASK:-0x30000000}
+# Для TPROXY-mark нужен полный охват битов (там значение 0x1).
+TPMASK=0xffffffff
 PRI_OK=${SUSANIN_PRI_OK:-2000}
 PRI_TEST=${SUSANIN_PRI_TEST:-2001}
 LAN=${SUSANIN_LAN:-"br0 br1"}
@@ -48,12 +38,8 @@ LAN=$(printf '%s' "$LAN" | tr ',' ' ')
 TTL_TEST=${SUSANIN_TTL_TEST:-60}
 TTL_OK=${SUSANIN_TTL_OK:-21600}
 DISK_MODE=${SUSANIN_DISK_MODE:-normal}
-# tproxy-режим: если порт > 0, вместо маршрута в интерфейс завернуть помеченные
-# пакеты в локальный tproxy-inbound Xray (dokodemo-door).
 TPROXY_PORT=${SUSANIN_TPROXY_PORT:-0}
 TPROXY_MARK=0x1
-# UDP-релей в демоне: если порт > 0, помеченные UDP-пакеты заворачиваем через
-# TPROXY на этот порт (демон делает SOCKS5 UDP ASSOCIATE к Xray socks).
 UDP_RELAY_PORT=${SUSANIN_UDP_RELAY_PORT:-0}
 
 CHAIN=SUSANIN
@@ -62,9 +48,6 @@ NETSET=susanin_ok_net
 NEVERSET=susanin_never
 
 say() { echo "[susanin] $*"; }
-# Best-effort подгрузка модуля ядра. На Keenetic `modprobe` обычно НЕТ, но
-# есть `insmod` (busybox) и .ko в /lib/modules/$(uname -r) — после выгрузки
-# xt_TPROXY иначе не вернуть (без модуля TPROXY-правила не ставятся).
 load_mod() {
     _m="$1"
     [ -n "$MODPROBE" ] && "$MODPROBE" "$_m" >/dev/null 2>&1 && return 0
@@ -73,10 +56,15 @@ load_mod() {
 }
 ensure_mod() { load_mod "$1" || true; }
 
-# Run iptables -t mangle with delete-first (idempotent). "$@" = full -A spec.
-mangle() { "$IPT" -t mangle -D "$@" >/dev/null 2>&1 || true; "$IPT" -t mangle -A "$@"; }
-# ip rule: delete-first then add.
+mangle() { "ipt" -t mangle -D "$@" >/dev/null 2>&1 || true; "ipt" -t mangle -A "$@"; }
 iprule() { "$IPCMD" rule del "$@" >/dev/null 2>&1 || true; "$IPCMD" rule add "$@"; }
+# ip rule для НАШИХ меток: добавляем с маской (чтобы не зависеть от чужих битов),
+# при этом удаляем и старую запись без маски, если была.
+iprule_fw() { # <mark> <prio>
+    "$IPCMD" rule del fwmark "$1" priority "$2" lookup "$TABLE" >/dev/null 2>&1 || true
+    "$IPCMD" rule del fwmark "$1/$MARK_MASK" priority "$2" lookup "$TABLE" >/dev/null 2>&1 || true
+    "$IPCMD" rule add fwmark "$1/$MARK_MASK" priority "$2" lookup "$TABLE"
+}
 
 set_exists() { "$IPSET" list "$1" >/dev/null 2>&1; }
 
@@ -86,8 +74,6 @@ backup() {
         return 0
     fi
     mkdir -p "$PREFIX/susanin/var"
-    # Не бэкапим чаще BACKUP_MIN_INTERVAL (по умолчанию 1 час): при циклах
-    # ре-провижена это писало на носитель непрерывно. Маркер — крошечный файл.
     _mark="$PREFIX/susanin/var/.last-backup"
     _now=$(date +%s)
     _last=$(cat "$_mark" 2>/dev/null || echo 0)
@@ -98,12 +84,11 @@ backup() {
     printf '%s\n' "$_now" > "$_mark" 2>/dev/null || true
     bk="$PREFIX/susanin/var/datapath-$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$bk"
-    "$IPT" -t mangle -S > "$bk/mangle.txt" 2>/dev/null || true
-    "$IPT" -t nat -S > "$bk/nat.txt" 2>/dev/null || true
+    "ipt" -t mangle -S > "$bk/mangle.txt" 2>/dev/null || true
+    "ipt" -t nat -S > "$bk/nat.txt" 2>/dev/null || true
     "$IPCMD" rule show > "$bk/ip-rule.txt" 2>/dev/null || true
     "$IPCMD" route show table all > "$bk/ip-route.txt" 2>/dev/null || true
     say "backup: $bk"
-    # keep the 3 most recent dirs; archive older ones (keep 5 archives)
     arc="$PREFIX/susanin/var/archive"
     mkdir -p "$arc"
     ls -1dt "$PREFIX/susanin/var"/datapath-* 2>/dev/null | tail -n +4 | \
@@ -121,15 +106,13 @@ ensure_sets() {
     for s in $SETS; do
         set_exists "$s" || "$IPSET" create "$s" hash:ip timeout 0
     done
-    # CIDR (vpn_always) live in a hash:net set; matches any LAN proto.
     set_exists "$NETSET" || "$IPSET" create "$NETSET" hash:net timeout 0
-    # always-direct list (vpn_never): hash:net holds IPs (/32) and CIDRs.
     set_exists "$NEVERSET" || "$IPSET" create "$NEVERSET" hash:net timeout 0
     say "ipsets ready"
 }
 
 ensure_chain() {
-    "$IPT" -t mangle -S "$CHAIN" >/dev/null 2>&1 || "$IPT" -t mangle -N "$CHAIN"
+    "ipt" -t mangle -S "$CHAIN" >/dev/null 2>&1 || "ipt" -t mangle -N "$CHAIN"
 }
 
 rule_priv() {
@@ -143,86 +126,81 @@ rule_priv() {
 
 rule_mark() {
     for i in $LAN; do
-        # never-VPN list: leave these destinations completely direct
         mangle "$CHAIN" -i "$i" -m set --match-set susanin_never dst -j RETURN
         for p in tcp udp; do
             mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
-                -m mark --mark 0x0/0xffffffff \
+                -m mark --mark "0x0/$MARK_MASK" \
                 -m set --match-set susanin_ok_${p} dst \
-                -j CONNMARK --set-xmark "$MARK_OK/$MASK"
-            # forced CIDR ranges (vpn_always) -> VPN for both protocols
+                -j CONNMARK --set-xmark "$MARK_OK/$MARK_MASK"
             mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
-                -m mark --mark 0x0/0xffffffff \
+                -m mark --mark "0x0/$MARK_MASK" \
                 -m set --match-set susanin_ok_net dst \
-                -j CONNMARK --set-xmark "$MARK_OK/$MASK"
+                -j CONNMARK --set-xmark "$MARK_OK/$MARK_MASK"
             mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
-                -m mark --mark 0x0/0xffffffff \
+                -m mark --mark "0x0/$MARK_MASK" \
                 -m set --match-set susanin_test_${p} dst \
-                -j CONNMARK --set-xmark "$MARK_TEST/$MASK"
+                -j CONNMARK --set-xmark "$MARK_TEST/$MARK_MASK"
         done
-        mangle "$CHAIN" -i "$i" -j CONNMARK --restore-mark --nfmask "$MASK" --ctmask "$MASK"
-        mangle "$CHAIN" -i "$i" -m mark --mark "$MARK_OK/$MASK" \
-            -j MARK --set-xmark "$MARK_OK/$MASK"
-        mangle "$CHAIN" -i "$i" -m mark --mark "$MARK_TEST/$MASK" \
-            -j MARK --set-xmark "$MARK_TEST/$MASK"
+        mangle "$CHAIN" -i "$i" -j CONNMARK --restore-mark --nfmask "$MARK_MASK" --ctmask "$MARK_MASK"
+        mangle "$CHAIN" -i "$i" -m mark --mark "$MARK_OK/$MARK_MASK" \
+            -j MARK --set-xmark "$MARK_OK/$MARK_MASK"
+        mangle "$CHAIN" -i "$i" -m mark --mark "$MARK_TEST/$MARK_MASK" \
+            -j MARK --set-xmark "$MARK_TEST/$MARK_MASK"
     done
 }
 
 ensure_jump() {
-    "$IPT" -t mangle -D PREROUTING -j "$CHAIN" >/dev/null 2>&1 || true
-    "$IPT" -t mangle -A PREROUTING -j "$CHAIN"
+    "ipt" -t mangle -D PREROUTING -j "$CHAIN" >/dev/null 2>&1 || true
+    "ipt" -t mangle -A PREROUTING -j "$CHAIN"
 }
 
 ensure_table() {
     if [ "${TPROXY_PORT:-0}" -gt 0 ] 2>/dev/null; then
-        # REDIRECT (TCP): помеченные Susanin'ом пакеты -> локальный порт Xray.
-        # Метка ставится в mangle PREROUTING (SUSANIN), а nat PREROUTING идёт
-        # после mangle — поэтому тут мы видим метку и делаем REDIRECT.
-        # ip rule/таблица 100 для этого не нужны — убираем возможные прежние.
-        "$IPCMD" rule del fwmark "$MARK_OK" priority "$PRI_OK" lookup "$TABLE" >/dev/null 2>&1 || true
-        "$IPCMD" rule del fwmark "$MARK_TEST" priority "$PRI_TEST" lookup "$TABLE" >/dev/null 2>&1 || true
+        iprule_fw_clean "$MARK_OK" "$PRI_OK"
+        iprule_fw_clean "$MARK_TEST" "$PRI_TEST"
         "$IPCMD" rule del fwmark "$TPROXY_MARK" priority "$((PRI_OK + 2))" lookup "$TABLE" >/dev/null 2>&1 || true
         "$IPCMD" route del local default dev lo table "$TABLE" >/dev/null 2>&1 || true
         "$IPCMD" route del default dev "$EGRESS" table "$TABLE" >/dev/null 2>&1 || true
         redirect_rules
         udp_relay_rules
-        say "redirect ready (port=$TPROXY_PORT, udp_relay=$UDP_RELAY_PORT)"
+        say "redirect ready (port=$TPROXY_PORT, udp_relay=$UDP_RELAY_PORT, mask=$MARK_MASK)"
     else
         "$IPCMD" route del default dev "$EGRESS" table "$TABLE" >/dev/null 2>&1 || true
         "$IPCMD" route add default dev "$EGRESS" table "$TABLE"
-        iprule fwmark "$MARK_OK" priority "$PRI_OK" lookup "$TABLE"
-        iprule fwmark "$MARK_TEST" priority "$PRI_TEST" lookup "$TABLE"
-        say "table/ip-rule ready (table=$TABLE dev=$EGRESS)"
+        iprule_fw "$MARK_OK" "$PRI_OK"
+        iprule_fw "$MARK_TEST" "$PRI_TEST"
+        say "table/ip-rule ready (table=$TABLE dev=$EGRESS mask=$MARK_MASK)"
     fi
 }
 
-# REDIRECT-правила в nat PREROUTING: TCP, помеченный Susanin'ом, -> порт Xray.
+# Снять наши ip rule (и со старой полной маской, и с mark_mask).
+iprule_fw_clean() { # <mark> <prio>
+    "$IPCMD" rule del fwmark "$1" priority "$2" lookup "$TABLE" >/dev/null 2>&1 || true
+    "$IPCMD" rule del fwmark "$1/$MARK_MASK" priority "$2" lookup "$TABLE" >/dev/null 2>&1 || true
+}
+
 redirect_rules() {
     for m in "$MARK_OK" "$MARK_TEST"; do
-        "$IPT" -t nat -D PREROUTING -p tcp -m mark --mark "$m/$MASK" \
+        "ipt" -t nat -D PREROUTING -p tcp -m mark --mark "$m/$MARK_MASK" \
             -j REDIRECT --to-ports "$TPROXY_PORT" >/dev/null 2>&1 || true
-        "$IPT" -t nat -A PREROUTING -p tcp -m mark --mark "$m/$MASK" \
+        "ipt" -t nat -A PREROUTING -p tcp -m mark --mark "$m/$MARK_MASK" \
             -j REDIRECT --to-ports "$TPROXY_PORT"
     done
 }
 
-# UDP-релей: помеченные UDP → TPROXY на порт демона (+ локальная доставка).
 udp_relay_rules() {
     [ "${UDP_RELAY_PORT:-0}" -gt 0 ] 2>/dev/null || return 0
-    # TPROXY — модуль ядра; после выгрузки/ребута его может не быть. Пробуем
-    # подгрузить; если target всё равно недоступен — весь up НЕ валим (TCP
-    # REDIRECT продолжает работать), просто UDP через XRay не пойдёт.
     ensure_mod nf_tproxy_ipv4
     ensure_mod xt_socket
     ensure_mod xt_TPROXY
     iprule fwmark "$TPROXY_MARK" priority "$((PRI_OK + 2))" lookup "$TABLE" 2>/dev/null || true
     "$IPCMD" route replace local default dev lo table "$TABLE" 2>/dev/null || true
     for m in "$MARK_OK" "$MARK_TEST"; do
-        "$IPT" -t mangle -D PREROUTING -p udp -m mark --mark "$m/$MASK" \
-            -j TPROXY --on-port "$UDP_RELAY_PORT" --tproxy-mark "$TPROXY_MARK/$MASK" \
+        "ipt" -t mangle -D PREROUTING -p udp -m mark --mark "$m/$MARK_MASK" \
+            -j TPROXY --on-port "$UDP_RELAY_PORT" --tproxy-mark "$TPROXY_MARK/$TPMASK" \
             >/dev/null 2>&1 || true
-        if ! "$IPT" -t mangle -A PREROUTING -p udp -m mark --mark "$m/$MASK" \
-                -j TPROXY --on-port "$UDP_RELAY_PORT" --tproxy-mark "$TPROXY_MARK/$MASK" 2>/dev/null; then
+        if ! "ipt" -t mangle -A PREROUTING -p udp -m mark --mark "$m/$MARK_MASK" \
+                -j TPROXY --on-port "$UDP_RELAY_PORT" --tproxy-mark "$TPROXY_MARK/$TPMASK" 2>/dev/null; then
             say "UDP relay: target TPROXY недоступен (нет модуля xt_TPROXY?) — UDP через XRay не пойдёт, TCP работает"
             return 0
         fi
@@ -231,20 +209,16 @@ udp_relay_rules() {
 }
 
 tproxy_clean() {
-    # Наши REDIRECT-правила (mangle-метка -> nat REDIRECT --to-ports) снимаем ВСЕГДА,
-    # независимо от env SUSANIN_TPROXY_PORT: `datapath.sh down` из shell идёт без env,
-    # и раньше эти правила оставались «висеть» (без метки они инертны, но мусор).
-    "$IPT" -t nat -S PREROUTING 2>/dev/null | grep -- '-j REDIRECT --to-ports' | \
+    "ipt" -t nat -S PREROUTING 2>/dev/null | grep -- '-j REDIRECT --to-ports' | \
         grep -- '--mark 0x' | \
         while read -r line; do
             spec=$(printf '%s' "$line" | sed 's/^-A PREROUTING //')
-            "$IPT" -t nat -D PREROUTING $spec >/dev/null 2>&1 || true
+            "ipt" -t nat -D PREROUTING $spec >/dev/null 2>&1 || true
         done || true
-    # на случай прежних TPROXY-правил из ранних версий
-    "$IPT" -t mangle -S PREROUTING 2>/dev/null | grep -- '-j TPROXY' | \
+    "ipt" -t mangle -S PREROUTING 2>/dev/null | grep -- '-j TPROXY' | \
         while read -r line; do
             spec=$(printf '%s' "$line" | sed 's/^-A PREROUTING //')
-            "$IPT" -t mangle -D PREROUTING $spec >/dev/null 2>&1 || true
+            "ipt" -t mangle -D PREROUTING $spec >/dev/null 2>&1 || true
         done || true
     "$IPCMD" rule del fwmark "$TPROXY_MARK" priority "$((PRI_OK + 2))" lookup "$TABLE" >/dev/null 2>&1 || true
     "$IPCMD" route del local default dev lo table "$TABLE" >/dev/null 2>&1 || true
@@ -258,24 +232,20 @@ command_up() {
     rule_mark
     ensure_jump
     ensure_table
-    say "data plane UP (table=$TABLE dev=$EGRESS)"
+    say "data plane UP (table=$TABLE dev=$EGRESS mask=$MARK_MASK)"
 }
 
 command_down() {
-    # ВАЖНО: сначала снять jump и цепочку — чтобы трафик перестал метиться,
-    # даже если дальнейшие шаги почему-то сорвутся. Это гарантирует возврат
-    # обычного канала (иначе «оставшаяся» цепочка метит адреса, а таблица 100
-    # уже пуста -> чёрная дыра -> нужен ребут).
-    "$IPT" -t mangle -D PREROUTING -j "$CHAIN" >/dev/null 2>&1 || true
-    if "$IPT" -t mangle -S "$CHAIN" >/dev/null 2>&1; then
-        "$IPT" -t mangle -F "$CHAIN" 2>/dev/null || true
-        "$IPT" -t mangle -X "$CHAIN" 2>/dev/null || true
+    "ipt" -t mangle -D PREROUTING -j "$CHAIN" >/dev/null 2>&1 || true
+    if "ipt" -t mangle -S "$CHAIN" >/dev/null 2>&1; then
+        "ipt" -t mangle -F "$CHAIN" 2>/dev/null || true
+        "ipt" -t mangle -X "$CHAIN" 2>/dev/null || true
     fi
     for s in $SETS; do set_exists "$s" && "$IPSET" destroy "$s" || true; done
     set_exists "$NETSET" && "$IPSET" destroy "$NETSET" || true
     set_exists "$NEVERSET" && "$IPSET" destroy "$NEVERSET" || true
-    "$IPCMD" rule del fwmark "$MARK_OK" priority "$PRI_OK" lookup "$TABLE" >/dev/null 2>&1 || true
-    "$IPCMD" rule del fwmark "$MARK_TEST" priority "$PRI_TEST" lookup "$TABLE" >/dev/null 2>&1 || true
+    iprule_fw_clean "$MARK_OK" "$PRI_OK"
+    iprule_fw_clean "$MARK_TEST" "$PRI_TEST"
     "$IPCMD" rule del fwmark "$TPROXY_MARK" priority "$((PRI_OK + 2))" lookup "$TABLE" >/dev/null 2>&1 || true
     "$IPCMD" route del default dev "$EGRESS" table "$TABLE" >/dev/null 2>&1 || true
     "$IPCMD" route del local default dev lo table "$TABLE" >/dev/null 2>&1 || true
@@ -285,7 +255,7 @@ command_down() {
 }
 
 command_status() {
-    if "$IPT" -t mangle -S PREROUTING >/dev/null 2>&1 && "$IPT" -t mangle -S PREROUTING | grep -q "$CHAIN"; then
+    if "ipt" -t mangle -S PREROUTING >/dev/null 2>&1 && "ipt" -t mangle -S PREROUTING | grep -q "$CHAIN"; then
         echo "jump: present"
     else
         echo "jump: MISSING"
@@ -309,11 +279,11 @@ command_status() {
     fi
     "$IPCMD" rule show | grep -E "lookup $TABLE" || echo "no ip rule for table $TABLE"
     if [ "${TPROXY_PORT:-0}" -gt 0 ] 2>/dev/null; then
-        n=$("$IPT" -t nat -S PREROUTING 2>/dev/null | grep -c 'REDIRECT --to-ports' || true)
+        n=$("ipt" -t nat -S PREROUTING 2>/dev/null | grep -c 'REDIRECT --to-ports' || true)
         echo "redirect: port=$TPROXY_PORT rules=$n"
     fi
     if [ "${UDP_RELAY_PORT:-0}" -gt 0 ] 2>/dev/null; then
-        u=$("$IPT" -t mangle -S PREROUTING 2>/dev/null | grep -c "TPROXY --on-port $UDP_RELAY_PORT" || true)
+        u=$("ipt" -t mangle -S PREROUTING 2>/dev/null | grep -c "TPROXY --on-port $UDP_RELAY_PORT" || true)
         echo "udp-relay: port=$UDP_RELAY_PORT rules=$u"
     fi
 }
@@ -322,8 +292,6 @@ command_egress() {
     iface="$1"
     [ -n "$iface" ] || { echo "usage: $0 egress <iface>" >&2; exit 2; }
     if [ "${TPROXY_PORT:-0}" -gt 0 ] 2>/dev/null; then
-        # В tproxy-режиме table $TABLE занята local-маршрутом для TPROXY;
-        # менять её на default dev <iface> нельзя (сломает UDP-ветку).
         say "tproxy mode: egress switch ignored (table=$TABLE stays local)"
         return 0
     fi

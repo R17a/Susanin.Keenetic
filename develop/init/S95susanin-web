@@ -1,5 +1,5 @@
 #!/bin/sh
-# Entware init script for the built-in Susanin web panel (Keenetic/Entware).
+# Entware init script for the built-in Susanin.Keenetic web panel (Keenetic/Entware).
 # Install as /opt/etc/init.d/S95susanin-web and make executable.
 # Runs `susanin-agent web` only when web_enable=1 in susanin.conf.
 # Test: /opt/etc/init.d/S95susanin-web start|stop|restart

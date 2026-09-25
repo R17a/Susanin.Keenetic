@@ -1,13 +1,13 @@
 #!/bin/sh
-# xray-egress.sh — безопасное включение/выключение XRay-egress для Susanin.
+# xray-egress.sh — безопасное включение/выключение XRay-egress для Susanin.Keenetic.
 #
-# XRay-клиент на роутере: inbound dokodemo-door (REDIRECT, TCP) для Susanin,
+# XRay-клиент на роутере: inbound dokodemo-door (REDIRECT, TCP) для Susanin.Keenetic,
 # плюс локальный socks (127.0.0.1:1080, udp:true) для UDP-релея демона.
 # Сервер XRay (Reality) — на стороне VPS, тут не трогаем.
 #
 # Usage:
 #   xray-egress.sh run [IP] [proto]  # БЕЗОПАСНЫЙ тест: очищает обученное, гасит
-#                                    # vpn_always, поднимает Xray+Susanin и
+#                                    # vpn_always, поднимает Xray+Susanin.Keenetic и
 #                                    # заворачивает ТОЛЬКО [IP] (proto: tcp|udp|both)
 #   xray-egress.sh enable            # БОЕВОЙ режим: egress_type=tproxy + udp_relay,
 #                                    # запуск Xray и рестарт агента (vpn_always НЕ гасим)
@@ -38,7 +38,7 @@ urp=$(sed -n 's/^udp_relay_port=//p' "$CONF" 2>/dev/null | tail -n1)
 [ -n "$urp" ] || urp=1081
 et=$(sed -n 's/^egress_type=//p' "$CONF" 2>/dev/null | tail -n1)
 [ -n "$et" ] || et=interface
-# Уровень логов Xray — ОТДЕЛЬНО от log_level Susanin. Применяется к
+# Уровень логов Xray — ОТДЕЛЬНО от log_level Susanin.Keenetic. Применяется к
 # xray-tproxy.json при enable/run (Xray читает уровень только при старте).
 xlog=$(sed -n 's/^xray_loglevel=//p' "$CONF" 2>/dev/null | tail -n1)
 [ -n "$xlog" ] || xlog=warning
@@ -53,6 +53,18 @@ wait_listen() { # wait_listen PORT [seconds]
     while [ "$_i" -lt "$_n" ]; do
         netstat -lnt 2>/dev/null | grep -q ":$_p " && return 0
         sleep 1; _i=$((_i + 1))
+    done
+    return 1
+}
+# Ждать «прогрева» vpn_always: пока число пинов растёт — ждём (до N c).
+wait_pins() { # wait_pins [seconds]
+    _n=${1:-60}; _i=0; _prev=-1
+    while [ "$_i" -lt "$_n" ]; do
+        _c=$(ipset list susanin_ok_tcp 2>/dev/null | grep -cE '^[0-9]+\.' || true)
+        [ -n "$_c" ] || _c=0
+        if [ "$_c" -gt 0 ] && [ "$_c" = "$_prev" ]; then return 0; fi
+        _prev=$_c
+        sleep 2; _i=$((_i + 2))
     done
     return 1
 }
@@ -230,6 +242,8 @@ case "${1:-}" in
         wait_listen "$port" 15 || say "ВНИМАНИЕ: Xray :$port не слушает — агент уйдёт в fail-open"
         sh "$SH" restart || true
         sleep 3
+        # Дождаться пиннинга vpn_always (чтобы «always»-домены сразу шли в VPN).
+        wait_pins 60 || say "ВНИМАНИЕ: vpn_always ещё допинивается (см. лог агента)"
         if ! net_ok; then
             say "НЕТ СВЯЗНОСТИ после включения — ОТКАТ (default)"
             reset_all
