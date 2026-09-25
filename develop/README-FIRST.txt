@@ -1,4 +1,6 @@
-Susanin.Keenetic — Develop-сборка 0.4.0-dev1 (не Release)
+Susanin.Keenetic — Develop-сборка 0.4.0-dev (не Release)
+
+Точную версию/сборку смотрите в выводе `susanin-agent version` и в report.txt.
 
 Это тестовая сборка. В ней: XRay-egress (VLESS/REALITY), веб-панель,
 профили маршрутизации, совместимость с qWDTT. Обычный режим (VPN из
@@ -18,11 +20,11 @@ ca-certificates ipset iptables conntrack:
   1) Создать папку на роутере и скачать туда архив из папки develop:
        mkdir -p /opt/tmp/sus-dist && cd /opt/tmp/sus-dist
        wget -O susanin-dev.tar.gz \
-         https://github.com/R17a/Susanin.Keenetic/raw/main/develop/susanin-keenetic-0.4.0-dev1.tar.gz
+         https://github.com/R17a/Susanin.Keenetic/raw/main/develop/susanin-keenetic-0.4.0-dev.tar.gz
 
   2) Распаковать и запустить установщик:
        tar -xzf susanin-dev.tar.gz
-       cd susanin-keenetic-0.4.0-dev1
+       cd susanin-keenetic-0.4.0-dev
        sh install.sh --yes
 
      Установщик сам выберет бинарь под вашу архитектуру, найдёт LAN и VPN,
@@ -32,7 +34,7 @@ ca-certificates ipset iptables conntrack:
 
   3) Проверить:
        sh /opt/susanin/tools/susanin.sh status
-       /opt/susanin/bin/susanin-agent version      # 0.4.0-dev1
+       /opt/susanin/bin/susanin-agent version      # покажет точную версию сборки
 
 Структура пакета:
   install.sh      установщик (запускать из корня пакета)

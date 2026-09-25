@@ -23,7 +23,7 @@
    mkdir -p /opt/tmp/sus-dist && cd /opt/tmp/sus-dist
    wget -O susanin-dev.tar.gz <ССЫЛКА_НА_АРХИВ>
    tar -xzf susanin-dev.tar.gz
-   cd susanin-keenetic-0.4.0-dev1
+   cd susanin-keenetic-0.4.0-dev
    sh install.sh --yes
    ```
    Установщик сам:
@@ -51,7 +51,7 @@
 ## Проверка после установки
 ```sh
 sh /opt/susanin/tools/susanin.sh status
-/opt/susanin/bin/susanin-agent version      # 0.4.0-dev1
+/opt/susanin/bin/susanin-agent version      # покажет точную версию сборки
 ```
 
 ## Настройка

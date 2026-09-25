@@ -1,4 +1,4 @@
-# Susanin.Keenetic — Develop-сборка `0.4.0-dev1` (инструкция тестеру)
+# Susanin.Keenetic — Develop-сборка `0.4.0-dev` (инструкция тестеру)
 
 Это **тестовая (Develop)** сборка, не Release. В ней проверяются:
 XRay-egress (VLESS/REALITY), веб-панель, профили маршрутизации и совместимость
@@ -19,19 +19,19 @@ XRay-egress (VLESS/REALITY), веб-панель, профили маршрут�
    ```sh
    mkdir -p /opt/tmp/sus-dist && cd /opt/tmp/sus-dist
    wget -O susanin-dev.tar.gz \
-     https://github.com/R17a/Susanin.Keenetic/raw/main/develop/susanin-keenetic-0.4.0-dev1.tar.gz
+     https://github.com/R17a/Susanin.Keenetic/raw/main/develop/susanin-keenetic-0.4.0-dev.tar.gz
    ```
-   (короткая ссылка на файл: `…/raw/main/develop/susanin-keenetic-0.4.0-dev1.tar.gz`)
+   (короткая ссылка на файл: `…/raw/main/develop/susanin-keenetic-0.4.0-dev.tar.gz`)
 2. Распаковать и установить:
    ```sh
    tar -xzf susanin-dev.tar.gz
-   cd susanin-keenetic-0.4.0-dev1
+   cd susanin-keenetic-0.4.0-dev
    sh install.sh --yes
    ```
 3. Проверить:
    ```sh
    sh /opt/susanin/tools/susanin.sh status
-   /opt/susanin/bin/susanin-agent version      # 0.4.0-dev1
+   /opt/susanin/bin/susanin-agent version      # покажет точную версию сборки
    ```
 
 Конфиг, `vpn_always.txt` и `vpn_never.txt` при обновлении не перезаписываются.
