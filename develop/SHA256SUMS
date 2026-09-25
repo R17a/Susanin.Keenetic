@@ -1,9 +1,9 @@
 fd916f73f2c09f6c1bdeb1f8b1eed0ba528d35f335346c1d2467a7f66bce7fc2  ./README-FIRST.txt
-ef95c34d8ecc0e6e0c291df99b81a3140c3bd731cdf4737fefa4c895b04108c6  ./bin/susanin-agent.aarch64
-f62e985fbcb4dfc83f6844749bc1b8175799df9234455556ce920e30da04e196  ./bin/susanin-agent.armv7
-82487b8adece8d9888e93097bc2523956c8c094d322c0a3a5b516b382b12d1b5  ./bin/susanin-agent.mips
-44035937609465d671ae06adc857e2f725e5d4032f22831df179d1ad80c417b4  ./bin/susanin-agent.mipsel
-ccb4c94df6e6d0d0f26aa9feeaa1aa18a3432df1f0cd7891d6e56f9477902dd7  ./bin/susanin-agent.x86_64
+4dd8bfc7cc08e87c99f0631b691a8418fea10da271eddd887d4b686e05d70794  ./bin/susanin-agent.aarch64
+56b6d4e34e1e13f5ad285f79cc0f5262f272cac3157aa2a34171c3a0178ea9ab  ./bin/susanin-agent.armv7
+c03ee91767c8ac3e55c5f97c6b891dd25504c61739fcb0f480ca337b6667afe4  ./bin/susanin-agent.mips
+a8c808a7423cf1c960a152347d0ea6be952dfca017b80f1ebdec8101244ddc84  ./bin/susanin-agent.mipsel
+aca64779d7d900e00ab572d4a08334bd611c50b3e1b5561fc6af3e300cae93af  ./bin/susanin-agent.x86_64
 1c0601df5267ec0bddc495d0b35b22fd8a22837039aa4744465f881fea38ee9c  ./docs/DEPLOY.md
 7dc36789865425529bce2bc872e5e560f5f576c8311739ae02209bda7851eb17  ./docs/LICENSE
 713b22b54b423c8dd7196b3308c18569050dabe9e2caf64d7c59fbf494fbbb06  ./docs/TESTBUILD.md
