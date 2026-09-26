@@ -141,6 +141,7 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
               cdn_ranges_url=https://www.cloudflare.com/ips-v4 \
               cdn_ranges_interval=86400 cdn_prefix_learn=1 cdn_prefix_ttl=3600 \
               cdn_prefix_max=24 ipv6_block=1 \
+              quic_block=1 \
               health_mode=icmp health_tcp_port=443; do
         k=${kv%%=*}; d=${kv#*=}
         grep -q "^${k}=" "$PREFIX/etc/susanin.conf" 2>/dev/null \

@@ -44,6 +44,8 @@ TPROXY_MARK=0x1
 UDP_RELAY_PORT=${SUSANIN_UDP_RELAY_PORT:-0}
 # C3: блокировать IPv6 из LAN (весь трафик клиентов — по IPv4, под Susanin).
 IPV6_BLOCK=${SUSANIN_IPV6_BLOCK:-0}
+# QUIC (UDP 443) из LAN: 1 = запретить, чтобы приложения шли по TCP.
+QUIC_BLOCK=${SUSANIN_QUIC_BLOCK:-0}
 
 CHAIN=SUSANIN
 SETS="susanin_ok_tcp susanin_ok_udp susanin_test_tcp susanin_test_udp"
@@ -248,6 +250,23 @@ ipv6_block_clean() {
     done
 }
 
+# QUIC (UDP 443) из LAN: запретить, чтобы приложения шли по TCP (QUIC через
+# UDP-релей ненадёжен). REJECT — приложение сразу падает на TCP, без ожидания.
+quic_block_rules() {
+    [ "$QUIC_BLOCK" = "1" ] || return 0
+    for i in $LAN; do
+        "ipt" -t filter -D FORWARD -p udp -i "$i" --dport 443 -j REJECT >/dev/null 2>&1 || true
+        "ipt" -t filter -A FORWARD -p udp -i "$i" --dport 443 -j REJECT
+    done
+    say "quic_block=1: QUIC (UDP 443) из LAN запрещён (приложения — по TCP)"
+}
+
+quic_block_clean() {
+    for i in $LAN; do
+        "ipt" -t filter -D FORWARD -p udp -i "$i" --dport 443 -j REJECT >/dev/null 2>&1 || true
+    done
+}
+
 command_up() {
     backup
     ensure_sets
@@ -257,6 +276,7 @@ command_up() {
     ensure_jump
     ensure_table
     ipv6_block_rules
+    quic_block_rules
     say "data plane UP (table=$TABLE dev=$EGRESS mask=$MARK_MASK)"
 }
 
@@ -277,6 +297,7 @@ command_down() {
     "$IPCMD" route flush table "$TABLE" >/dev/null 2>&1 || true
     tproxy_clean || true
     ipv6_block_clean || true
+    quic_block_clean || true
     say "data plane DOWN"
 }
 
@@ -315,6 +336,10 @@ command_status() {
     if [ "$IPV6_BLOCK" = "1" ] && [ -n "$IP6T" ]; then
         v6=$("$IP6T" -w -t filter -S FORWARD 2>/dev/null | grep -c -- '-j REJECT' || true)
         echo "ipv6_block: on (FORWARD REJECT rules=$v6)"
+    fi
+    if [ "$QUIC_BLOCK" = "1" ]; then
+        q=$("ipt" -t filter -S FORWARD 2>/dev/null | grep -c -- '-p udp .* --dport 443 -j REJECT' || true)
+        echo "quic_block: on (UDP/443 REJECT rules=$q)"
     fi
 }
 

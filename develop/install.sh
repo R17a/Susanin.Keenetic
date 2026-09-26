@@ -433,6 +433,7 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     ensure_key "$PREFIX/etc/susanin.conf" cdn_prefix_ttl 3600
     ensure_key "$PREFIX/etc/susanin.conf" cdn_prefix_max 24
     ensure_key "$PREFIX/etc/susanin.conf" ipv6_block 1
+    ensure_key "$PREFIX/etc/susanin.conf" quic_block 1
     ensure_key "$PREFIX/etc/susanin.conf" health_mode icmp
     ensure_key "$PREFIX/etc/susanin.conf" health_tcp_port 443
 fi
