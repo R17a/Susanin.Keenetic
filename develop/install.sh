@@ -381,17 +381,27 @@ if [ ! -f "$PREFIX/etc/vpn_always.txt" ] && [ -n "$_va" ]; then
     cp "$_va" "$PREFIX/etc/vpn_always.txt"
     say "vpn_always list installed: $PREFIX/etc/vpn_always.txt"
 else
-    say "vpn_always list kept (not overwritten)"
+    say "vpn_always list kept (not overwritten; may be merged with new entries)"
+    if [ -n "$_va" ]; then
+        merge_list "$PREFIX/etc/vpn_always.txt" "$_va" "vpn_always"
+    fi
 fi
 _vn=$(find_file vpn_never.txt) || _vn=""
 if [ ! -f "$PREFIX/etc/vpn_never.txt" ] && [ -n "$_vn" ]; then
     cp "$_vn" "$PREFIX/etc/vpn_never.txt"
     say "vpn_never list installed: $PREFIX/etc/vpn_never.txt"
 else
-    say "vpn_never list kept (not overwritten)"
+    say "vpn_never list kept (not overwritten; may be merged with new entries)"
     if [ -n "$_vn" ]; then
         merge_list "$PREFIX/etc/vpn_never.txt" "$_vn" "vpn_never"
     fi
+fi
+_cdn=$(find_file cdn_ranges.txt) || _cdn=""
+if [ ! -f "$PREFIX/etc/cdn_ranges.txt" ] && [ -n "$_cdn" ]; then
+    cp "$_cdn" "$PREFIX/etc/cdn_ranges.txt"
+    say "CDN ranges installed: $PREFIX/etc/cdn_ranges.txt"
+else
+    say "CDN ranges kept (not overwritten; auto-updates from cdn_ranges_url)"
 fi
 
 # Дописать отсутствующие дефолтные ключи: старый susanin.conf мог их не
@@ -410,6 +420,19 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     ensure_key "$PREFIX/etc/susanin.conf" egress_type interface
     ensure_key "$PREFIX/etc/susanin.conf" tproxy_port 12345
     ensure_key "$PREFIX/etc/susanin.conf" discover_exclude "wdtt0,wdttraw0,tun0,tap0"
+    ensure_key "$PREFIX/etc/susanin.conf" lan_server_interfaces ""
+    ensure_key "$PREFIX/etc/susanin.conf" dp_check_interval 15s
+    ensure_key "$PREFIX/etc/susanin.conf" learn_min_op 10
+    ensure_key "$PREFIX/etc/susanin.conf" learn_min_bytes 2000
+    ensure_key "$PREFIX/etc/susanin.conf" confirm_min_bytes 512
+    ensure_key "$PREFIX/etc/susanin.conf" learn_strict 0
+    ensure_key "$PREFIX/etc/susanin.conf" cdn_ranges_file /opt/susanin/etc/cdn_ranges.txt
+    ensure_key "$PREFIX/etc/susanin.conf" cdn_ranges_url https://www.cloudflare.com/ips-v4
+    ensure_key "$PREFIX/etc/susanin.conf" cdn_ranges_interval 86400
+    ensure_key "$PREFIX/etc/susanin.conf" cdn_prefix_learn 1
+    ensure_key "$PREFIX/etc/susanin.conf" cdn_prefix_ttl 3600
+    ensure_key "$PREFIX/etc/susanin.conf" cdn_prefix_max 24
+    ensure_key "$PREFIX/etc/susanin.conf" ipv6_block 0
     ensure_key "$PREFIX/etc/susanin.conf" health_mode icmp
     ensure_key "$PREFIX/etc/susanin.conf" health_tcp_port 443
 fi

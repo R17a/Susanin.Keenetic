@@ -12,6 +12,7 @@ set -eu
 PREFIX=/opt
 find_bin() { for b in /opt/sbin /opt/bin /usr/sbin /usr/bin; do [ -x "$b/$1" ] && { echo "$b/$1"; return; }; done; command -v "$1" 2>/dev/null || true; }
 IPT=$(find_bin iptables); IPSET=$(find_bin ipset); IPCMD=$(find_bin ip)
+IP6T=$(find_bin ip6tables)
 # Все вызовы iptables — через `-w`: ждать xtables-lock, а не падать
 # ("Another app is currently holding the xtables lock" при параллели с NDM).
 ipt() { "$IPT" -w "$@"; }
@@ -41,6 +42,8 @@ DISK_MODE=${SUSANIN_DISK_MODE:-normal}
 TPROXY_PORT=${SUSANIN_TPROXY_PORT:-0}
 TPROXY_MARK=0x1
 UDP_RELAY_PORT=${SUSANIN_UDP_RELAY_PORT:-0}
+# C3: блокировать IPv6 из LAN (весь трафик клиентов — по IPv4, под Susanin).
+IPV6_BLOCK=${SUSANIN_IPV6_BLOCK:-0}
 
 CHAIN=SUSANIN
 SETS="susanin_ok_tcp susanin_ok_udp susanin_test_tcp susanin_test_udp"
@@ -224,6 +227,27 @@ tproxy_clean() {
     "$IPCMD" route del local default dev lo table "$TABLE" >/dev/null 2>&1 || true
 }
 
+# C3: блокировка IPv6 из LAN, чтобы клиенты уходили на IPv4
+ipv6_block_rules() {
+    [ "$IPV6_BLOCK" = "1" ] || return 0
+    if [ -z "$IP6T" ]; then
+        say "ipv6_block=1, но ip6tables не найден — пропускаю"
+        return 0
+    fi
+    for i in $LAN; do
+        "$IP6T" -w -t filter -D FORWARD -i "$i" -j REJECT >/dev/null 2>&1 || true
+        "$IP6T" -w -t filter -A FORWARD -i "$i" -j REJECT
+    done
+    say "ipv6_block=1: IPv6 из LAN заблокирован (клиенты — по IPv4)"
+}
+
+ipv6_block_clean() {
+    [ -n "$IP6T" ] || return 0
+    for i in $LAN; do
+        "$IP6T" -w -t filter -D FORWARD -i "$i" -j REJECT >/dev/null 2>&1 || true
+    done
+}
+
 command_up() {
     backup
     ensure_sets
@@ -232,6 +256,7 @@ command_up() {
     rule_mark
     ensure_jump
     ensure_table
+    ipv6_block_rules
     say "data plane UP (table=$TABLE dev=$EGRESS mask=$MARK_MASK)"
 }
 
@@ -251,6 +276,7 @@ command_down() {
     "$IPCMD" route del local default dev lo table "$TABLE" >/dev/null 2>&1 || true
     "$IPCMD" route flush table "$TABLE" >/dev/null 2>&1 || true
     tproxy_clean || true
+    ipv6_block_clean || true
     say "data plane DOWN"
 }
 
@@ -285,6 +311,10 @@ command_status() {
     if [ "${UDP_RELAY_PORT:-0}" -gt 0 ] 2>/dev/null; then
         u=$("ipt" -t mangle -S PREROUTING 2>/dev/null | grep -c "TPROXY --on-port $UDP_RELAY_PORT" || true)
         echo "udp-relay: port=$UDP_RELAY_PORT rules=$u"
+    fi
+    if [ "$IPV6_BLOCK" = "1" ] && [ -n "$IP6T" ]; then
+        v6=$("$IP6T" -w -t filter -S FORWARD 2>/dev/null | grep -c -- '-j REJECT' || true)
+        echo "ipv6_block: on (FORWARD REJECT rules=$v6)"
     fi
 }
 

@@ -27,6 +27,33 @@
   недоступен, TCP-ветка работает, а UDP через XRay не пойдёт — `datapath.sh`
   напишет предупреждение и не станет валить правила.
 
+## Маскировка (SNI / camo-домен)
+
+Для REALITY `serverName` (SNI) — это **реальный сторонний сайт**, под который
+маскируется сервер, а `address` в клиенте лучше указывать **IP** сервера:
+
+- сервер: `realitySettings.dest = "<camo>:443"`, `serverNames = ["<camo>"]`;
+- клиент: `address = <IP>`, `serverName = "<camo>"`;
+- `<camo>` должен быть **иностранным**, реально доступным из РФ (SNI не из
+  блок-листа), поддерживать **TLS 1.3 + X25519 + HTTP/2** и быть **не «слишком
+  популярным»** (топ-домены вроде `google.com`/`microsoft.com`/`ozon.ru` массово
+  используют в прикрытии — они в чёрных списках). Хороши средние, но живые
+  сайты (напр. `apache.org`, `docker.com`, `www.postgresql.org`).
+
+Проверка кандидата (с сервера):
+```sh
+echo | openssl s_client -connect <camo>:443 -servername <camo> -tls1_3 2>/dev/null \
+  | grep -E 'Protocol|Peer Temp'
+```
+Нужно `Protocol: TLSv1.3` и `Peer Temp Key: X25519` (или `X25519MLKEM768`).
+
+После смены camo-домена убедитесь, что запрос с **чужим** SNI к вашему серверу
+**не** отдаёт сертификат вашего домена:
+```sh
+echo | openssl s_client -connect <IP_сервера>:443 -servername example.org 2>/dev/null \
+  | openssl x509 -noout -subject
+```
+
 ## Настройка
 
 1. Положить бинарь:

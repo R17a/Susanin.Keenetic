@@ -40,7 +40,7 @@ ca-certificates ipset iptables conntrack:
   install.sh      установщик (запускать из корня пакета)
   bin/            susanin-agent.<arch> (mips, mipsel, aarch64, armv7, x86_64)
   tools/          скрипты (susanin.sh, datapath.sh, xray-egress.sh, ...)
-  etc/            config.example.conf, xray-tproxy.json.example, vpn_always/never.txt
+  etc/            config.example.conf, cdn_ranges.txt, xray-tproxy.json.example, vpn_always/never.txt
   init/           S93xray-tproxy, S94susanin, S95susanin-web
   www/            файлы веб-панели
   xray/           бинари Xray (xray.mipsel, xray.aarch64), LICENSE

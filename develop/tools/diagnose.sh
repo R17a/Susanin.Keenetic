@@ -315,6 +315,29 @@ else
     echo "веб-панель выключена (web_enable=0)"
 fi
 
+# ------------------------------------------------- датаплейн / IPv6 / IPTV
+sec "Датаплейн, IPv6 и IPTV"
+REPROV=/opt/susanin/var/dp-reprov
+if [ -f "$REPROV" ]; then
+    echo "tproxy re-provision: $(cat "$REPROV" 2>/dev/null)"
+else
+    echo "tproxy re-provision: не было"
+fi
+
+if command -v ip >/dev/null 2>&1; then
+    if ip -6 route show default 2>/dev/null | grep -q .; then
+        echo "IPv6 default: есть ($(ip -6 route show default 2>/dev/null | head -n1))"
+        rec "Есть глобальный IPv6, а Susanin.Keenetic работает только по IPv4: трафик к IPv6-адресам (у Cloudflare/CDN часто есть AAAA) идёт мимо и может душиться. Если сайт «то грузится, то нет» — отключите IPv6 у проблемного клиента (или в Keenetic) и проверьте."
+    else
+        echo "IPv6 default: нет (глобального IPv6-интернета нет — это норма)"
+    fi
+fi
+
+echo "IPTV/CDN (сайт за Cloudflare/Fastly и «то грузится, то нет»):"
+echo "  - адреса провайдера НЕ кладите в vpn_never (это принудительный DIRECT);"
+echo "  - поймать реальный хост: tcpdump -i br0 -n 'host <IP-приставки> and port 53' (LAN-DNS открыт);"
+echo "  - проверка заворота: grep '<IP-приставки>' /proc/net/nf_conntrack | grep sport=12345"
+
 # ------------------------------------------------------------- рекомендации
 sec "Рекомендации"
 if [ -n "$RECS" ]; then
