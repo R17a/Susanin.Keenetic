@@ -231,13 +231,17 @@ tproxy_clean() {
 
 # C3: блокировка IPv6 из LAN, чтобы клиенты уходили на IPv4
 ipv6_block_rules() {
+    if [ -n "$IP6T" ]; then
+        for i in $LAN; do
+            "$IP6T" -w -t filter -D FORWARD -i "$i" -j REJECT >/dev/null 2>&1 || true
+        done
+    fi
     [ "$IPV6_BLOCK" = "1" ] || return 0
     if [ -z "$IP6T" ]; then
         say "ipv6_block=1, но ip6tables не найден — пропускаю"
         return 0
     fi
     for i in $LAN; do
-        "$IP6T" -w -t filter -D FORWARD -i "$i" -j REJECT >/dev/null 2>&1 || true
         "$IP6T" -w -t filter -A FORWARD -i "$i" -j REJECT
     done
     say "ipv6_block=1: IPv6 из LAN заблокирован (клиенты — по IPv4)"
@@ -251,18 +255,26 @@ ipv6_block_clean() {
 }
 
 # QUIC (UDP 443) из LAN: запретить, чтобы приложения шли по TCP (QUIC через
-# UDP-релей ненадёжен). REJECT — приложение сразу падает на TCP, без ожидания.
+# UDP-релей ненадёжен). Правило ставим в mangle PREROUTING ПЕРЕД цепочкой
+# SUSANIN — иначе помеченный QUIC успеет уйти в TPROXY/релей. DROP → приложение
+# перестаёт ждать QUIC и уходит на TCP. Всегда снимаем свои прошлые правила,
+# чтобы при quic_block=0 ничего не оставалось.
 quic_block_rules() {
+    for i in $LAN; do
+        "ipt" -t mangle -D PREROUTING -p udp -i "$i" --dport 443 -j DROP >/dev/null 2>&1 || true
+        # убрать и старый (ошибочный) вариант правила из filter FORWARD
+        "ipt" -t filter -D FORWARD -p udp -i "$i" --dport 443 -j REJECT >/dev/null 2>&1 || true
+    done
     [ "$QUIC_BLOCK" = "1" ] || return 0
     for i in $LAN; do
-        "ipt" -t filter -D FORWARD -p udp -i "$i" --dport 443 -j REJECT >/dev/null 2>&1 || true
-        "ipt" -t filter -A FORWARD -p udp -i "$i" --dport 443 -j REJECT
+        "ipt" -t mangle -I PREROUTING 1 -p udp -i "$i" --dport 443 -j DROP
     done
     say "quic_block=1: QUIC (UDP 443) из LAN запрещён (приложения — по TCP)"
 }
 
 quic_block_clean() {
     for i in $LAN; do
+        "ipt" -t mangle -D PREROUTING -p udp -i "$i" --dport 443 -j DROP >/dev/null 2>&1 || true
         "ipt" -t filter -D FORWARD -p udp -i "$i" --dport 443 -j REJECT >/dev/null 2>&1 || true
     done
 }
@@ -337,9 +349,11 @@ command_status() {
         v6=$("$IP6T" -w -t filter -S FORWARD 2>/dev/null | grep -c -- '-j REJECT' || true)
         echo "ipv6_block: on (FORWARD REJECT rules=$v6)"
     fi
+    q=$("ipt" -t mangle -S PREROUTING 2>/dev/null | grep -c -- '-p udp .* --dport 443 -j DROP' || true)
     if [ "$QUIC_BLOCK" = "1" ]; then
-        q=$("ipt" -t filter -S FORWARD 2>/dev/null | grep -c -- '-p udp .* --dport 443 -j REJECT' || true)
-        echo "quic_block: on (UDP/443 REJECT rules=$q)"
+        echo "quic_block: on (mangle PREROUTING DROP rules=$q)"
+    elif [ "${q:-0}" -gt 0 ] 2>/dev/null; then
+        echo "quic_block: off, но найдены остаточные правила ($q) — перезапустите susanin.sh"
     fi
 }
 
