@@ -189,6 +189,8 @@ is_cidr() { printf '%s' "$1" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$
 # susanin-XXXX.domain). Поэтому такие строки считаем отдельно и НЕ заваливаем
 # пользователя списком «проблем». Реально нерезолвимые имена видны по нулевому
 # числу адресов и упоминаются в сводке.
+DNS_HIJ=0; DNS_HIJ_EX=""
+
 check_list() {
     f="$1"; label="$2"
     if [ ! -f "$f" ]; then
@@ -202,7 +204,7 @@ check_list() {
         printf '  проверяю %s строк (DNS-запрос к каждому домену; может занять ~минуту, Ctrl+C — прервать)\n' \
                "$n_all" >&2
     fi
-    tot=0; ok=0; zone=0; idx=0
+    tot=0; ok=0; zone=0; idx=0; hij=0; hijex=""
     zex=""
     while IFS= read -r raw; do
         e=$(printf '%s' "$raw" | sed 's/#.*//' | tr -d ' \t\r')
@@ -215,7 +217,18 @@ check_list() {
             continue
         fi
         name=$(printf '%s' "$e" | sed 's/^\*\.//')
-        ips=$(ips_of "$name")
+        # Резолвим один раз: и адреса, и признак подмены (127.0.0.1/::1).
+        # Важно: смотрим только секцию ответа (после "Name:"), иначе адрес
+        # самого резолвера в шапке даёт ложное срабатывание.
+        if [ -n "$DNS" ]; then ans=$(nslookup "$name" "$DNS" 2>&1); else ans=$(nslookup "$name" 2>&1); fi
+        ans=$(printf '%s\n' "$ans" | awk '/^Name:/{f=1} f')
+        ips=$(printf '%s\n' "$ans" | awk '/^Address/ {
+                 for (i = 1; i <= NF; i++)
+                     if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) { print $i; break } }')
+        if printf '%s\n' "$ans" | grep -qE '(^|[^0-9])127\.0\.0\.1([^0-9]|$)|(^|[^0-9a-fA-F])::1([^0-9a-fA-F]|$)'; then
+            hij=$((hij + 1))
+            [ -z "$hijex" ] && hijex="$name"
+        fi
         if [ -n "$ips" ]; then
             ok=$((ok + 1))
         else
@@ -227,6 +240,11 @@ check_list() {
     echo "  итог: строк $tot, с адресами $ok, без A на apex $zone"
     if [ "$zone" -gt 0 ]; then
         echo "  без A на apex: $zone (для CDN это норма, демон проверит поддомены; напр. $zex)"
+    fi
+    if [ "$hij" -gt 0 ]; then
+        echo "  ПОДМЕНА DNS (127.0.0.1/::1): $hij (напр. $hijex)"
+        DNS_HIJ=$((DNS_HIJ + hij))
+        [ -z "$DNS_HIJ_EX" ] && DNS_HIJ_EX="$hijex"
     fi
 }
 
@@ -246,6 +264,19 @@ if [ -f "$ETCDIR/vpn_always.txt" ] && [ -f "$ETCDIR/vpn_never.txt" ]; then
         printf '    %s\n' $conf
         rec "Один и тот же адрес есть и в vpn_always, и в vpn_never — побеждает «напрямую». Уберите лишнюю строку: $(printf '%s' "$conf" | head -n1)"
     fi
+fi
+
+# Подмена DNS (127.0.0.1/::1): домен не завернуть в VPN, пока резолвер не исправлен.
+if [ "${DNS_HIJ:-0}" -gt 0 ]; then
+    echo
+    echo "!! DNS WARNING: ${DNS_HIJ} домен(ов) из списков резолвятся в 127.0.0.1/::1 (напр. ${DNS_HIJ_EX:-?})."
+    echo "   Это подмена DNS (блок-лист). Пока так, эти адреса через VPN не пойдут."
+    if ls /tmp/run/dotproxy-*.yml >/dev/null 2>&1 && \
+       grep -lq 'GETDNS_TRANSPORT_TLS' /tmp/run/dotproxy-*.yml 2>/dev/null; then
+        echo "   Обнаружен DNS-over-TLS (DoT, порт 853) — провайдеры часто его глушат."
+    fi
+    echo "   Почините DNS на роутере: выключите DoT и включите DoH (443) или обычный DNS (напр. 1.1.1.1)."
+    rec "DNS подменяет адреса: ${DNS_HIJ} домен(ов) из списков дают 127.0.0.1/::1 (напр. ${DNS_HIJ_EX:-?}). Выключите DNS-over-TLS (порт 853 часто глушат) и включите DoH или обычный DNS (напр. 1.1.1.1)."
 fi
 
 if [ -z "$DNS_CFG" ] && [ -z "$DNS" ]; then

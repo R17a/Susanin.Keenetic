@@ -130,15 +130,28 @@ if [ -f "$DIR/vpn_never.txt" ]; then
 fi
 
 # Дописать отсутствующие дефолтные ключи (старый конфиг мог их не содержать).
+# Новые ключи добавляются со значениями по умолчанию; существующие не трогаем.
 if [ -f "$PREFIX/etc/susanin.conf" ]; then
     for kv in web_enable=0 web_listen= web_port=8087 web_token= \
               egress_type=interface tproxy_port=12345 \
               discover_exclude=wdtt0,wdttraw0,tun0,tap0 \
+              lan_server_interfaces= dp_check_interval=15s \
+              learn_min_op=10 learn_min_bytes=2000 confirm_min_bytes=512 learn_strict=0 \
+              cdn_ranges_file=/opt/susanin/etc/cdn_ranges.txt \
+              cdn_ranges_url=https://www.cloudflare.com/ips-v4 \
+              cdn_ranges_interval=86400 cdn_prefix_learn=1 cdn_prefix_ttl=3600 \
+              cdn_prefix_max=24 ipv6_block=1 \
               health_mode=icmp health_tcp_port=443; do
         k=${kv%%=*}; d=${kv#*=}
         grep -q "^${k}=" "$PREFIX/etc/susanin.conf" 2>/dev/null \
             || printf '%s=%s\n' "$k" "$d" >> "$PREFIX/etc/susanin.conf"
     done
+fi
+
+# Данные CDN (cdn_ranges.txt): ставим, если файла ещё нет; существующий не трогаем.
+if [ -f "$DIR/cdn_ranges.txt" ] && [ ! -f "$PREFIX/etc/cdn_ranges.txt" ]; then
+    cp "$DIR/cdn_ranges.txt" "$PREFIX/etc/cdn_ranges.txt"
+    say "CDN ranges installed: $PREFIX/etc/cdn_ranges.txt"
 fi
 
 if [ -x "$PREFIX/tools/susanin.sh" ]; then

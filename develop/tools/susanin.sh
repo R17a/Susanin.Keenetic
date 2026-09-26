@@ -13,7 +13,8 @@
 #   sh susanin.sh reload         # перечитать susanin.conf на лету (SIGHUP)
 #   sh susanin.sh rescan         # заново найти LAN/VPN, обновить конфиг и перечитать
 #   sh susanin.sh down           # remove data plane rules (daemon keeps running)
-#   sh susanin.sh forget <ip>    # drop an address from cache/ipsets (allow direct)
+#   sh susanin.sh reset <ip|domain>  # сброс из кэша/ipsets/conntrack («забыть»)
+#   sh susanin.sh forget <ip|domain> # синоним reset
 #   sh susanin.sh add <ip> tcp|udp test|ok
 #   sh susanin.sh del <ip> tcp|udp
 
@@ -148,12 +149,12 @@ case "${1:-}" in
     update) shift || true; sh "$TOOLS/update.sh" "$@" ;;
     uninstall) shift || true; sh "$TOOLS/uninstall.sh" "$@" ;;
     down) sh "$TOOLS/datapath.sh" down ;;
-    forget) "$BIN" forget "$2" ;;
+    reset|forget) "$BIN" reset "$2" ;;
     add) sh "$TOOLS/datapath.sh" add "$2" "$3" "$4" ;;
     del) sh "$TOOLS/datapath.sh" del "$2" "$3" ;;
     profiles) SUSANIN_CONF="$CONF" sh "$TOOLS/profiles.sh" "${2:-status}" ;;
     xray) shift; SUSANIN_CONF="$CONF" sh "$TOOLS/xray-egress.sh" "$@" ;;
     *)
-        echo "usage: $0 {start|stop|restart|status|reload|rescan|log [N]|install|update [ver]|uninstall [--purge]|down|forget <ip>|add <ip> <tcp|udp> <test|ok>|del <ip> <tcp|udp>|profiles [up|down|status]|xray {run [ip]|stop|status|test <ip>|untest <ip>}}" >&2
+        echo "usage: $0 {start|stop|restart|status|reload|rescan|log [N]|install|update [ver]|uninstall [--purge]|down|reset <ip|domain>|forget <ip|domain>|add <ip> <tcp|udp> <test|ok>|del <ip> <tcp|udp>|profiles [up|down|status]|xray {run [ip]|stop|status|test <ip>|untest <ip>}}" >&2
         exit 2 ;;
 esac
