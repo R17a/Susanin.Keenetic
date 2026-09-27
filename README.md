@@ -442,13 +442,9 @@ sh /opt/susanin/tools/diagnose.sh
 разработку:
 
 <p align="center">
-  <a href="https://www.donationalerts.com/r/dmitriy_r17a">
-    <img src="https://www.donationalerts.com/img/brand/donationalerts.svg" alt="DonationAlerts" height="44">
-  </a>
+  <a href="https://www.donationalerts.com/r/dmitriy_r17a"><img src="https://www.donationalerts.com/img/brand/donationalerts.svg" alt="DonationAlerts" height="44"></a>
   &nbsp;
-  <a href="https://pay.cloudtips.ru/p/dcbf5f2e">
-    <img src="https://static.tildacdn.com/tild3431-6231-4938-b464-663831306266/Horiz.svg" alt="CloudTips" height="44">
-  </a>
+  <a href="https://pay.cloudtips.ru/p/dcbf5f2e"><img src="https://static.tildacdn.com/tild3431-6231-4938-b464-663831306266/Horiz.svg" alt="CloudTips" height="44"></a>
 </p>
 
 ## Дисклеймер
