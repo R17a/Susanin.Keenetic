@@ -58,10 +58,15 @@ jobs:
           # init script in init/entware/ (S94susanin used to be missed here).
           # `set -e` makes any missing file fail the build loudly.
           cp tools/datapath.sh tools/susanin.sh tools/update.sh \
-             tools/uninstall.sh tools/report.sh tools/diagnose.sh "$STAGE/"
-          cp install.sh config.example.conf vpn_always.txt vpn_never.txt \
-             DEPLOY.md "$STAGE/"
+             tools/uninstall.sh tools/report.sh tools/diagnose.sh \
+             tools/profiles.sh tools/xray-egress.sh "$STAGE/"
+          cp install.sh config.example.conf cdn_ranges.txt \
+             vpn_always.txt vpn_never.txt \
+             DEPLOY.md xray-tproxy.json.example "$STAGE/"
           cp init/entware/S94susanin "$STAGE/S94susanin"
+          cp init/entware/S95susanin-web "$STAGE/S95susanin-web"
+          cp init/entware/S93xray-tproxy "$STAGE/S93xray-tproxy"
+          cp -r www "$STAGE/www"
           tar -czf "susanin-keenetic-deploy-${{ matrix.arch }}.tar.gz" -C "$STAGE" .
           ls -l "susanin-keenetic-deploy-${{ matrix.arch }}.tar.gz"
       - name: Upload artifact

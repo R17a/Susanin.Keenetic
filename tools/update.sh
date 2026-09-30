@@ -129,6 +129,38 @@ if [ -f "$DIR/vpn_never.txt" ]; then
     merge_list "$PREFIX/etc/vpn_never.txt" "$DIR/vpn_never.txt" "vpn_never"
 fi
 
+# Дописать отсутствующие дефолтные ключи (старый конфиг мог их не содержать).
+# Новые ключи добавляются со значениями по умолчанию; существующие не трогаем.
+if [ -f "$PREFIX/etc/susanin.conf" ]; then
+    for kv in web_enable=0 web_listen= web_port=8087 web_token= \
+              egress_type=interface tproxy_port=12345 \
+              discover_exclude=wdtt0,wdttraw0,tun0,tap0 \
+              fast_syn_min_op=2 ok_max_entries=4096 ok_evict_misses=3 promo_per_min=30 \
+              soft_state_interval=12 \
+              learn_exclude_ports=22,23,53,135,137,138,139,445,554,1433,1723,3306,3389,5432,5900,6379,7547,9100,11211,27017 \
+              vpn_always_file=/opt/susanin/etc/vpn_always.txt vpn_always_dns= \
+              vpn_always_interval=300 \
+              vpn_never_file=/opt/susanin/etc/vpn_never.txt vpn_never_interval=300 \
+              lan_server_interfaces= dp_check_interval=15 \
+              learn_min_op=10 learn_min_bytes=2000 confirm_min_bytes=512 learn_strict=0 \
+              cdn_ranges_file=/opt/susanin/etc/cdn_ranges.txt \
+              cdn_ranges_url=https://www.cloudflare.com/ips-v4 \
+              cdn_ranges_interval=86400 cdn_prefix_learn=1 cdn_prefix_ttl=3600 \
+              cdn_prefix_max=24 ipv6_block=1 \
+              quic_block=1 \
+              health_mode=icmp health_tcp_port=443; do
+        k=${kv%%=*}; d=${kv#*=}
+        grep -q "^${k}=" "$PREFIX/etc/susanin.conf" 2>/dev/null \
+            || printf '%s=%s\n' "$k" "$d" >> "$PREFIX/etc/susanin.conf"
+    done
+fi
+
+# Данные CDN (cdn_ranges.txt): ставим, если файла ещё нет; существующий не трогаем.
+if [ -f "$DIR/cdn_ranges.txt" ] && [ ! -f "$PREFIX/etc/cdn_ranges.txt" ]; then
+    cp "$DIR/cdn_ranges.txt" "$PREFIX/etc/cdn_ranges.txt"
+    say "CDN ranges installed: $PREFIX/etc/cdn_ranges.txt"
+fi
+
 if [ -x "$PREFIX/tools/susanin.sh" ]; then
     sh "$PREFIX/tools/susanin.sh" start || true
 fi

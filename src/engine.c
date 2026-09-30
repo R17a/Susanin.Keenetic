@@ -1,11 +1,13 @@
 #define _GNU_SOURCE
 #include "engine.h"
 #include "backend.h"
+#include "cdn.h"
 #include "classifier.h"
 #include "conntrack.h"
 #include "health.h"
 #include "log.h"
 #include "state.h"
+#include "udp_relay.h"
 #include "vpn_always.h"
 #include "vpn_never.h"
 
@@ -93,17 +95,23 @@ static void resync_sets(const susanin_config *cfg, susanin_state *st)
 static void sweep_direct(const susanin_config *cfg, susanin_state *st,
                          const ct_flow *flows, int n)
 {
-    int i;
+    int i, done = 0;
     time_t now = time(NULL);
-    for (i = 0; i < n; i++) {
+    /* Ограничиваем число удалений за проход (backend_ct_delete форкает
+     * `conntrack`): не допускаем залпа форков на слабом CPU. */
+    for (i = 0; i < n && done < 200; i++) {
         const ct_flow *f = &flows[i];
         int udp;
         if (f->ctmark != 0) continue;
         if (!from_lan(cfg, f->src)) continue;
+        /* Адреса из vpn_never должны ходить напрямую — их не трогаем. */
+        if (vn_is_recently_never(f->dst, now)) continue;
         if (f->l4proto != 6 && f->l4proto != 17) continue;
         udp = (f->l4proto == 17);
-        if (state_has(st_ok(st, udp), f->dst, now))
+        if (state_has(st_ok(st, udp), f->dst, now)) {
             backend_ct_delete(f);
+            done++;
+        }
     }
 }
 
@@ -134,7 +142,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     flowlist L;
     vpn_always *va = NULL;
     vpn_never *nv = NULL;
-    int tunnel_up = 1, miss = 0, dp_ok = 0, ei = 0, efails = 0;
+    int tunnel_up = 1, miss = 0, dp_ok = 0, ei = 0, efails = 0, dp_fails = 0;
     time_t last[4] = { 0, 0, 0, 0 };
     time_t last_save = 0;
     time_t last_recon = 0;
@@ -143,6 +151,8 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     time_t last_never = 0;
     int never_pending = 0;
     time_t last_trim = 0;
+    time_t last_sweep = 0;
+    time_t last_cdn = 0;
     int force_pending = 0;
     const char *state_path = "/opt/susanin/var/susanin.state";
 
@@ -165,6 +175,11 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     slog_init(cfg->log_level);
     if (strcmp(cfg->disk_mode, "soft") == 0)
         slogf(SL_INFO, "disk_mode=soft: log file off, state not saved, no backups");
+    if (cfg->ok_ttl == 0)
+        slogf(SL_WARN, "ok_ttl=0: выученные адреса не истекают (наборы будут расти); "
+                       "рекомендуется конечный TTL, напр. ok_ttl=21600");
+    if (cfg->udp_relay)
+        udp_relay_start(cfg);
 
     state_init(&st);
     ctx.cfg = cfg;
@@ -176,13 +191,35 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         if (backend_preflight(cfg, perr, sizeof(perr)) != 0)
             slogf(SL_ERROR, "preflight: %s", perr);
     }
+    if (cdn_load(cfg) > 0)
+        slogf(SL_INFO, "CDN: загружено %d диапазонов из %s", cdn_count(), cfg->cdn_ranges_file);
+    last_cdn = time(NULL);
     /* Стартуем с первого egress из списка (фейловер переключит при падении). */
     if (cfg->n_egress > 0)
         backend_set_egress(cfg, cfg->egress_list[0]);
-    if (backend_provision(cfg) == 0) {
+    if (strcmp(cfg->egress_type, "tproxy") == 0) {
+        /* Xray мог запускаться параллельно — даём ему ~10 c забиндить порт,
+         * иначе на старте уходим в fail-open из-за гонки. */
+        int w;
+        for (w = 0; w < 10 && !backend_local_listen(cfg->tproxy_port); w++)
+            sleep(1);
+    }
+    if (strcmp(cfg->egress_type, "tproxy") == 0 &&
+        !backend_local_listen(cfg->tproxy_port)) {
+        /* Xray не слушает — tproxy-правила не поднимаем (иначе чёрная дыра). */
+        slogf(SL_ERROR,
+              "tproxy: порт %d не слушается (Xray не запущен?) — правила НЕ поднимаю, "
+              "трафик DIRECT. Запустите: /opt/etc/init.d/S93xray-tproxy start",
+              cfg->tproxy_port);
+        backend_teardown(cfg);
+        dp_ok = 0;
+        next_dp_try = time(NULL) + 15;
+    } else if (backend_provision(cfg) == 0) {
         dp_ok = 1;
+        dp_fails = 0;
     } else {
         slogf(SL_ERROR, "data plane is NOT active; traffic stays DIRECT until set-up succeeds");
+        dp_fails = 1;
         next_dp_try = time(NULL) + 60;
     }
     if (state_load(state_path, &st) == 0)
@@ -222,10 +259,21 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 miss = 0;
                 if (cfg->n_egress > 0)
                     backend_set_egress(cfg, cfg->egress_list[0]);
-                if (backend_provision(cfg) == 0)
-                    dp_ok = 1;
-                else
+                if (strcmp(cfg->egress_type, "tproxy") == 0 &&
+                    !backend_local_listen(cfg->tproxy_port)) {
+                    slogf(SL_ERROR, "tproxy: порт %d не слушается — правила не поднимаю (DIRECT)",
+                          cfg->tproxy_port);
+                    backend_teardown(cfg);
                     dp_ok = 0;
+                    next_dp_try = now + 15;
+                } else if (backend_provision(cfg) == 0) {
+                    dp_ok = 1;
+                    dp_fails = 0;
+                } else {
+                    dp_ok = 0;
+                    dp_fails++;
+                    next_dp_try = now + (60 << (dp_fails < 5 ? dp_fails : 4));
+                }
                 last_force = 0;
                 last_never = 0;
             } else {
@@ -234,9 +282,27 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             }
         }
 
-        L.n = 0;
-        if (conntrack_scan("/proc/net/nf_conntrack", collect, &L) < 0)
-            slogf(SL_DEBUG, "conntrack scan failed");
+        /* Сканируем /proc/net/nf_conntrack только когда это реально нужно
+         * (классификатор / sweep / health), а не 5 раз в секунду — на слабом
+         * CPU это заметная экономия. */
+        {
+            int need_scan = 0;
+            if (tunnel_up &&
+                (now - last[0] >= cfg->fast_interval ||
+                 now - last[1] >= cfg->soft_interval ||
+                 now - last[2] >= cfg->judge_interval))
+                need_scan = 1;
+            if (dp_ok && tunnel_up && now - last_sweep >= 60)
+                need_scan = 1;
+            if (strcmp(cfg->egress_type, "tproxy") != 0 &&
+                now - last[3] >= cfg->health_interval)
+                need_scan = 1;
+            if (need_scan) {
+                L.n = 0;
+                if (conntrack_scan("/proc/net/nf_conntrack", collect, &L) < 0)
+                    slogf(SL_DEBUG, "conntrack scan failed");
+            }
+        }
 
         if (tunnel_up) {
             if (now - last[0] >= cfg->fast_interval) { last[0] = now; clr_fast(&ctx, L.v, L.n, now); }
@@ -244,7 +310,18 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             if (now - last[2] >= cfg->judge_interval) { last[2] = now; clr_judge(&ctx, L.v, L.n, now); }
         }
 
-        if (now - last[3] >= cfg->health_interval) {
+        /* Периодически сбрасываем «залипшие» прямые потоки (mark=0) по адресам
+         * из ok/vpn_always, чтобы они переустановились через туннель (bounded). */
+        if (dp_ok && tunnel_up && now - last_sweep >= 60) {
+            last_sweep = now;
+            sweep_direct(cfg, &st, L.v, L.n);
+        }
+
+        /* Для egress_type=tproxy health-проба роутера в TPROXY не попадает
+         * (TPROXY ловит только PREROUTING), поэтому health пропускаем:
+         * считаем туннель живым, fail-open не делаем. */
+        if (strcmp(cfg->egress_type, "tproxy") != 0 &&
+            now - last[3] >= cfg->health_interval) {
             int ok = 0, total = 0;
             const char *psrc = cfg->egress_addr[ei][0] ? cfg->egress_addr[ei]
                                                        : cfg->egress_address;
@@ -291,6 +368,12 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                     slogf(SL_INFO, "tunnel UP via %s, recovery", cfg->egress_list[ei]);
                     resync_sets(cfg, &st);
                     sweep_direct(cfg, &st, L.v, L.n);
+                    /* resync_sets() сбрасывает ipset'ы (и пины vpn_always/
+                     * vpn_never). Помечаем списки «грязными», чтобы следующий
+                     * va_refresh/vn_refresh вернул пины (иначе частая причина
+                     * «сайт ходил через VPN, а после переключения — напрямую»). */
+                    va_mark_dirty(va);
+                    vn_mark_dirty(nv);
                     last_force = 0;
                 }
             } else {
@@ -335,40 +418,69 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             }
         }
 
+        if (cfg->cdn_ranges_interval > 0 &&
+            now - last_cdn >= (time_t)cfg->cdn_ranges_interval) {
+            last_cdn = now;
+            cdn_refresh(cfg);
+        }
+
         if (now - last_trim >= 30) {
             last_trim = now;
             trim_ok(cfg, &st);
         }
 
-        if (now - last_recon >= 15) {
+        if (now - last_recon >= (cfg->dp_check_interval > 0 ? cfg->dp_check_interval : 15)) {
+            int tproxy = (strcmp(cfg->egress_type, "tproxy") == 0);
+            int tp_ok = !tproxy || backend_local_listen(cfg->tproxy_port);
             last_recon = now;
-            if (dp_ok && !backend_ready(cfg)) {
+            if (dp_ok && tproxy && !tp_ok) {
+                /* Xray умер — немедленно снимаем правила (fail-open DIRECT). */
+                slogf(SL_ERROR, "tproxy: Xray :%d пропал — снимаю правила, fail-open DIRECT",
+                      cfg->tproxy_port);
+                backend_teardown(cfg);
+                dp_ok = 0;
+                next_dp_try = now + 15;
+            } else if (dp_ok && !backend_ready(cfg)) {
                 /* Was active and disappeared (e.g. NDM/firewall rebuild). */
                 slogf(SL_WARN, "data plane missing (NDM rebuild?), re-provisioning");
                 if (backend_provision(cfg) == 0) {
+                    dp_fails = 0;
+                    backend_mark_reprov("rules missing (NDM rebuild)");
                     if (tunnel_up) {
                         resync_sets(cfg, &st);
+                        /* Сбросить «залипшие» прямые потоки (mark=0) по адресам
+                         * из ok-наборов, чтобы они переустановились через туннель. */
+                        sweep_direct(cfg, &st, L.v, L.n);
                         last_force = 0;
                         va_mark_dirty(va);
                         vn_mark_dirty(nv);
                     }
                 } else {
                     dp_ok = 0;
+                    dp_fails = 1;
                     next_dp_try = now + 60;
                 }
             } else if (!dp_ok && now >= next_dp_try) {
-                /* Never provisioned (or lost earlier): retry slowly. The exact
-                 * reason is logged by backend_provision() itself. */
-                next_dp_try = now + 60;
-                if (backend_provision(cfg) == 0) {
+                /* Never provisioned (or lost earlier): retry with backoff
+                 * (60s, 120s, 240s, ... — чтобы не «долбить» в цикле). */
+                if (!tp_ok) {
+                    slogf(SL_WARN, "tproxy: жду Xray на :%d — правила не поднимаю (DIRECT)",
+                          cfg->tproxy_port);
+                    next_dp_try = now + 60;
+                } else if (backend_provision(cfg) == 0) {
                     dp_ok = 1;
+                    dp_fails = 0;
                     slogf(SL_INFO, "data plane provisioned");
                     if (tunnel_up) {
                         resync_sets(cfg, &st);
+                        sweep_direct(cfg, &st, L.v, L.n);
                         last_force = 0;
                         va_mark_dirty(va);
                         vn_mark_dirty(nv);
                     }
+                } else {
+                    dp_fails++;
+                    next_dp_try = now + (60 << (dp_fails < 5 ? dp_fails : 4));
                 }
             }
         }
@@ -398,6 +510,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         usleep(200000);
     }
 
+    udp_relay_stop();
     state_save(state_path, &st);
     slogf(SL_INFO, "engine stopped");
     va_free(va);

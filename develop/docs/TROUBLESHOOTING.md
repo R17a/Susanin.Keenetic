@@ -150,7 +150,10 @@ sh /opt/susanin/tools/xray-egress.sh enable     # перезапустит Xray
 
 - В `susanin.conf`: `web_enable=1`, `web_listen` — **LAN-адрес роутера**
   (`192.168.1.1`), не `0.0.0.0` и не `127.0.0.1`.
-- Запустите сервис: `/opt/etc/init.d/S95susanin-web start`.
+- Запустите сервис: `/opt/etc/init.d/S95susanin-web start` или
+  `sh /opt/susanin/tools/susanin.sh web start` (`… web status` — состояние).
+- Панель пропала после кнопки Restart? В 0.4.0-dev4 это исправлено (демон и web
+  разведены). До обновления поможет `S95susanin-web start`.
 - Проверка: `netstat -lnt | grep 8087` и
   `curl -s "http://127.0.0.1:8087/api/status?token=ТОКЕН" | head -c 200`.
 - Пустой `web_token` — вход без пароля (только из вашей сети).

@@ -135,7 +135,13 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     for kv in web_enable=0 web_listen= web_port=8087 web_token= \
               egress_type=interface tproxy_port=12345 \
               discover_exclude=wdtt0,wdttraw0,tun0,tap0 \
-              lan_server_interfaces= dp_check_interval=15s \
+              fast_syn_min_op=2 ok_max_entries=4096 ok_evict_misses=3 promo_per_min=30 \
+              soft_state_interval=12 \
+              learn_exclude_ports=22,23,53,135,137,138,139,445,554,1433,1723,3306,3389,5432,5900,6379,7547,9100,11211,27017 \
+              vpn_always_file=/opt/susanin/etc/vpn_always.txt vpn_always_dns= \
+              vpn_always_interval=300 \
+              vpn_never_file=/opt/susanin/etc/vpn_never.txt vpn_never_interval=300 \
+              lan_server_interfaces= dp_check_interval=15 \
               learn_min_op=10 learn_min_bytes=2000 confirm_min_bytes=512 learn_strict=0 \
               cdn_ranges_file=/opt/susanin/etc/cdn_ranges.txt \
               cdn_ranges_url=https://www.cloudflare.com/ips-v4 \

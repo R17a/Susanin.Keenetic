@@ -34,7 +34,9 @@ XRay-egress (VLESS/REALITY), веб-панель, профили маршрут�
    /opt/susanin/bin/susanin-agent version      # покажет точную версию сборки
    ```
 
-Конфиг, `vpn_always.txt` и `vpn_never.txt` при обновлении не перезаписываются.
+Конфиг, `vpn_always.txt` и `vpn_never.txt` при обновлении **не перезаписываются**,
+но списки могут **дополняться** новыми записями из сборки (merge; существующие
+строки не удаляются).
 В архиве нет ваших серверов: в шаблоне Xray только `SERVER/UUID/SNI/PBK/SID`.
 
 ## XRay (VLESS/REALITY)

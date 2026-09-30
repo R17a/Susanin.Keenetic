@@ -66,6 +66,12 @@ echo | openssl s_client -connect <IP_сервера>:443 -servername example.org
    cp /opt/susanin/etc/xray-tproxy.json.example /opt/susanin/etc/xray-tproxy.json
    # заменить SERVER/UUID/SNI/PBK/SID
    ```
+   Поля и что куда подставлять — в `xray-tproxy.notes.txt` (лежит рядом с
+   примером): `address` лучше IP, `serverName` = camo-домен (совпадает с
+   сервером), `publicKey` — из `xray x25519 -i <privateKey>`, `shortId` — как на
+   сервере. Клиенту на роутере **сертификаты не нужны**: REALITY не проверяет
+   TLS-цепочку как обычный TLS, аутентификация — по `publicKey`/`shortId`. На
+   сервере REALITY сам «одалживает» TLS у camo-сайта (`dest`/`serverNames`).
 3. Включить:
    ```sh
    sh /opt/susanin/tools/xray-egress.sh enable

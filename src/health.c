@@ -92,11 +92,46 @@ static int probe_one(const char *dst, const char *src, unsigned long mark)
     return 0;
 }
 
+/* TCP-проба туннеля: подходит для egress без ICMP (VLESS/XRay через TUN).
+ * Успех — установилось TCP-соединение (даже если сервер сразу закрыл). */
+static int probe_tcp(const char *dst, int port, const char *src, unsigned long mark)
+{
+    int fd, r;
+    struct sockaddr_in to, sin;
+    struct timeval tv;
+
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0)
+        return -1;
+    if (src && src[0]) {
+        memset(&sin, 0, sizeof(sin));
+        sin.sin_family = AF_INET;
+        if (inet_pton(AF_INET, src, &sin.sin_addr) == 1)
+            (void)bind(fd, (struct sockaddr *)&sin, sizeof(sin));
+    }
+    setsockopt(fd, SOL_SOCKET, SO_MARK, &mark, sizeof(mark));
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    memset(&to, 0, sizeof(to));
+    to.sin_family = AF_INET;
+    to.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, dst, &to.sin_addr) != 1) {
+        close(fd);
+        return -1;
+    }
+    r = connect(fd, (struct sockaddr *)&to, sizeof(to));
+    close(fd);
+    return r == 0 ? 1 : 0;
+}
+
 int health_probe(const susanin_config *c, const char *src, int *ok, int *total)
 {
     char buf[512], *save = NULL, *tok;
     int o = 0, t = 0;
     const char *psrc = (src && src[0]) ? src : c->egress_address;
+    int tcp_mode = !strcmp(c->health_mode, "tcp");
+    int tcp_port = c->health_tcp_port > 0 ? c->health_tcp_port : 443;
     if (ok) *ok = 0;
     if (total) *total = 0;
     snprintf(buf, sizeof(buf), "%s", c->health_probe);
@@ -104,7 +139,10 @@ int health_probe(const susanin_config *c, const char *src, int *ok, int *total)
         int r;
         while (*tok == ' ') tok++;
         t++;
-        r = probe_one(tok, psrc, c->mark_test);
+        if (tcp_mode)
+            r = probe_tcp(tok, tcp_port, psrc, c->mark_test);
+        else
+            r = probe_one(tok, psrc, c->mark_test);
         if (r > 0) o++;
         else if (r < 0)
             slogf(SL_DEBUG, "health probe to %s failed (%d)", tok, r);

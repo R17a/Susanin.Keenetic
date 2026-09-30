@@ -1,10 +1,15 @@
 /* Susanin.Keenetic — веб-панель (W2/W3, без внешних зависимостей).
- * Данные: GET /api/status, GET /api/log. Токен хранится в localStorage и
- * передаётся заголовком X-Auth-Token (либо один раз через ?token=...). */
+ * Данные: GET /api/status, GET /api/list?name=..., GET /api/log. Токен хранится
+ * в localStorage и передаётся заголовком X-Auth-Token (либо один раз через
+ * ?token=...). Списки vpn_always/vpn_never редактируются перетаскиванием между
+ * колонками (или стрелкой на записи — для touch-устройств). */
 (function () {
   'use strict';
 
   var TOKEN_KEY = 'susanin_token';
+  var LISTS = ['vpn_always', 'vpn_never'];
+  var LIST_LABEL = { vpn_always: 'через VPN', vpn_never: 'напрямую' };
+
   var qs = new URLSearchParams(window.location.search);
   if (qs.get('token')) {
     try { localStorage.setItem(TOKEN_KEY, qs.get('token')); } catch (e) {}
@@ -22,13 +27,6 @@
     });
   };
 
-  $('token').value = token;
-  $('save').onclick = function () {
-    token = $('token').value.trim();
-    try { localStorage.setItem(TOKEN_KEY, token); } catch (e) {}
-    load();
-  };
-  $('refresh').onclick = load;
 
   function api(path) {
     var headers = {};
@@ -50,72 +48,45 @@
     });
   }
 
-  function act(msg, ok) {
-    var el = $('act');
+  function toast(msg, ok) {
+    var box = $('toast');
+    var el = document.createElement('div');
+    el.className = 'msg' + (ok ? '' : ' err');
     el.textContent = msg;
-    el.className = ok ? 'muted' : 'err';
+    box.appendChild(el);
+    window.setTimeout(function () { el.remove(); }, 3000);
+  }
+
+  function setConn(ok) {
+    var d = $('dot');
+    d.className = 'dot ' + (ok ? 'ok' : 'err');
   }
 
   function doPost(path, params, label) {
-    act(label + '…', true);
-    post(path, params).then(function (r) {
-      if (r && r.ok) { act(label + ': ok', true); load(); }
-      else act(label + ': ' + ((r && r.error) || 'ошибка'), false);
-    }).catch(function (e) { act(label + ': ' + e.message, false); });
+    return post(path, params).then(function (r) {
+      if (r && r.ok) { toast(label + ': ок', true); return true; }
+      toast(label + ': ' + ((r && r.error) || 'ошибка'), false);
+      return false;
+    }).catch(function (e) { toast(label + ': ' + e.message, false); return false; });
   }
 
-  $('reload').onclick = function () { doPost('/api/reload', {}, 'reload'); };
-  $('rescan').onclick = function () { doPost('/api/rescan', {}, 'rescan'); };
-  $('restart').onclick = function () { doPost('/api/restart', {}, 'restart'); };
-  $('forget').onclick = function () {
+  $('reload').onclick = function () { doPost('/api/reload', {}, 'reload').then(loadAll); };
+  $('rescan').onclick = function () { doPost('/api/rescan', {}, 'rescan').then(loadAll); };
+  $('restart').onclick = function () { doPost('/api/restart', {}, 'restart').then(loadAll); };
+  $('reset').onclick = function () {
     var ip = $('fip').value.trim();
-    if (!ip) { act('forget: укажите IP', false); return; }
-    doPost('/api/forget', { ip: ip }, 'forget ' + ip);
+    if (!ip) { toast('reset: укажите IP или домен', false); return; }
+    doPost('/api/reset', { ip: ip }, 'reset ' + ip);
   };
-  $('ladd').onclick = function () {
-    var v = $('lval').value.trim();
-    if (!v) { act('укажите значение', false); return; }
-    doPost('/api/list', { list: $('lname').value, op: 'add', value: v }, 'add ' + v);
-  };
-  $('ldel').onclick = function () {
-    var v = $('lval').value.trim();
-    if (!v) { act('укажите значение', false); return; }
-    doPost('/api/list', { list: $('lname').value, op: 'del', value: v }, 'del ' + v);
-  };
-
-  function card(k, v) {
-    return '<div class="card"><div class="k">' + esc(k) + '</div><div class="v">' + esc(v) + '</div></div>';
-  }
 
   function renderStatus(d) {
     $('ver').textContent = 'v' + d.version;
-    var e = d.egress || {};
-    $('cards').innerHTML =
-      card('Egress', (e.interface || '—') + ' (' + (e.count || 0) + ')') +
-      card('Тип egress', e.type || 'interface') +
-      card('Таблица', e.table) +
-      card('LAN', e.lan_interfaces || '—') +
-      card('Подсети', e.lan_subnets || '—') +
-      card('Mark test / ok', (e.mark_test || '—') + ' / ' + (e.mark_ok || '—')) +
-      card('Профили', (d.profiles || []).length) +
-      card('Состояние (state)', d.state_file ? 'есть' : 'нет') +
-      card('Web', d.web && d.web.enable ? 'включён' : 'выключен');
-
     var tb = document.querySelector('#sets tbody');
     tb.innerHTML = '';
     var ipsets = d.ipsets || {};
     Object.keys(ipsets).forEach(function (k) {
       tb.insertAdjacentHTML('beforeend',
         '<tr><td>' + esc(k) + '</td><td>' + esc(ipsets[k]) + '</td></tr>');
-    });
-
-    var lb = document.querySelector('#lists tbody');
-    lb.innerHTML = '';
-    ['vpn_always', 'vpn_never'].forEach(function (name) {
-      var o = (d.lists || {})[name] || {};
-      var cnt = (o.count < 0 ? 'нет файла' : o.count);
-      lb.insertAdjacentHTML('beforeend',
-        '<tr><td>' + esc(name) + '</td><td>' + esc(cnt) + '</td><td>' + esc(o.file || '') + '</td></tr>');
     });
   }
 
@@ -124,8 +95,9 @@
       var d;
       try { d = JSON.parse(t); } catch (e) { throw new Error('bad JSON'); }
       renderStatus(d);
-    }).catch(function (e) {
-      $('cards').innerHTML = '<div class="err">Ошибка: ' + esc(e.message) + '</div>';
+      setConn(true);
+    }).catch(function () {
+      setConn(false);
     });
 
     api('/api/log?lines=200').then(function (t) {
@@ -135,6 +107,166 @@
     }).catch(function () { /* лог не критичен */ });
   }
 
-  load();
+  /* --- Списки vpn_always / vpn_never: drag & drop между колонками --- */
+
+  var lists = { vpn_always: [], vpn_never: [] };
+  var filters = { vpn_always: '', vpn_never: '' };
+  var listErrors = { vpn_always: null, vpn_never: null };
+
+  function fetchList(name) {
+    return api('/api/list?name=' + name).then(function (t) {
+      listErrors[name] = null;
+      try { return JSON.parse(t); } catch (e) { listErrors[name] = 'bad JSON'; return null; }
+    }).catch(function (e) {
+      listErrors[name] = e.message || 'ошибка';
+      return null;
+    });
+  }
+
+  function loadLists() {
+    return Promise.all(LISTS.map(fetchList)).then(function (res) {
+      LISTS.forEach(function (name, i) {
+        if (res[i] !== null) lists[name] = res[i];
+      });
+      renderLists();
+    });
+  }
+
+  function renderLists() {
+    LISTS.forEach(function (name) {
+      var items = lists[name].filter(function (v) {
+        return !filters[name] || v.toLowerCase().indexOf(filters[name]) !== -1;
+      });
+      $('cnt-' + name).textContent = lists[name].length;
+      var box = $('items-' + name);
+      box.innerHTML = '';
+      if (listErrors[name]) {
+        box.innerHTML = '<div class="list-empty err">не удалось загрузить: ' + esc(listErrors[name]) + '</div>';
+        return;
+      }
+      if (!items.length) {
+        box.innerHTML = '<div class="list-empty">' +
+          (lists[name].length ? 'ничего не найдено' : 'список пуст') + '</div>';
+        return;
+      }
+      items.forEach(function (v) {
+        box.appendChild(makeItem(name, v));
+      });
+    });
+  }
+
+  function otherList(name) { return name === 'vpn_always' ? 'vpn_never' : 'vpn_always'; }
+
+  function makeItem(name, value) {
+    var row = document.createElement('div');
+    row.className = 'list-item';
+    row.draggable = true;
+    row.title = value;
+
+    var handle = document.createElement('span');
+    handle.className = 'handle';
+    handle.textContent = '⋮⋮';
+    row.appendChild(handle);
+
+    var val = document.createElement('span');
+    val.className = 'val';
+    val.textContent = value;
+    row.appendChild(val);
+
+    var move = document.createElement('button');
+    move.className = 'btn-icon move';
+    move.title = 'Переместить в «' + LIST_LABEL[otherList(name)] + '»';
+    move.textContent = name === 'vpn_always' ? '→' : '←';
+    move.onclick = function () { moveEntry(value, name, otherList(name)); };
+    row.appendChild(move);
+
+    var del = document.createElement('button');
+    del.className = 'btn-icon del';
+    del.title = 'Удалить из списка';
+    del.textContent = '×';
+    del.onclick = function () { deleteEntry(value, name); };
+    row.appendChild(del);
+
+    row.addEventListener('dragstart', function (e) {
+      e.dataTransfer.setData('text/plain', JSON.stringify({ value: value, from: name }));
+      e.dataTransfer.effectAllowed = 'move';
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', function () { row.classList.remove('dragging'); });
+
+    return row;
+  }
+
+  LISTS.forEach(function (name) {
+    var box = $('items-' + name);
+    box.addEventListener('dragover', function (e) {
+      e.preventDefault();
+      box.classList.add('drag-over');
+    });
+    box.addEventListener('dragleave', function () { box.classList.remove('drag-over'); });
+    box.addEventListener('drop', function (e) {
+      e.preventDefault();
+      box.classList.remove('drag-over');
+      var raw = e.dataTransfer.getData('text/plain');
+      if (!raw) return;
+      var data;
+      try { data = JSON.parse(raw); } catch (err) { return; }
+      if (data.from === name) return;
+      moveEntry(data.value, data.from, name);
+    });
+
+    $('filter-' + name).addEventListener('input', function () {
+      filters[name] = this.value.trim().toLowerCase();
+      renderLists();
+    });
+
+    var addInput = $('add-' + name);
+    var addFn = function () {
+      var v = addInput.value.trim();
+      if (!v) return;
+      doPost('/api/list', { list: name, op: 'add', value: v }, 'добавить ' + v)
+        .then(function (ok) { if (ok) { addInput.value = ''; loadLists(); } });
+    };
+    addInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') addFn(); });
+  });
+
+  document.querySelectorAll('[data-add]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var name = btn.getAttribute('data-add');
+      var input = $('add-' + name);
+      var v = input.value.trim();
+      if (!v) return;
+      doPost('/api/list', { list: name, op: 'add', value: v }, 'добавить ' + v)
+        .then(function (ok) { if (ok) { input.value = ''; loadLists(); } });
+    });
+  });
+
+  function deleteEntry(value, from) {
+    doPost('/api/list', { list: from, op: 'del', value: value }, 'удалить ' + value)
+      .then(function (ok) { if (ok) loadLists(); });
+  }
+
+  function moveEntry(value, from, to) {
+    doPost('/api/list', { list: from, op: 'del', value: value }, 'del ' + value).then(function (ok) {
+      if (!ok) return;
+      doPost('/api/list', { list: to, op: 'add', value: value }, 'add ' + value).then(function (ok2) {
+        if (ok2) toast(value + ' → ' + LIST_LABEL[to], true);
+        loadLists();
+      });
+    });
+  }
+
+  /* --- Вкладки верхнего уровня: Конфигурация / Статус (бейдж версии -> Статус) --- */
+
+  $('ver').onclick = function (e) {
+    e.preventDefault();
+    if (window.susaninOpenTab) window.susaninOpenTab('status');
+  };
+
+  function loadAll() { load(); loadLists(); }
+
+  loadAll();
+  /* Список НЕ переопрашиваем таймером — иначе перерисовка мешает
+   * перетаскиванию; обновляется по действию и вручную ("Обновить"). */
   window.setInterval(load, 5000);
 })();

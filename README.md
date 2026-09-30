@@ -89,7 +89,7 @@ Keenetic).
 - работающий VPN-туннель (WireGuard/AmneziaWG) — его интерфейс будет egress;
 - LAN-интерфейсы (обычно `br0`, `br1`);
 - в Keenetic **выключена «Маршрутизация DNS»** (доменные маршруты, которые
-  уводят домены в туннель) — иначе Keenetic и Susanin мешают друг другу;
+  уводят домены в туннель) — иначе Keenetic и Susanin.Keenetic мешают друг другу;
 
   ![Маршрутизация DNS отключена в KeeneticOS](DNS_Route.png)
 
@@ -140,7 +140,7 @@ docker run --rm -v "$PWD/build:/out" ghcr.io/r17a/susanin.keenetic:latest \
 
 - путь по умолчанию — `/opt/susanin/etc/vpn_always.txt` (поле
   `vpn_always_file` в конфиге; если файла нет — функция выключена);
-- файл перечитывается каждые `vpn_always_interval` (по умолчанию `300s`),
+- файл перечитывается каждые `vpn_always_interval` (по умолчанию `300` сек),
   адреса обновляются; правки применяются сразу, без перезапуска;
 - убрали домен из файла — его адреса снимутся при следующем обновлении (то, что
   уже подтверждено обучением, останется в обычном кэше);
@@ -155,7 +155,8 @@ docker run --rm -v "$PWD/build:/out" ghcr.io/r17a/susanin.keenetic:latest \
   есть; DNS-сервер берётся из `/etc/resolv.conf` или из поля `vpn_always_dns`;
 - готовый список идёт в комплекте (`vpn_always.txt`) и ставится в
   `/opt/susanin/etc/vpn_always.txt` **только если файла ещё нет** — при
-  установке и обновлении ваш список не перезаписывается.
+  установке и обновлении ваш список **не перезаписывается**, но может
+  **дополняться** новыми записями из сборки (merge; существующие не удаляются).
   Проверить: `sh /opt/susanin/tools/susanin.sh status` покажет домены.
 
 ## Домены, которые всегда НАПРЯМУЮ (never VPN)
@@ -170,7 +171,7 @@ CIDR), по умолчанию пустой. Поддерживается **`*.e
 `SUSANIN` для этого набора стоит `RETURN` **до** правил пометки, поэтому такие
 адреса не попадают в `ok`/`test` и всегда идут напрямую. Если адрес ошибочно
 попал в VPN-кэш — уберите его командой
-`sh /opt/susanin/tools/susanin.sh forget <ip>`.
+`sh /opt/susanin/tools/susanin.sh reset <ip|домен>` (синоним — `forget`).
 
 ## OpenConnect VPN на том же роутере
 
@@ -178,7 +179,7 @@ CIDR), по умолчанию пустой. Поддерживается **`*.e
 его интерфейс (`oc0`) и спрашивает:
 
 ```
-OpenConnect server detected (oc0). Add it to Susanin routing? [y/N]
+OpenConnect server detected (oc0). Add it to Susanin.Keenetic routing? [y/N]
 ```
 
 Ответьте `y` (или `yes`). При запуске с `--yes` вопрос не задаётся. Что делает
@@ -192,25 +193,122 @@ OpenConnect server detected (oc0). Add it to Susanin routing? [y/N]
   обрабатывается так же, как трафик LAN: заблокированное идёт через VPN,
   остальное — напрямую; отдельные правила NAT не нужны.
 
-## Важно: «Приоритеты подключений» Keenetic и Susanin
+## XRay (VLESS-REALITY) как egress для Susanin.Keenetic
+
+Susanin.Keenetic может выносить помеченный трафик в Xray — режим `egress_type=tproxy`
+(альтернатива VPN-интерфейсу из «Других подключений»). Логика Susanin.Keenetic та же
+(`vpn_always` + автообучение), меняется только egress:
+
+- **TCP:** `nat REDIRECT` помеченных соединений → Xray `dokodemo-door`
+  (`followRedirect`) → VLESS/REALITY;
+- **UDP:** релей в самом демоне (`TPROXY` приём + SOCKS5 `UDP ASSOCIATE` к
+  локальному Xray `socks`, `udp:true`).
+
+Требуется бинарь Xray и конфиг клиента:
+```sh
+# бинарь (для mipsel — 1.8.24 softfloat):
+cp xray/xray.mipsel /opt/sbin/xray && chmod +x /opt/sbin/xray
+# конфиг: из шаблона, подставить SERVER/UUID/SNI/PBK/SID
+cp /opt/susanin/etc/xray-tproxy.json.example /opt/susanin/etc/xray-tproxy.json
+```
+Включение/выключение боевого режима (ключи `egress_type=tproxy`, `udp_relay=1`
+и т.д. выставляются автоматически):
+```sh
+sh /opt/susanin/tools/xray-egress.sh enable     # ok/vpn_always -> XRay
+sh /opt/susanin/tools/xray-egress.sh disable    # обратно в DIRECT
+```
+TCP/UDP проверяются безопасным тестом одного адреса:
+`xray-egress.sh run 1.1.1.1 both` (см. [XRAY.md](XRAY.md)).
+
+> Обычный режим (`egress_type=interface`, VPN из «Других подключений», `nwg*`)
+> сохранён и не изменён. XRay и XKeen одновременно использовать не нужно; для
+> XRay используйте встроенный tproxy-режим Susanin.Keenetic.
+
+## Вместе с qWDTT_Server_Keenetic
+
+qWDTT поднимает серверные туннели `wdtt0`/`wdttraw0` и NAT-ит клиентов сетей
+`10.66.66.0/24` / `10.70.66.0/16` «по источнику». Чтобы проекты не мешали друг
+другу:
+
+- `wdtt0`/`wdttraw0` не должны попадать в `lan_interfaces`/`lan_subnets` и уж
+  тем более в `egress_interface` — они внесены в `discover_exclude` (по
+  умолчанию `wdtt0,wdttraw0,tun0,tap0`);
+- VPN-подсеть Susanin.Keenetic (`egress_address`) не должна пересекаться с сетями qWDTT
+  (пример безопасного набора: Susanin.Keenetic `10.8.1.0/24`, qWDTT `10.66.66.0/24`);
+- один решающий механизм на клиента: клиентами qWDTT Susanin.Keenetic не занимается (у
+  них свой NAT), а LAN-клиенты идут через Susanin.Keenetic.
+
+`diagnose.sh` обнаруживает qWDTT (интерфейсы, цепочки, хук) и предупреждает о
+конфликтах.
+
+## Профили маршрутизации (P1, экспериментально)
+
+Кроме адаптивного обучения, можно задать **статические профили**: список
+(домены / IP / CIDR) принудительно уходит в **свой** туннель, со своими меткой и
+таблицей маршрутизации. Это отдельный слой поверх Susanin.Keenetic (своя цепочка
+`SUSANIN_PROFILES`, свои метки/таблицы), по умолчанию **выключен**.
+
+Профилей может быть несколько (до `CFG_MAX_PROFILES = 4`). В `susanin.conf` они
+задаются повторяющимися ключами с индексом `1..4`: `profile1_*`, `profile2_*`, …
+Профиль включается, только если задан `profileN_name`; всё остальное для него —
+
+| Ключ | Смысл | По умолчанию |
+|---|---|---|
+| `profileN_name` | имя профиля (включает его); `[a-z0-9_]` | — |
+| `profileN_egress` | интерфейс туннеля, в который гнать список | — |
+| `profileN_list` | файл списка (домены / IP / CIDR, по строке) | — |
+| `profileN_table` | номер таблицы маршрутизации | `201..204` по индексу |
+| `profileN_mark` | fwmark профиля | `0x40000000,0x08000000,0x04000000,0x02000000` |
+
+Пример на два профиля (разные списки → разные туннели):
+```
+profile1_name=cdn
+profile1_egress=nwg1
+profile1_list=/opt/susanin/etc/profiles/cdn.txt
+
+profile2_name=social
+profile2_egress=nwg2
+profile2_list=/opt/susanin/etc/profiles/social.txt
+```
+Файлы списков создаются вручную: `/opt/susanin/etc/profiles/<name>.txt`
+(по строке — домен, IP или CIDR; `#` — комментарий). Домены резолвятся в IP.
+
+Управление:
+```sh
+sh /opt/susanin/tools/profiles.sh up      # применить (идемпотентно)
+sh /opt/susanin/tools/profiles.sh status  # что поднято (имя, egress, table, mark, записей)
+sh /opt/susanin/tools/profiles.sh down    # снять
+```
+Профили поднимаются автоматически при старте демона (`S94susanin`). Если ни
+одного `profileN_name` нет — ничего не меняется.
+
+Важные детали:
+- адрес обрабатывается **первым совпавшим** профилем (правила идут по порядку);
+- `profileN_table`/`profileN_mark` можно не задавать — берутся значения по
+  умолчанию; задавайте вручную только если они уже заняты;
+- список профиля — статический (P1); автообучение/фейловер на профиль — P2.
+
+Смотрите также «Вместе с qWDTT_Server_Keenetic» и [XRAY.md](XRAY.md).
+
+## Важно: «Приоритеты подключений» Keenetic и Susanin.Keenetic
 
 Keenetic умеет сам направлять устройства и сегменты в VPN (Web →
 **«Приоритеты подключений»**). Это **отдельный механизм**: его правила идут с
-приоритетом 100–107, а правила Susanin — 2000/2001. Поэтому для клиента,
+приоритетом 100–107, а правила Susanin.Keenetic — 2000/2001. Поэтому для клиента,
 привязанного к политике Keenetic, весь трафик идёт по решению Keenetic (в VPN
-или напрямую — зависит от политики), а списки и обучение Susanin на него
+или напрямую — зависит от политики), а списки и обучение Susanin.Keenetic на него
 **не действуют**.
 
 Простое правило: **у каждого клиента должен быть один «решающий» механизм.**
 
-- Хотите, чтобы решал Susanin (что через VPN, что напрямую) — у клиента или
+- Хотите, чтобы решал Susanin.Keenetic (что через VPN, что напрямую) — у клиента или
   сегмента **не должно быть назначено никакой политики** (оставьте системную
   «по умолчанию»). Это про **любую** политику: названия задаёте вы сами, и
-  любая назначенная политика перекрывает Susanin. Например, при политике
-  «только напрямую» заблокированный сайт не откроется, и Susanin не сможет
+  любая назначенная политика перекрывает Susanin.Keenetic. Например, при политике
+  «только напрямую» заблокированный сайт не откроется, и Susanin.Keenetic не сможет
   завернуть его в VPN.
 - Хотите «всё и всегда через VPN» — можно назначить политику Keenetic, но тогда
-  списки и обучение Susanin для этого клиента не работают.
+  списки и обучение Susanin.Keenetic для этого клиента не работают.
 - Смешивать оба для одного клиента нельзя.
 
 Проверить привязки:
@@ -221,9 +319,9 @@ ndmc -c "show running-config" | grep -i "ip policy"
 (или Web → «Приоритеты подключений»).
 
 Как понять по conntrack, кто управляет клиентом:
-- `mark=2684xxxxx` (`0xffffaXX`) — клиент под политикой Keenetic, Susanin его не
+- `mark=2684xxxxx` (`0xffffaXX`) — клиент под политикой Keenetic, Susanin.Keenetic его не
   обрабатывает;
-- `mark=0` или `mark=536870912` (`0x20000000`) — работает Susanin (напрямую или
+- `mark=0` или `mark=536870912` (`0x20000000`) — работает Susanin.Keenetic (напрямую или
   через VPN).
 
 ## Установка / обновление / удаление
@@ -263,12 +361,13 @@ curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.
 sh install.sh --yes
 ```
 
-Ваши `/opt/susanin/etc/susanin.conf` и `vpn_always.txt` при установке и
-обновлении **не перезаписываются**.
+Ваши `/opt/susanin/etc/susanin.conf`, `vpn_always.txt` и `vpn_never.txt` при
+установке и обновлении **не перезаписываются**, но списки могут **дополняться**
+новыми записями из сборки (merge; существующие строки не удаляются).
 
 Если на роутере есть **OpenConnect-сервер (ocserv)** и его интерфейс (`oc0`) не
 в маршрутизации, установщик спросит (по-английски), добавить ли его:
-`OpenConnect server detected (oc0). Add it to Susanin routing? [y/N]`.
+`OpenConnect server detected (oc0). Add it to Susanin.Keenetic routing? [y/N]`.
 Ответьте `y`; при `--yes` добавится сам.
 
 ![Susanin.Keenetic installer](demo.png)
@@ -276,7 +375,7 @@ sh install.sh --yes
 **Обновление** (конфиг и состояние сохраняются):
 
 ```sh
-sh /opt/susanin/tools/susanin.sh update v0.3.10    # версия (актуальную см. в Releases)
+sh /opt/susanin/tools/susanin.sh update vX.Y.Z     # версия (актуальную см. в Releases)
 ```
 
 ![Susanin.Keenetic uninstall](demo2.png)
@@ -304,11 +403,12 @@ sh /opt/susanin/tools/susanin.sh install    # datapath up + setup
 |---|---|
 | Запуск | `sh /opt/susanin/tools/susanin.sh start` |
 | Остановка | `sh /opt/susanin/tools/susanin.sh stop` |
-| Перезапуск | `sh /opt/susanin/tools/susanin.sh restart` |
-| Состояние | `sh /opt/susanin/tools/susanin.sh status` |
+| Перезапуск | `sh /opt/susanin/tools/susanin.sh restart` (веб-панель не затрагивается) |
+| Веб-панель | `sh /opt/susanin/tools/susanin.sh web {start\|stop\|restart\|status}` |
+| Состояние | `sh /opt/susanin/tools/susanin.sh status` (показывает `daemon:` и `web:`) |
 | Лог | `sh /opt/susanin/tools/susanin.sh log` |
 | Снять правила | `sh /opt/susanin/tools/susanin.sh down` |
-| Убрать IP из кэша | `sh /opt/susanin/tools/susanin.sh forget <ip>` |
+| Убрать IP/домен из кэша | `sh /opt/susanin/tools/susanin.sh reset <ip|домен>` (синоним `forget`) |
 | Обновление | `sh /opt/susanin/tools/susanin.sh update vX.Y.Z` |
 | Удаление | `sh /opt/susanin/tools/susanin.sh uninstall [--purge]` |
 | Добавить IP в VPN вручную | `sh /opt/susanin/tools/susanin.sh add <ip> tcp test` |
@@ -344,6 +444,9 @@ docker build -f Dockerfile.cross -t susanin-build .
 
 `/opt/susanin/etc/susanin.conf`:
 
+Длительности указываются числом без букв; единица измерения (сек / мин / ч)
+написана в описании поля в самом конфиге.
+
 | Поле | Назначение | По умолчанию |
 |---|---|---|
 | `egress_interface` | VPN-интерфейс(ы); несколько через запятую = фейловер | `nwg0` |
@@ -355,14 +458,15 @@ docker build -f Dockerfile.cross -t susanin-build .
 | `learn_exclude_ports` | порты, где отключено быстрое обучение (сетевой шум) | `22,23,53,135,137,138,139,445,554,…` |
 | `health_probe` | адреса для проверки туннеля | `1.1.1.1,8.8.8.8` |
 | `vpn_always_file` | файл «всегда через VPN» (нет файла = выключено) | `/opt/susanin/etc/vpn_always.txt` |
-| `vpn_always_interval` | как часто перечитывать и обновлять список | `300s` |
+| `vpn_always_interval` | как часто перечитывать и обновлять список, сек | `300` |
 | `vpn_always_dns` | DNS-сервер для списка (пусто = из resolv.conf) | (пусто) |
 | `vpn_never_file` | файл «всегда напрямую» (нет файла = выключено) | `/opt/susanin/etc/vpn_never.txt` |
-| `vpn_never_interval` | как часто перечитывать и обновлять список | `300s` |
+| `vpn_never_interval` | как часто перечитывать и обновлять список, сек | `300` |
 | `ok_max_entries` | предел числа записей кэша на протокол (0 = без предела) | `4096` |
 | `ok_evict_misses` | сколько подряд «сбоев» до снятия адреса из `ok` (гистерезис; 1 = сразу) | `3` |
 | `disk_mode` | `normal` (лог/состояние/бэкапы) или `soft` (минимум записей) | `normal` |
-| `soft_state_interval` | как часто сохранять состояние в `soft` (0 = никогда) | `12h` |
+| `soft_state_interval` | как часто сохранять состояние в `soft`, ч (0 = никогда) | `12` |
+| `xray_loglevel` | уровень логов Xray (`debug`/`info`/`warning`/`none`) | `warning` |
 
 Про `learn_exclude_ports`: для этих портов отключено только **быстрое**
 обучение — детект «одиночный запрос без ответа» (так выглядит сетевой шум и
@@ -408,7 +512,7 @@ sh /opt/susanin/tools/diagnose.sh
 - нет цепочки `SUSANIN`, `ip rule` или `default` в таблице VPN — трафик идёт
   мимо туннеля;
 - клиенты привязаны к «Приоритетам подключений» Keenetic (видны правила
-  `fwmark 0xffffaXX`) — таких клиентов Susanin не обрабатывает;
+  `fwmark 0xffffaXX`) — таких клиентов Susanin.Keenetic не обрабатывает;
 - наборы `susanin_ok_*` пусты — автообучение не работает;
 - в списках: домены без A на apex (для CDN нужны поддомены или `*.domain`),
   неразрешимые имена, конфликты `always`/`never`;
@@ -425,8 +529,8 @@ sh /opt/susanin/tools/diagnose.sh
 - при пересборке правил Keenetic (любое изменение в Web) программа сама
   восстанавливает свои правила в течение ~15 секунд;
 - клиент или сегмент, привязанный к **любой** политике Keenetic («Приоритеты
-  подключений»), обходит Susanin — для него списки и обучение не работают
-  (см. раздел «Важно: «Приоритеты подключений» Keenetic и Susanin»).
+  подключений»), обходит Susanin.Keenetic — для него списки и обучение не работают
+  (см. раздел «Важно: «Приоритеты подключений» Keenetic и Susanin.Keenetic»).
 
 ## Документы
 
@@ -434,6 +538,7 @@ sh /opt/susanin/tools/diagnose.sh
 - [USER_GUIDE.md](USER_GUIDE.md) — руководство: быстрый старт, задачи, настройки;
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — если что-то не работает;
 - [DEPLOY.md](DEPLOY.md) — установка/обновление/удаление на роутере;
+- [XRAY.md](XRAY.md) — XRay/VLESS-REALITY и Susanin.Keenetic: совместимость, конфликты, XKeen;
 - `tools/susanin.sh`, `tools/datapath.sh` — управление демоном и правилами.
 
 ## Поддержать проект

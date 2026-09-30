@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "classifier.h"
 #include "backend.h"
+#include "cdn.h"
 #include "vpn_never.h"
 #include "log.h"
 
@@ -84,7 +85,12 @@ static int ours(const ct_flow *f, const susanin_config *cfg)
 
 /* rate cache (two-sample deltas) */
 #define RCAP 2048
-typedef struct { char key[192]; unsigned long op, rp; time_t t; int seen; } rslot;
+typedef struct {
+    char key[192];
+    unsigned long op, rp, ob, rb;
+    time_t t;
+    int seen;
+} rslot;
 static rslot rc[RCAP];
 static int rc_n = 0;
 
@@ -111,13 +117,14 @@ static rslot *rc_find(const char *key)
     return NULL;
 }
 
-static rslot *rc_store(const char *key, unsigned long op, unsigned long rp, time_t now)
+static rslot *rc_store(const char *key, const ct_flow *f, time_t now)
 {
     rslot *s;
     if (rc_n >= RCAP) rc_n = 0;
     s = &rc[rc_n++];
     snprintf(s->key, sizeof(s->key), "%s", key);
-    s->op = op; s->rp = rp; s->t = now; s->seen = 1;
+    s->op = f->op; s->rp = f->rp; s->ob = f->ob; s->rb = f->rb;
+    s->t = now; s->seen = 1;
     return s;
 }
 
@@ -126,21 +133,42 @@ static void flow_key(const ct_flow *f, char *buf, size_t n)
     snprintf(buf, n, "%s|%s|%u|%s|%u", f->proto, f->src, f->sport, f->dst, f->dport);
 }
 
-/* returns 1 if caller should consume origActive/replSilent (has previous sample) */
-static int rate_delta(const ct_flow *f, time_t now, int *orig_active, int *repl_silent)
+static unsigned long udelta(unsigned long cur, unsigned long prev)
+{
+    return cur >= prev ? cur - prev : 0;
+}
+
+/* Полные дельты между сэмплами. 1 = есть предыдущий сэмпл. */
+static int rate_delta_full(const ct_flow *f, time_t now, unsigned long *dop,
+                           unsigned long *drp, unsigned long *dob,
+                           unsigned long *drb)
 {
     char key[192];
     rslot *s;
     flow_key(f, key, sizeof(key));
     s = rc_find(key);
     if (s) {
-        *orig_active = (f->op > s->op);
-        *repl_silent = (f->rp == s->rp);
-        s->op = f->op; s->rp = f->rp; s->seen = 1; s->t = now;
+        *dop = udelta(f->op, s->op);
+        *drp = udelta(f->rp, s->rp);
+        *dob = udelta(f->ob, s->ob);
+        *drb = udelta(f->rb, s->rb);
+        s->op = f->op; s->rp = f->rp; s->ob = f->ob; s->rb = f->rb;
+        s->seen = 1; s->t = now;
         return 1;
     }
-    rc_store(key, f->op, f->rp, now);
+    rc_store(key, f, now);
     return 0;
+}
+
+/* returns 1 if caller should consume origActive/replSilent (has previous sample) */
+static int rate_delta(const ct_flow *f, time_t now, int *orig_active, int *repl_silent)
+{
+    unsigned long dop, drp, dob, drb;
+    if (!rate_delta_full(f, now, &dop, &drp, &dob, &drb))
+        return 0;
+    *orig_active = (dop > 0);
+    *repl_silent = (drp == 0);
+    return 1;
 }
 
 /* Гистерезис снятия из ok: считаем подряд идущие «сбои» по адресу, чтобы не
@@ -206,6 +234,40 @@ static int promo_ok(const susanin_config *cfg, time_t now)
     return 1;
 }
 
+/* L1–L6: пороги обучения (learn_strict увеличивает требования). */
+static unsigned long lmin_op(const susanin_config *c)
+{
+    int v = c->learn_min_op > 0 ? c->learn_min_op : 1;
+    return (unsigned long)(c->learn_strict ? v * 2 : v);
+}
+
+static unsigned long lmin_bytes(const susanin_config *c)
+{
+    int v = c->learn_min_bytes > 0 ? c->learn_min_bytes : 1;
+    return (unsigned long)(c->learn_strict ? v * 2 : v);
+}
+
+static unsigned long cmin_bytes(const susanin_config *c)
+{
+    int v = c->confirm_min_bytes > 0 ? c->confirm_min_bytes : 1;
+    return (unsigned long)(c->learn_strict ? v * 2 : v);
+}
+
+/* C1/C4: при подтверждении адреса из CDN-диапазона закрепить ближайший префикс
+ * CDN в susanin_ok_net (с TTL) — чтобы следующие edge-и шли в VPN сразу. */
+static void cdn_aggregate(classifier_ctx *ctx, const ct_flow *f)
+{
+    const susanin_config *cfg = ctx->cfg;
+    char cidr[64];
+    if (!cfg->cdn_prefix_learn)
+        return;
+    if (!cdn_match(cfg, f->dst, cidr, sizeof(cidr)))
+        return;
+    backend_net_add(cfg, cidr, cfg->cdn_prefix_ttl);
+    slogf(SL_INFO, "CDN: %s -> ok (reason=CONFIRMED %s), ttl=%ds",
+          cidr, f->dst, cfg->cdn_prefix_ttl);
+}
+
 static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
                          const char *stage, const char *reason)
 {
@@ -251,11 +313,18 @@ void clr_fast(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         if (f->l4proto == 6) {
             if (strcmp(f->tcp_state, "SYN_SENT") == 0 && f->op >= (unsigned long)cfg->fast_syn_min_op && f->rp == 0)
                 promote_test(ctx, f, now, "FAST", "TCP-SYN");
-            else if (strcmp(f->tcp_state, "CLOSE") == 0 && f->op >= 1 &&
-                     f->rp <= 2 && f->rb < 256)
+            else if (strcmp(f->tcp_state, "CLOSE") == 0 && f->op >= lmin_op(cfg) &&
+                     f->ob >= lmin_bytes(cfg) && f->rp == 0 && f->rb < 128)
                 promote_test(ctx, f, now, "FAST", "TCP-CLOSE");
+            else if (f->dport == 443 && f->ob >= lmin_bytes(cfg) && f->rb < 128 &&
+                     f->rp <= 1 && strcmp(f->tcp_state, "CLOSE") == 0)
+                /* DPI/ТСПУ по SNI: TCP-рукопожатие прошло и отправлен ClientHello
+                 * (ob растёт), но ответа нет (rb<128) и соединение сброшено.
+                 * Обычные FAST-SYN/FAST-CLOSE это не ловят: SYN-ACK уже был
+                 * (rp=1), поэтому срабатывает только этот сигнал. */
+                promote_test(ctx, f, now, "FAST", "DPI-RST");
         } else if (f->l4proto == 17) {
-            if (f->dport == 443 && f->op >= 3 && f->rp == 0)
+            if (f->dport == 443 && f->op >= (cfg->learn_strict ? 8UL : 6UL) && f->rp == 0)
                 promote_test(ctx, f, now, "FAST", "QUIC");
         }
     }
@@ -274,33 +343,43 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         if (is_private_dst(f->dst, NULL)) continue;
 
         if (f->l4proto == 6 && strcmp(f->tcp_state, "ESTABLISHED") == 0) {
-            if (f->op >= 5 && f->ob >= 1000 && f->rp <= 2 && f->rb < 256) {
+            if (f->op >= lmin_op(cfg) && f->ob >= lmin_bytes(cfg) &&
+                f->rp <= 1 && f->rb < 128) {
                 if (candidate_ok(ctx, f, now))
                     promote_test(ctx, f, now, "SOFT", "TCP-STALL");
                 continue;
             }
-            /* Быстрый late-stall для HTTPS: ответы есть, но объём мизерный —
-             * типичный троттлинг. Не ждём окна наблюдения (watch). */
-            if (f->dport == 443 && f->op >= 8 && f->rp > 0 && f->rb < 256) {
+            /* Late-stall для HTTPS: ответы есть, но объём мизерный — троттлинг. */
+            if (f->dport == 443 && f->op >= lmin_op(cfg) &&
+                f->ob >= lmin_bytes(cfg) && f->rp > 0 && f->rb < 256) {
                 if (candidate_ok(ctx, f, now))
                     promote_test(ctx, f, now, "SOFT", "TCP-STALL-443");
                 continue;
             }
-            if (f->op >= 8 && f->rp > 0) {
-                int oa, rs;
-                if (rate_delta(f, now, &oa, &rs) && oa && rs) {
-                    /* suspicious: watch -> maybe late-stall */
-                    if (!state_has(st_watch(ctx->st, 0), f->dst, now)) {
-                        if (candidate_ok(ctx, f, now))
-                            state_add(st_watch(ctx->st, 0), f->dst, now, cfg->watch_ttl, 0);
-                    } else {
-                        time_t at = state_at(st_watch(ctx->st, 0), f->dst, now);
-                        if (at && (int)(at - now) <= cfg->watch_retry_below) {
-                            if (candidate_ok(ctx, f, now)) {
-                                state_remove(st_watch(ctx->st, 0), f->dst);
-                                promote_test(ctx, f, now, "SOFT", "TCP-LATE-STALL");
+            if (f->op >= lmin_op(cfg) && f->rp > 0) {
+                unsigned long dop, drp, dob, drb;
+                if (rate_delta_full(f, now, &dop, &drp, &dob, &drb)) {
+                    if (dop > 0 && drp == 0) {
+                        /* orig active, reply silent: watch -> late-stall */
+                        if (!state_has(st_watch(ctx->st, 0), f->dst, now)) {
+                            if (candidate_ok(ctx, f, now))
+                                state_add(st_watch(ctx->st, 0), f->dst, now, cfg->watch_ttl, 0);
+                        } else {
+                            time_t at = state_at(st_watch(ctx->st, 0), f->dst, now);
+                            if (at && (int)(at - now) <= cfg->watch_retry_below) {
+                                if (candidate_ok(ctx, f, now)) {
+                                    state_remove(st_watch(ctx->st, 0), f->dst);
+                                    promote_test(ctx, f, now, "SOFT", "TCP-LATE-STALL");
+                                }
                             }
                         }
+                    } else if (dop > 0 && drp > 0 && drb < 256 &&
+                               dob >= lmin_bytes(cfg) && candidate_ok(ctx, f, now)) {
+                        /* C1: starvation — поток жив, но ответ идёт «по капле»
+                         * (ТСПУ шейпит, а не рвёт). Узко для CDN, чтобы не шуметь. */
+                        char cidr[64];
+                        if (cdn_match(cfg, f->dst, cidr, sizeof(cidr)))
+                            promote_test(ctx, f, now, "SOFT", "CDN-STARVATION");
                     }
                 }
             }
@@ -351,14 +430,14 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
             if (!state_has(st_test(ctx->st, udp), f->dst, now)) continue;
             good = failed = 0;
             if (f->l4proto == 6) {
-                if (f->rp >= 2 || f->rb >= 128) good = 1;
+                if (f->rp >= 2 || f->rb >= cmin_bytes(cfg)) good = 1;
                 if ((strcmp(f->tcp_state, "SYN_SENT") == 0 && f->op >= 3 && f->rp == 0) ||
-                    (strcmp(f->tcp_state, "ESTABLISHED") == 0 && f->op >= 10 &&
-                     f->ob >= 3000 && f->rp <= 1 && f->rb < 128)) failed = 1;
+                    (strcmp(f->tcp_state, "ESTABLISHED") == 0 && f->op >= lmin_op(cfg) &&
+                     f->ob >= lmin_bytes(cfg) && f->rp <= 1 && f->rb < 128)) failed = 1;
             } else {
                 if (f->rp >= 1) good = 1;
-                if ((f->dport == 443 && f->op >= 10 && f->rp == 0) ||
-                    (f->dport != 443 && f->op >= 20 && f->rp == 0)) failed = 1;
+                if ((f->dport == 443 && f->op >= lmin_op(cfg) && f->rp == 0) ||
+                    (f->dport != 443 && f->op >= lmin_op(cfg) * 2 && f->rp == 0)) failed = 1;
             }
             if (good) {
                 state_add(st_ok(ctx->st, udp), f->dst, now, cfg->ok_ttl, 0);
@@ -368,6 +447,7 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 backend_ipset_add(cfg, udp, 1, f->dst, cfg->ok_ttl);
                 backend_ipset_del(cfg, udp, 0, f->dst);
                 slogf(SL_INFO, "AUTO-SUSANIN: CONFIRMED %s:%u", f->dst, f->dport);
+                cdn_aggregate(ctx, f);
             } else if (failed) {
                 state_remove(st_test(ctx->st, udp), f->dst);
                 state_remove(st_watch(ctx->st, udp), f->dst);

@@ -2,7 +2,8 @@
 # через VPN (в обход автообучения). Поставляется с дистрибутивом.
 #
 # Установка/обновление НЕ перезаписывают уже существующий
-# /opt/susanin/etc/vpn_always.txt — правьте его свободно.
+# /opt/susanin/etc/vpn_always.txt, но могут дополнить его новыми записями из
+# сборки (merge; существующие строки не удаляются) — правьте его свободно.
 #
 # Формат: по одному домену (или IPv4, или CIDR a.b.c.d/n) на строку.
 # '#' — комментарии. Поддерживается wildcard: *.example.com — домен и поддомены.
@@ -38,7 +39,6 @@ claudepages.dev
 claudestudio.com
 claudeusercontent.com
 datadoghq.com
-deepseek.com
 dis.gd
 disboard.org
 discord-activities.com
@@ -97,6 +97,8 @@ grok.com
 gstatic.com
 gvt1.com
 hetzner.com
+i.ytimg.com
+i9.ytimg.com
 ibytedtos.com
 ibyteimg.com
 ig.me
@@ -109,6 +111,7 @@ ipstatp.com
 isnssdk.com
 jnn-pa.googleapis.com
 kilo.ai
+lh3.googleusercontent.com
 licdn.com
 linkedin.com
 live.net
@@ -190,6 +193,7 @@ yt.be
 yt3.ggpht.com
 yt3.googleusercontent.com
 yt4.ggpht.com
+yt4.googleusercontent.com
 ytimg.com
 ytimg.l.google.com
 donationalerts.com
@@ -206,5 +210,15 @@ www.youtube.com
 www.instagram.com
 www.tiktok.com
 www.openai.com
-160.79.104.0/24
+# Anthropic/Claude: весь блок 160.79.104.0/21 (адреса 104–111), не только /24.
+160.79.104.0/21
 8.47.69.0/24
+
+# --- ElevenLabs: API/CDN на Google Cloud (не Cloudflare) — только явные имена ---
+# Wildcard «*.elevenlabs.io» пиннит лишь apex и два случайных поддомена
+# (resolve_dom() в src/vpn_always.c), а api./help. остаются на прямом пути.
+elevenlabs.io
+api.elevenlabs.io
+api.us.elevenlabs.io
+eleven-public-cdn.elevenlabs.io
+help.elevenlabs.io

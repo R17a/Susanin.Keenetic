@@ -11,6 +11,8 @@ start() {
     [ -x /opt/susanin/bin/susanin-agent ] || return 1
     mkdir -p /opt/susanin/var
     sh "$SUSANIN_SH" start
+    # Статические профили (P1): no-op, если профили не заданы.
+    [ -x /opt/susanin/tools/profiles.sh ] && sh /opt/susanin/tools/profiles.sh up >/dev/null 2>&1 || true
 }
 
 stop() {

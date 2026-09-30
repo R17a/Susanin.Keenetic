@@ -7,59 +7,98 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header>
-  <h1>Susanin.Keenetic <span id="ver" class="muted"></span></h1>
-  <div class="row">
-    <label>Токен: <input id="token" type="password" placeholder="web_token" autocomplete="off"></label>
-    <button id="save">Сохранить</button>
-    <button id="refresh">Обновить</button>
+<header class="topbar">
+  <div class="brand">
+    <h1>Susanin.Keenetic <a id="ver" class="badge-ver" href="#status" title="Открыть «Статус»"></a></h1>
+    <span id="dot" class="dot" title="Соединение с агентом"></span>
+  </div>
+  <div class="actions topactions">
+    <button id="reload" class="btn btn-sm" title="Перечитать конфиг и списки (SIGHUP)">Reload</button>
+    <button id="rescan" class="btn btn-sm" title="Переопределить сетевые интерфейсы">Rescan</button>
+    <button id="restart" class="btn btn-sm btn-warn" title="Полный перезапуск демона">Restart</button>
+  </div>
+  <div class="donate" title="Проект развивается на энтузиазме. Если он оказался полезным — можно поддержать разработку.">
+    <svg class="heart" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+    <a class="dbadge dbadge--ct" href="https://pay.cloudtips.ru/p/dcbf5f2e" target="_blank" rel="noopener"><span>donate</span><b>CloudTips</b></a>
+    <a class="dbadge dbadge--da" href="https://www.donationalerts.com/r/dmitriy_r17a" target="_blank" rel="noopener"><span>donate</span><b>DonationAlerts</b></a>
   </div>
 </header>
 
 <main>
-  <section id="cards" class="cards"></section>
-
-  <section>
-    <h2>Управление</h2>
-    <div class="row">
-      <button id="reload">Reload</button>
-      <button id="rescan">Rescan</button>
-      <button id="restart">Restart</button>
-      <input id="fip" placeholder="IP для forget" size="16">
-      <button id="forget">Forget</button>
+<div id="view-config" class="view">
+  <section class="panel">
+    <h2>Конфигурация агента</h2>
+    <div class="config-layout">
+      <nav class="config-nav" id="cfgNav"></nav>
+      <div class="config-body" id="cfgBody"></div>
     </div>
-    <div class="row" style="margin-top:8px">
-      <select id="lname"><option>vpn_always</option><option>vpn_never</option></select>
-      <input id="lval" placeholder="домен / IP / CIDR" size="24">
-      <button id="ladd">В список</button>
-      <button id="ldel">Из списка</button>
-    </div>
-    <div id="act" class="muted" style="margin-top:8px"></div>
   </section>
 
-  <section>
+</div>
+
+<div id="view-status" class="view" hidden>
+  <section class="panel">
     <h2>VPN-наборы (ipset)</h2>
-    <table id="sets">
-      <thead><tr><th>Набор</th><th>Записей</th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <div class="table-wrap">
+      <table id="sets">
+        <thead><tr><th>Набор</th><th>Записей</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
 
-  <section>
-    <h2>Списки</h2>
-    <table id="lists">
-      <thead><tr><th>Список</th><th>Строк</th><th>Файл</th></tr></thead>
-      <tbody></tbody>
-    </table>
+  <section class="panel">
+    <h2>Reset</h2>
+    <div class="actions">
+      <input id="fip" placeholder="IP или домен для reset">
+      <button id="reset" class="btn btn-outline">Reset</button>
+    </div>
   </section>
 
-  <section>
+  <section class="panel">
+    <h2>Списки маршрутизации
+      <span class="hint muted">перетащите запись в другую колонку, чтобы изменить список — либо нажмите стрелку</span>
+    </h2>
+    <div class="lists-board">
+
+      <div class="list-col list-col--always" data-list="vpn_always">
+        <div class="list-col-head">
+          <h3>Всегда через VPN</h3>
+          <span class="count" id="cnt-vpn_always">0</span>
+        </div>
+        <div class="list-add">
+          <input id="add-vpn_always" placeholder="домен / IP / CIDR / *.domain">
+          <button class="btn btn-sm" data-add="vpn_always">Добавить</button>
+        </div>
+        <input class="list-filter" id="filter-vpn_always" placeholder="фильтр…">
+        <div class="list-items" id="items-vpn_always" data-list="vpn_always"></div>
+      </div>
+
+      <div class="list-col list-col--never" data-list="vpn_never">
+        <div class="list-col-head">
+          <h3>Всегда напрямую</h3>
+          <span class="count" id="cnt-vpn_never">0</span>
+        </div>
+        <div class="list-add">
+          <input id="add-vpn_never" placeholder="домен / IP / CIDR / *.domain">
+          <button class="btn btn-sm" data-add="vpn_never">Добавить</button>
+        </div>
+        <input class="list-filter" id="filter-vpn_never" placeholder="фильтр…">
+        <div class="list-items" id="items-vpn_never" data-list="vpn_never"></div>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="panel">
     <h2>Лог</h2>
     <pre id="log" class="log">…</pre>
   </section>
+</div>
 </main>
 
-<p class="foot muted">Локальная панель, только LAN. Данные: <code>/api/status</code>, <code>/api/log</code>.</p>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 <script src="app.js"></script>
+<script src="config.js"></script>
 </body>
 </html>

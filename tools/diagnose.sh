@@ -29,7 +29,7 @@
 #     - нет цепочки SUSANIN, нет ip rule на таблицу VPN, нет default в таблице —
 #       трафик идёт мимо VPN (частый симптом «ничего не работает»);
 #     - обнаружены правила политик Keenetic (fwmark 0xffffaXX) — клиенты,
-#       привязанные к «Приоритетам подключений», Susanin не обрабатывает
+#       привязанные к «Приоритетам подключений», Susanin.Keenetic не обрабатывает
 #       (в логах это видно как mark=0xffffaXX в conntrack);
 #     - наборы susanin_ok_* пусты — автообучение не работает.
 #  4) Списки vpn_always / vpn_never
@@ -139,7 +139,7 @@ if command -v iptables >/dev/null 2>&1; then
         echo "цепочка SUSANIN: ok"
     else
         echo "цепочка SUSANIN: НЕТ"
-        rec "Правила Susanin не созданы. Проверьте, что установлены ipset и iptables, затем: susanin.sh restart"
+        rec "Правила Susanin.Keenetic не созданы. Проверьте, что установлены ipset и iptables, затем: susanin.sh restart"
     fi
 fi
 if command -v ip >/dev/null 2>&1; then
@@ -157,7 +157,7 @@ if command -v ip >/dev/null 2>&1; then
     fi
     if ip rule show 2>/dev/null | grep -qE 'fwmark 0xffffa'; then
         echo "политики Keenetic (fwmark 0xffffaXX): есть"
-        rec "У части устройств включён «Приоритет подключений» Keenetic. Для них маршрут выбирает Keenetic, а Susanin не участвует. Если устройство должно управляться Susanin — снимите у него политику (оставьте «по умолчанию»)."
+        rec "У части устройств включён «Приоритет подключений» Keenetic. Для них маршрут выбирает Keenetic, а Susanin.Keenetic не участвует. Если устройство должно управляться Susanin.Keenetic — снимите у него политику (оставьте «по умолчанию»)."
     fi
 fi
 if command -v ipset >/dev/null 2>&1; then
@@ -189,6 +189,8 @@ is_cidr() { printf '%s' "$1" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$
 # susanin-XXXX.domain). Поэтому такие строки считаем отдельно и НЕ заваливаем
 # пользователя списком «проблем». Реально нерезолвимые имена видны по нулевому
 # числу адресов и упоминаются в сводке.
+DNS_HIJ=0; DNS_HIJ_EX=""
+
 check_list() {
     f="$1"; label="$2"
     if [ ! -f "$f" ]; then
@@ -202,7 +204,7 @@ check_list() {
         printf '  проверяю %s строк (DNS-запрос к каждому домену; может занять ~минуту, Ctrl+C — прервать)\n' \
                "$n_all" >&2
     fi
-    tot=0; ok=0; zone=0; idx=0
+    tot=0; ok=0; zone=0; idx=0; hij=0; hijex=""
     zex=""
     while IFS= read -r raw; do
         e=$(printf '%s' "$raw" | sed 's/#.*//' | tr -d ' \t\r')
@@ -215,7 +217,18 @@ check_list() {
             continue
         fi
         name=$(printf '%s' "$e" | sed 's/^\*\.//')
-        ips=$(ips_of "$name")
+        # Резолвим один раз: и адреса, и признак подмены (127.0.0.1/::1).
+        # Важно: смотрим только секцию ответа (после "Name:"), иначе адрес
+        # самого резолвера в шапке даёт ложное срабатывание.
+        if [ -n "$DNS" ]; then ans=$(nslookup "$name" "$DNS" 2>&1); else ans=$(nslookup "$name" 2>&1); fi
+        ans=$(printf '%s\n' "$ans" | awk '/^Name:/{f=1} f')
+        ips=$(printf '%s\n' "$ans" | awk '/^Address/ {
+                 for (i = 1; i <= NF; i++)
+                     if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) { print $i; break } }')
+        if printf '%s\n' "$ans" | grep -qE '(^|[^0-9])127\.0\.0\.1([^0-9]|$)|(^|[^0-9a-fA-F])::1([^0-9a-fA-F]|$)'; then
+            hij=$((hij + 1))
+            [ -z "$hijex" ] && hijex="$name"
+        fi
         if [ -n "$ips" ]; then
             ok=$((ok + 1))
         else
@@ -227,6 +240,11 @@ check_list() {
     echo "  итог: строк $tot, с адресами $ok, без A на apex $zone"
     if [ "$zone" -gt 0 ]; then
         echo "  без A на apex: $zone (для CDN это норма, демон проверит поддомены; напр. $zex)"
+    fi
+    if [ "$hij" -gt 0 ]; then
+        echo "  ПОДМЕНА DNS (127.0.0.1/::1): $hij (напр. $hijex)"
+        DNS_HIJ=$((DNS_HIJ + hij))
+        [ -z "$DNS_HIJ_EX" ] && DNS_HIJ_EX="$hijex"
     fi
 }
 
@@ -248,9 +266,108 @@ if [ -f "$ETCDIR/vpn_always.txt" ] && [ -f "$ETCDIR/vpn_never.txt" ]; then
     fi
 fi
 
+# Подмена DNS (127.0.0.1/::1): домен не завернуть в VPN, пока резолвер не исправлен.
+if [ "${DNS_HIJ:-0}" -gt 0 ]; then
+    echo
+    echo "!! DNS WARNING: ${DNS_HIJ} домен(ов) из списков резолвятся в 127.0.0.1/::1 (напр. ${DNS_HIJ_EX:-?})."
+    echo "   Это подмена DNS (блок-лист). Пока так, эти адреса через VPN не пойдут."
+    if ls /tmp/run/dotproxy-*.yml >/dev/null 2>&1 && \
+       grep -lq 'GETDNS_TRANSPORT_TLS' /tmp/run/dotproxy-*.yml 2>/dev/null; then
+        echo "   Обнаружен DNS-over-TLS (DoT, порт 853) — провайдеры часто его глушат."
+    fi
+    echo "   Почините DNS на роутере: выключите DoT и включите DoH (443) или обычный DNS (напр. 1.1.1.1)."
+    rec "DNS подменяет адреса: ${DNS_HIJ} домен(ов) из списков дают 127.0.0.1/::1 (напр. ${DNS_HIJ_EX:-?}). Выключите DNS-over-TLS (порт 853 часто глушат) и включите DoH или обычный DNS (напр. 1.1.1.1)."
+fi
+
 if [ -z "$DNS_CFG" ] && [ -z "$DNS" ]; then
     echo "  DNS для списков: auto (системный, при 127.0.0.1 — адрес LAN-моста)"
 fi
+
+# ------------------------------------------------------------------- qWDTT
+sec "qWDTT (соседний туннель)"
+QW=0
+[ -e /sys/class/net/wdtt0 ] && QW=1
+[ -e /sys/class/net/wdttraw0 ] && QW=1
+[ -f /opt/etc/ndm/netfilter.d/60-qwdtt-netfilter.sh ] && QW=1
+if command -v pidof >/dev/null 2>&1; then pidof qwdtt >/dev/null 2>&1 && QW=1; fi
+if [ "$QW" = 1 ]; then
+    echo "qWDTT: обнаружен"
+    case ",$EGR," in
+        *,wdtt0,*|*,wdttraw0,*)
+            echo "egress: содержит wdtt*"
+            rec "Уберите wdtt*/wdttraw* из egress_interface — это серверные туннели qWDTT, а не ваш VPN." ;;
+    esac
+    case ",$LAN," in
+        *,wdtt0,*|*,wdttraw0,*)
+            echo "lan_interfaces: содержит wdtt*"
+            rec "Уберите wdtt*/wdttraw* из lan_interfaces/lan_subnets — иначе Susanin.Keenetic начнёт обрабатывать клиентов qWDTT (двойной туннель)." ;;
+    esac
+    if command -v iptables >/dev/null 2>&1; then
+        if iptables -t nat -S POSTROUTING 2>/dev/null | grep -qE '\-s 10\.(66|70)\.'; then
+            echo "nat POSTROUTING: MASQUERADE qWDTT по источнику"
+            rec "У qWDTT NAT «по источнику, без -o» (10.66.66.0/24, 10.70.66.0/16). Если egress_address Susanin.Keenetic попадает в эти сети — туннель сломается; разведите подсети."
+        fi
+    fi
+    case "$(cfg egress_address)" in
+        10.66.66.*|10.70.*)
+            rec "egress_address Susanin.Keenetic пересекается с сетями qWDTT (10.66.66.0/24 / 10.70.66.0/16). Возьмите VPN-подсеть вне них (напр. 10.8.1.0/24)." ;;
+    esac
+else
+    echo "qWDTT: не обнаружен"
+fi
+
+# ----------------------------------------------------------------------- Web
+sec "Веб-панель"
+WEB_EN=$(cfg web_enable)
+WEB_LS=$(cfg web_listen)
+WEB_PT=$(cfg web_port)
+WEB_TK=$(cfg web_token)
+if [ -n "$WEB_TK" ]; then _tk=set; else _tk=empty; fi
+echo "web_enable=${WEB_EN:-0}, listen=${WEB_LS:-<не задан>}, port=${WEB_PT:-8087}, token=$_tk"
+if [ "${WEB_EN:-0}" = "1" ]; then
+    case "$WEB_LS" in
+        ""|0.0.0.0)
+            echo "web_listen: неверно"
+            rec "Для веб-панели задайте web_listen=<LAN-адрес роутера> (напр. 192.168.1.1). Слушать 0.0.0.0 запрещено." ;;
+        *)
+            if command -v netstat >/dev/null 2>&1; then
+                if netstat -lnt 2>/dev/null | grep -q ":${WEB_PT:-8087}[ \t]"; then
+                    echo "port ${WEB_PT:-8087}: слушается"
+                else
+                    echo "port ${WEB_PT:-8087}: НЕ слушается"
+                    rec "Сервис веб-панели не запущен. Проверьте: /opt/etc/init.d/S95susanin-web start и лог /opt/susanin/var/susanin-web.log."
+                fi
+            fi ;;
+    esac
+    [ -n "$WEB_TK" ] || rec "web_token пуст — панель без пароля (только LAN). Задайте токен."
+    [ -d /opt/susanin/www ] || rec "Нет каталога /opt/susanin/www — переустановите/обновите пакет (в дистрибутив добавлен www/)."
+    [ -x /opt/etc/init.d/S95susanin-web ] || rec "Нет init-скрипта /opt/etc/init.d/S95susanin-web — веб-панель не поднимется автоматически."
+else
+    echo "веб-панель выключена (web_enable=0)"
+fi
+
+# ------------------------------------------------- датаплейн / IPv6 / IPTV
+sec "Датаплейн, IPv6 и IPTV"
+REPROV=/opt/susanin/var/dp-reprov
+if [ -f "$REPROV" ]; then
+    echo "tproxy re-provision: $(cat "$REPROV" 2>/dev/null)"
+else
+    echo "tproxy re-provision: не было"
+fi
+
+if command -v ip >/dev/null 2>&1; then
+    if ip -6 route show default 2>/dev/null | grep -q .; then
+        echo "IPv6 default: есть ($(ip -6 route show default 2>/dev/null | head -n1))"
+        rec "Есть глобальный IPv6, а Susanin.Keenetic работает только по IPv4: трафик к IPv6-адресам (у Cloudflare/CDN часто есть AAAA) идёт мимо и может душиться. Если сайт «то грузится, то нет» — отключите IPv6 у проблемного клиента (или в Keenetic) и проверьте."
+    else
+        echo "IPv6 default: нет (глобального IPv6-интернета нет — это норма)"
+    fi
+fi
+
+echo "IPTV/CDN (сайт за Cloudflare/Fastly и «то грузится, то нет»):"
+echo "  - адреса провайдера НЕ кладите в vpn_never (это принудительный DIRECT);"
+echo "  - поймать реальный хост: tcpdump -i br0 -n 'host <IP-приставки> and port 53' (LAN-DNS открыт);"
+echo "  - проверка заворота: grep '<IP-приставки>' /proc/net/nf_conntrack | grep sport=12345"
 
 # ------------------------------------------------------------- рекомендации
 sec "Рекомендации"

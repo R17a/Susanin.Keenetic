@@ -10,6 +10,15 @@ int backend_provision(const susanin_config *c);
 int backend_teardown(const susanin_config *c);
 int backend_ready(const susanin_config *c);
 
+/* Отметка о ре-провижене датаплейна (NDM снёс наши правила — агент их вернул).
+ * Пишет /opt/susanin/var/dp-reprov ("epoch reason"); читается в status/diagnose. */
+void backend_mark_reprov(const char *reason);
+int backend_read_reprov(long *when, char *reason, size_t reasonsz);
+
+/* Слушает ли кто-нибудь TCP-порт на локальном адресе (для tproxy — Xray).
+ * 1 = слушает (или проверить нельзя), 0 = нет. */
+int backend_local_listen(int port);
+
 /* Environment check for the data plane (tools + egress interface). Returns 0
  * or -1 with a reason in err. */
 int backend_preflight(const susanin_config *c, char *err, size_t errsz);

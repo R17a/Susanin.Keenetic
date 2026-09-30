@@ -23,8 +23,13 @@
 #define VA_TRACK  4096
 #define VA_LINE   320
 #define VA_BUDGET_MS 4000
-#define VA_QUERY_MAX_MS 2000
+#define VA_QUERY_MAX_MS 700
 #define VA_BACKOFF_S 60
+#define VA_PAR 12                /* сколько доменов резолвим параллельно */
+/* Кэш пинов и backoff: переживает рестарт — после ребута IP уже в наборах. */
+#define VA_CACHE "/opt/susanin/var/vpn_always.cache"
+
+static long long now_ms(void);
 
 typedef struct {
     char name[256];
@@ -53,6 +58,9 @@ struct vpn_always {
     int dirty;              /* ipset мог быть очищен — передобавить пины */
     int populated;          /* первый проход уже был (не рвать conntrack на старте) */
     long long epoch;        /* номер интервала (now/interval) для hysteresis */
+    int cache_loaded;       /* кэш пинов прочитан */
+    int cache_saved;        /* кэш пинов записан */
+    int cache_warm;         /* держим восстановленные пины до конца первого прохода */
 };
 
 vpn_always *va_new(void)
@@ -270,6 +278,46 @@ static int skip_name(const unsigned char *b, size_t n, size_t off)
     return -1;
 }
 
+/* Разобрать DNS-ответ: число A-записей (>=0) в ips, либо -1 (ошибка/несовпадение). */
+static int parse_a(const unsigned char *r, int rn, unsigned char idh,
+                   unsigned char idl, char ips[][16], int max)
+{
+    unsigned short flags, an;
+    int nans = 0, o;
+    size_t off;
+    if (rn < 12)
+        return -1;
+    if (r[0] != idh || r[1] != idl || !(r[2] & 0x80))
+        return -1;
+    flags = (unsigned short)((r[2] << 8) | r[3]);
+    an = (unsigned short)((r[6] << 8) | r[7]);
+    if ((flags & 0x000f) != 0 || (flags & 0x0200))   /* rcode!=0 / TC */
+        return -1;
+    o = skip_name(r, (size_t)rn, 12);
+    if (o < 0 || (size_t)o + 4 > (size_t)rn)
+        return -1;
+    off = (size_t)o + 4;
+    while (an-- > 0 && nans < max) {
+        unsigned short type, rdlen;
+        o = skip_name(r, (size_t)rn, off);
+        if (o < 0 || (size_t)o + 10 > (size_t)rn)
+            return -1;
+        off = (size_t)o;
+        type = (unsigned short)((r[off] << 8) | r[off + 1]);
+        rdlen = (unsigned short)((r[off + 8] << 8) | r[off + 9]);
+        off += 10;
+        if (off + rdlen > (size_t)rn)
+            return -1;
+        if (type == 1 && rdlen == 4) {
+            snprintf(ips[nans], 16, "%u.%u.%u.%u", r[off], r[off + 1],
+                     r[off + 2], r[off + 3]);
+            nans++;
+        }
+        off += rdlen;
+    }
+    return nans;
+}
+
 /*
  * UDP A-запрос к server:53. Возвращает число A-записей (>=0) в ips или -1
  * при ошибке/таймауте/плохом ответе.
@@ -282,7 +330,6 @@ static int dns_query_a(const char *server, const char *domain,
     struct pollfd pfd;
     unsigned short id;
     int ql, fd = -1, i, ret = -1, rn = 0, matched = 0;
-    size_t off;
 
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
@@ -329,40 +376,116 @@ static int dns_query_a(const char *server, const char *domain,
     }
     if (!matched || rn < 12)
         goto out;
-    {
-        unsigned short flags = (unsigned short)((r[2] << 8) | r[3]);
-        unsigned short an = (unsigned short)((r[6] << 8) | r[7]);
-        int nans = 0;
-        int o;
-        if ((flags & 0x000f) != 0 || (flags & 0x0200)) { /* rcode!=0 / TC */
-            ret = -1;
-            goto out;
-        }
-        o = skip_name(r, (size_t)rn, 12);
-        if (o < 0 || (size_t)o + 4 > (size_t)rn) { ret = -1; goto out; }
-        off = (size_t)o + 4;
-        while (an-- > 0 && nans < max) {
-            unsigned short type, rdlen;
-            o = skip_name(r, (size_t)rn, off);
-            if (o < 0 || (size_t)o + 10 > (size_t)rn) { ret = -1; goto out; }
-            off = (size_t)o;
-            type = (unsigned short)((r[off] << 8) | r[off + 1]);
-            rdlen = (unsigned short)((r[off + 8] << 8) | r[off + 9]);
-            off += 10;
-            if (off + rdlen > (size_t)rn) { ret = -1; goto out; }
-            if (type == 1 && rdlen == 4) {
-                snprintf(ips[nans], 16, "%u.%u.%u.%u", r[off], r[off + 1],
-                         r[off + 2], r[off + 3]);
-                nans++;
-            }
-            off += rdlen;
-        }
-        ret = nans;
-    }
+    ret = parse_a(r, rn, q[0], q[1], ips, max);
 out:
     if (fd >= 0)
         close(fd);
     return ret;
+}
+
+/* Параллельный A-резолв n доменов (UDP, poll): counts[i] = число A-записей
+ * (>=0) или -1. Ускоряет первый проход по списку vpn_always. n <= VA_PAR. */
+static int dns_query_many(const char *server, char names[][256], int n,
+                          char out[][VA_MAXIP][16], int counts[], int timeout_ms)
+{
+    struct sockaddr_in sa;
+    struct pollfd pfds[VA_PAR];
+    int fds[VA_PAR], idxs[VA_PAR], i;
+    unsigned char idh[VA_PAR], idl[VA_PAR], q[VA_PAR][512];
+    long long deadline = now_ms() + (timeout_ms > 0 ? timeout_ms : VA_QUERY_MAX_MS);
+    int any = 0;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(53);
+    for (i = 0; i < n; i++) {
+        counts[i] = -1;
+        fds[i] = -1;
+    }
+    if (inet_pton(AF_INET, server, &sa.sin_addr) != 1)
+        return 0;
+
+    for (i = 0; i < n; i++) {
+        int ql, fd;
+        unsigned short id = dns_id();
+        idh[i] = (unsigned char)(id >> 8);
+        idl[i] = (unsigned char)(id & 0xff);
+        q[i][0] = idh[i]; q[i][1] = idl[i];
+        q[i][2] = 0x01; q[i][3] = 0x00;
+        q[i][4] = 0; q[i][5] = 1;
+        q[i][6] = 0; q[i][7] = 0; q[i][8] = 0; q[i][9] = 0; q[i][10] = 0; q[i][11] = 0;
+        ql = 12;
+        {
+            int l = enc_name(q[i] + ql, sizeof(q[i]) - (size_t)ql, names[i]);
+            if (l < 0)
+                continue;
+            ql += l;
+        }
+        if ((size_t)ql + 4 > sizeof(q[i]))
+            continue;
+        q[i][ql++] = 0; q[i][ql++] = 1;
+        q[i][ql++] = 0; q[i][ql++] = 1;
+        fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd < 0)
+            continue;
+        if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) { close(fd); continue; }
+        if (send(fd, q[i], (size_t)ql, 0) != ql) { close(fd); continue; }
+        fds[i] = fd;
+        any = 1;
+    }
+    if (!any) {
+        for (i = 0; i < n; i++)
+            counts[i] = -1;
+        return 0;
+    }
+
+    while (1) {
+        int k = 0, r, j, nact = 0;
+        for (i = 0; i < n; i++)
+            if (fds[i] >= 0)
+                nact++;
+        if (nact == 0)
+            break;
+        {
+            long long left = deadline - now_ms();
+            if (left <= 0)
+                break;
+            for (i = 0; i < n; i++) {
+                if (fds[i] >= 0) {
+                    pfds[k].fd = fds[i];
+                    pfds[k].events = POLLIN;
+                    pfds[k].revents = 0;
+                    idxs[k] = i;
+                    k++;
+                }
+            }
+            r = poll(pfds, (nfds_t)k, (int)left);
+            if (r <= 0)
+                break;
+            for (j = 0; j < k; j++) {
+                int ii;
+                unsigned char rb[2048];
+                int rn;
+                if (!(pfds[j].revents & POLLIN))
+                    continue;
+                ii = idxs[j];
+                rn = (int)recv(fds[ii], rb, sizeof(rb), 0);
+                if (rn >= 12) {
+                    int c = parse_a(rb, rn, idh[ii], idl[ii], out[ii], VA_MAXIP);
+                    if (c >= 0)
+                        counts[ii] = c;
+                }
+                close(fds[ii]);
+                fds[ii] = -1;
+            }
+        }
+    }
+    for (i = 0; i < n; i++)
+        if (fds[i] >= 0) {
+            close(fds[i]);
+            fds[i] = -1;
+        }
+    return 0;
 }
 
 /* Первый nameserver из /etc/resolv.conf, либо пустая строка. */
@@ -470,7 +593,7 @@ static int tracked_add(vpn_always *v, const char *ip)
 {
     if (v->ntrack >= VA_TRACK)
         return -1;
-    snprintf(v->track[v->ntrack], 16, "%s", ip);
+    snprintf(v->track[v->ntrack], 16, "%.15s", ip);
     v->tmiss[v->ntrack] = 0;
     v->ntrack++;
     return 0;
@@ -528,6 +651,69 @@ static void trackednet_remove(vpn_always *v, const char *cidr)
         w++;
     }
     v->ntracknet = w;
+}
+
+/* Прочитать кэш пинов/backoff и сразу добавить IP в наборы (мгновенный
+ * «прогрев» после рестарта, не дожидаясь DNS). */
+static void cache_load(vpn_always *v, const susanin_config *cfg)
+{
+    FILE *fp = fopen(VA_CACHE, "r");
+    char line[320];
+    time_t now = time(NULL);
+    v->cache_loaded = 1;
+    if (!fp)
+        return;
+    while (fgets(line, sizeof(line), fp)) {
+        char name[256];
+        if (!strncmp(line, "ip ", 3)) {
+            if (sscanf(line + 3, "%255s", name) == 1 && !tracked_has(v, name)) {
+                backend_ipset_add(cfg, 0, 1, name, 0);
+                backend_ipset_add(cfg, 1, 1, name, 0);
+                tracked_add(v, name);
+            }
+        } else if (!strncmp(line, "net ", 4)) {
+            if (sscanf(line + 4, "%255s", name) == 1 && !trackednet_has(v, name)) {
+                backend_net_add(cfg, name, 0);
+                trackednet_add(v, name);
+            }
+        } else if (!strncmp(line, "dom ", 4)) {
+            int fails = 0, i;
+            long nt = 0;
+            if (sscanf(line + 4, "%255s %d %ld", name, &fails, &nt) == 3) {
+                for (i = 0; i < v->nd; i++)
+                    if (!strcmp(v->dom[i].name, name)) {
+                        v->dom[i].fails = fails;
+                        if (nt > now && nt - now <= 7200)
+                            v->dom[i].next_try = (time_t)nt;
+                        break;
+                    }
+            }
+        }
+    }
+    fclose(fp);
+    if (v->ntrack || v->ntracknet)
+        slogf(SL_INFO, "vpn_always: cache restored (%d ip + %d net)",
+              v->ntrack, v->ntracknet);
+}
+
+static void cache_save(vpn_always *v)
+{
+    FILE *fp = fopen(VA_CACHE, "w");
+    int i;
+    if (!fp)
+        return;
+    for (i = 0; i < v->ntrack; i++)
+        fprintf(fp, "ip %s\n", v->track[i]);
+    for (i = 0; i < v->ntracknet; i++)
+        fprintf(fp, "net %s\n", v->tracknet[i]);
+    for (i = 0; i < v->nd; i++) {
+        if (v->dom[i].is_net)
+            continue;
+        fprintf(fp, "dom %s %d %ld\n", v->dom[i].name, v->dom[i].fails,
+                (long)v->dom[i].next_try);
+    }
+    fclose(fp);
+    v->cache_saved = 1;
 }
 
 int va_changed(vpn_always *v, const susanin_config *cfg)
@@ -645,6 +831,12 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
         v->seen_size = st.st_size;
     }
 
+    /* Восстановить пины/backoff из кэша (мгновенный «прогрев» после рестарта). */
+    if (!v->cache_loaded) {
+        cache_load(v, cfg);
+        v->cache_warm = 1;
+    }
+
     va_pick_resolver(cfg, server, sizeof(server));
 
     desired = calloc((size_t)VA_TRACK, sizeof(*desired));
@@ -653,6 +845,56 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
         free(desired);
         free(desired_net);
         return 0;
+    }
+
+    /* 1a) Параллельный резолв «простых» доменов (ускоряет первый проход).
+     * Домены без A-записей дообрабатываются ниже (со зондированием поддоменов). */
+    {
+        char bnames[VA_PAR][256];
+        char bips[VA_PAR][VA_MAXIP][16];
+        int bidx[VA_PAR], bcnt[VA_PAR];
+        int nb = 0, i2;
+        for (i = 0; i < v->nd && nb < VA_PAR; i++) {
+            va_dom *d = &v->dom[i];
+            struct in_addr lit;
+            if (d->is_net || d->wild || d->next_try > now)
+                continue;
+            if (inet_pton(AF_INET, d->name, &lit) == 1)
+                continue;
+            if (strlen(d->name) >= sizeof(bnames[0]))
+                continue;
+            snprintf(bnames[nb], sizeof(bnames[0]), "%s", d->name);
+            bidx[nb] = i;
+            nb++;
+        }
+        if (nb > 0) {
+            long long spent = now_ms() - t0;
+            if (spent < VA_BUDGET_MS) {
+                long left = VA_BUDGET_MS - spent;
+                int to = VA_QUERY_MAX_MS;
+                if (left < 300)
+                    left = 300;
+                if (to > left)
+                    to = (int)left;
+                dns_query_many(server, bnames, nb, bips, bcnt, to);
+                for (i2 = 0; i2 < nb; i2++) {
+                    va_dom *d = &v->dom[bidx[i2]];
+                    int k;
+                    if (bcnt[i2] > 0) {
+                        d->nips = bcnt[i2] < VA_MAXIP ? bcnt[i2] : VA_MAXIP;
+                        for (k = 0; k < d->nips; k++)
+                            snprintf(d->ips[k], 16, "%.15s", bips[i2][k]);
+                        d->fail_logged = 0;
+                        d->fails = 0;
+                        d->next_try = now + interval;
+                        if (slog_enabled(SL_DEBUG))
+                            for (k = 0; k < d->nips; k++)
+                                slogf(SL_DEBUG, "vpn_always: %s -> %s",
+                                      d->name, d->ips[k]);
+                    }
+                }
+            }
+        }
     }
 
     /* 1) резолвим домены, чьё время перепроверки наступило (с бюджетом) */
@@ -741,6 +983,25 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
         }
     }
 
+    /* Пока идёт первый проход, держим восстановленные из кэша пины как
+     * «желаемые», чтобы не снять их до того, как домены отресолвятся. */
+    if (v->cache_warm) {
+        for (i = 0; i < v->ntrack && ndes < VA_TRACK; i++) {
+            int j, dup = 0;
+            for (j = 0; j < ndes; j++)
+                if (!strcmp(desired[j], v->track[i])) { dup = 1; break; }
+            if (!dup)
+                snprintf(desired[ndes++], 16, "%s", v->track[i]);
+        }
+        for (i = 0; i < v->ntracknet && ndesn < VA_TRACK; i++) {
+            int j, dup = 0;
+            for (j = 0; j < ndesn; j++)
+                if (!strcmp(desired_net[j], v->tracknet[i])) { dup = 1; break; }
+            if (!dup)
+                snprintf(desired_net[ndesn++], 40, "%s", v->tracknet[i]);
+        }
+    }
+
     /* 3) снять пины IP, которых больше нет в списке/в A-записях */
     for (i = 0; i < v->ntrack; ) {
         int j;
@@ -794,36 +1055,43 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
         }
     }
 
-    /* 4) добавить недостающие пины (tcp+udp, без истечения); при dirty —
-       передобавить все, т.к. наборы могли быть очищены fail-open'ом */
+    /* 4) пины: желаемые адреса/сети ПЕРЕДОБАВЛЯЕМ каждый проход (ipset -exist
+       идемпотентен). Так пин само-восстанавливается, если его сняли извне
+       (resync_sets/flush/GC) или истёк его TTL. conntrack рвём ТОЛЬКО для
+       нового пина, чтобы не дёргать живые соединения каждый интервал. */
     for (i = 0; i < ndes; i++) {
         int known = tracked_has(v, desired[i]);
-        if (known && !v->dirty)
-            continue;
         backend_ipset_add(cfg, 0, 1, desired[i], 0);
         backend_ipset_add(cfg, 1, 1, desired[i], 0);
-        if (!known)
+        if (!known) {
             tracked_add(v, desired[i]);
-        /* Адрес только что переведён в VPN: рвём уже открытые прямые потоки,
-         * чтобы клиент переподключился через туннель (не на первом проходе,
-         * чтобы не рвать активные соединения при старте демона). */
-        if (v->populated)
-            backend_ct_flush_ip(desired[i]);
-        slogf(SL_DEBUG, "vpn_always: pin %s", desired[i]);
-        added++;
+            /* Адрес только что переведён в VPN: рвём уже открытые прямые потоки,
+             * чтобы клиент переподключился через туннель (не на первом проходе,
+             * чтобы не рвать активные соединения при старте демона). */
+            if (v->populated)
+                backend_ct_flush_ip(desired[i]);
+            slogf(SL_DEBUG, "vpn_always: pin %s", desired[i]);
+            added++;
+        }
     }
     for (i = 0; i < ndesn; i++) {
         int known = trackednet_has(v, desired_net[i]);
-        if (known && !v->dirty)
-            continue;
         backend_net_add(cfg, desired_net[i], 0);
-        if (!known)
+        if (!known) {
             trackednet_add(v, desired_net[i]);
-        slogf(SL_DEBUG, "vpn_always: pin net %s", desired_net[i]);
-        addn++;
+            slogf(SL_DEBUG, "vpn_always: pin net %s", desired_net[i]);
+            addn++;
+        }
     }
     v->dirty = 0;
     v->populated = 1;
+
+    /* Кэш пинов/backoff: сохраняем при изменениях и один раз при первом проходе.
+     * Пока остаются необработанные домены (pending) — не сбрасываем cache_warm. */
+    if (!pending)
+        v->cache_warm = 0;
+    if (added || removed || addn || remn || nfail || !v->cache_saved)
+        cache_save(v);
 
     if (added || removed || addn || remn)
         slogf(SL_INFO, "vpn_always: +%d/-%d ip, +%d/-%d net, %d domain(s), "

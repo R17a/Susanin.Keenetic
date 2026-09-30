@@ -17,11 +17,15 @@ VERSION="latest"
 EGRESS=""
 LAN=""
 SUBNETS=""
+# Интерфейсы-серверы, которые не берём как egress/LAN (qWDTT и т.п.).
+DISCOVER_EXCLUDE="${DISCOVER_EXCLUDE:-wdtt0,wdttraw0,tun0,tap0}"
+EXCL_RE=$(printf '%s' "$DISCOVER_EXCLUDE" | tr ',' '|' | tr -d ' \t')
 YES=0
 FORCE=0
 NO_START=0
 DISK_MODE=""
 DEPS=0
+XRAYTUN=0
 
 say() { echo "[susanin] $*"; }
 die() { echo "[susanin] ERROR: $*" >&2; exit 1; }
@@ -68,18 +72,20 @@ while [ $# -gt 0 ]; do
         --prefix) PREFIX="$2"; shift ;;
         --disk-mode) DISK_MODE="$2"; shift ;;
         --deps) DEPS=1 ;;
+        --with-xray-tproxy) XRAYTUN=1 ;;
         --yes|-y) YES=1 ;;
         --force) FORCE=1 ;;
         --no-start) NO_START=1 ;;
         -h|--help)
             echo "usage: $0 [--arch mipsel|mips|aarch64|armv7|x86_64] [--version latest|vX.Y.Z]"
             echo "          [--egress IF] [--lan IF,IF] [--subnets CIDR,CIDR] [--prefix DIR]"
-            echo "          [--disk-mode normal|soft] [--deps]"
+            echo "          [--disk-mode normal|soft] [--deps] [--with-xray-tproxy]"
             echo "          [--yes] [--force] [--no-start]"
             echo
             echo "  --disk-mode  normal (USB/SD) | soft (internal flash; no logs/state/backups)."
             echo "               Default: autodetect by /opt mount."
             echo "  --deps       доустановить недостающие пакеты через opkg без вопроса"
+            echo "  --with-xray-tproxy  проверить Xray и положить шаблон tproxy-конфига"
             echo
             echo "  Prompts: answer 'y' (or 'yes'); --yes|-y skips all prompts."
             exit 0 ;;
@@ -127,7 +133,8 @@ if [ -z "$ARCH" ]; then
 fi
 
 DIR0=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-if [ -f "$DIR0/susanin-agent" ] || [ -n "$(ls "$DIR0"/susanin-agent.* 2>/dev/null)" ]; then
+if [ -f "$DIR0/susanin-agent" ] || [ -f "$DIR0/bin/susanin-agent" ] \
+   || [ -n "$(ls "$DIR0"/susanin-agent.* "$DIR0"/bin/susanin-agent.* 2>/dev/null)" ]; then
     DIR=$DIR0
     say "local package: $DIR"
 else
@@ -155,10 +162,26 @@ else
     DIR=$TMP
 fi
 
+# Раскладка пакета: либо все файлы рядом с install.sh, либо по подпапкам
+# (bin/, tools/, etc/, init/, www/). Ищем в обоих вариантах.
+find_file() { # find_file <name> -> path
+    for _d in "$DIR" "$DIR/bin" "$DIR/tools" "$DIR/etc" "$DIR/init" "$DIR/www"; do
+        [ -e "$_d/$1" ] && { printf '%s\n' "$_d/$1"; return 0; }
+    done
+    return 1
+}
+
 if [ -f "$DIR/susanin-agent" ]; then
     BINFILE=susanin-agent
+elif [ -f "$DIR/bin/susanin-agent" ]; then
+    BINFILE=bin/susanin-agent
+elif [ -f "$DIR/susanin-agent.$ARCH" ]; then
+    # Один каталог может содержать бинари под несколько архитектур: берём свою.
+    BINFILE="susanin-agent.$ARCH"
+elif [ -f "$DIR/bin/susanin-agent.$ARCH" ]; then
+    BINFILE="bin/susanin-agent.$ARCH"
 else
-    BINFILE=$(basename "$(ls "$DIR"/susanin-agent.* 2>/dev/null | head -1)")
+    BINFILE=$(ls "$DIR"/susanin-agent.* "$DIR"/bin/susanin-agent.* 2>/dev/null | head -1)
 fi
 [ -n "${BINFILE:-}" ] && [ -f "$DIR/$BINFILE" ] || die "susanin-agent binary not found in $DIR"
 say "binary: $BINFILE"
@@ -188,9 +211,9 @@ default_devs() {
 }
 
 if [ -z "$EGRESS" ]; then
-    CAND=$(ifaces | grep -E '^(nwg|wg[0-9]*|amnezia|ovpn)' || true)
+    CAND=$(ifaces | grep -E '^(nwg|wg[0-9]*|amnezia|ovpn)' | grep -Ev "^($EXCL_RE)" || true)
     if [ -z "$CAND" ]; then
-        CAND=$(ifaces | grep -E '^(tun[0-9]+|tap[0-9]+)$' || true)
+        CAND=$(ifaces | grep -E '^(tun[0-9]+|tap[0-9]+)$' | grep -Ev "^($EXCL_RE)" || true)
     fi
     CN=$(printf '%s\n' "$CAND" | grep -c . || true)
     if [ "$CN" = 1 ]; then
@@ -207,7 +230,7 @@ if [ -z "$EGRESS" ]; then
         EGRESS=nwg0
     else
         say "no VPN interface auto-detected; select manually"
-        EGRESS=$(pick "select egress (VPN)" $(ifaces | grep -Ev '^(lo|ppp|tunl)' || true))
+        EGRESS=$(pick "select egress (VPN)" $(ifaces | grep -Ev "^(lo|ppp|tunl|$EXCL_RE)" || true))
     fi
 fi
 say "egress=$EGRESS addr=$(addr_of "$EGRESS")"
@@ -224,7 +247,7 @@ if [ -z "$LAN" ]; then
     if [ -n "$LANBR" ]; then
         LAN=$(printf '%s\n' "$LANBR" | awk 'NR==1{s=$0;next}{s=s","$0}END{print s}')
     else
-        LAN=$(lan_from_routes | grep -Ev '^(ppp|nwg|wg|tun|tap|eth)' \
+        LAN=$(lan_from_routes | grep -Ev "^(ppp|nwg|wg|tun|tap|eth|$EXCL_RE)" \
               | awk 'NR==1{s=$0;next}{s=s","$0}END{print s}')
     fi
     [ -n "$LAN" ] || LAN="br0"
@@ -236,7 +259,7 @@ if [ -z "$SUBNETS" ]; then
     done
 fi
 
-# OpenConnect (ocserv) server, if present, can be routed through Susanin too.
+# OpenConnect (ocserv) server, if present, can be routed through Susanin.Keenetic too.
 oc_if=""
 for i in $(ifaces); do
     case "$i" in oc[0-9]*) oc_if=$i ;; esac
@@ -257,7 +280,7 @@ if [ -n "$oc_if" ]; then
             if [ "$YES" -eq 1 ]; then
                 add_oc=1
             elif [ -r /dev/tty ]; then
-                printf "[susanin] OpenConnect server detected (%s). Add it to Susanin routing? [y/N]: " "$oc_if" >&2
+                printf "[susanin] OpenConnect server detected (%s). Add it to Susanin.Keenetic routing? [y/N]: " "$oc_if" >&2
                 read _oc < /dev/tty || _oc=n
                 case "$_oc" in y|Y|yes|YES) add_oc=1 ;; esac
             fi
@@ -290,15 +313,17 @@ if [ "$YES" -ne 1 ] && [ -r /dev/tty ]; then
     case "$_ok" in y|Y|yes|YES) ;; *) die "aborted" ;; esac
 fi
 
-mkdir -p "$PREFIX/bin" "$PREFIX/tools" "$PREFIX/etc" "$PREFIX/var" "$INITD"
+mkdir -p "$PREFIX/bin" "$PREFIX/tools" "$PREFIX/etc" "$PREFIX/etc/profiles" "$PREFIX/var" "$INITD"
 cp "$DIR/$BINFILE" "$PREFIX/bin/susanin-agent"
-for f in datapath.sh susanin.sh update.sh uninstall.sh install.sh report.sh diagnose.sh; do
-    [ -f "$DIR/$f" ] && cp "$DIR/$f" "$PREFIX/tools/$f"
+for f in datapath.sh susanin.sh update.sh uninstall.sh install.sh report.sh diagnose.sh profiles.sh xray-egress.sh; do
+    _src=$(find_file "$f") || _src=""
+    [ -n "$_src" ] && cp "$_src" "$PREFIX/tools/$f"
 done
 chmod +x "$PREFIX/bin/susanin-agent" "$PREFIX/tools/"*.sh 2>/dev/null || true
 
 if [ ! -f "$PREFIX/etc/susanin.conf" ] || [ "$FORCE" = 1 ]; then
-    [ -f "$DIR/config.example.conf" ] && cp "$DIR/config.example.conf" "$PREFIX/etc/susanin.conf"
+    _cfg=$(find_file config.example.conf) || _cfg=""
+    [ -n "$_cfg" ] && cp "$_cfg" "$PREFIX/etc/susanin.conf"
     sed -i "s|^egress_interface=.*|egress_interface=$EGRESS|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
     sed -i "s|^lan_interfaces=.*|lan_interfaces=$LAN|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
     [ -n "$SUBNETS" ] && sed -i "s|^lan_subnets=.*|lan_subnets=$SUBNETS|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
@@ -351,23 +376,114 @@ merge_list() { # merge_list <user_file> <package_file> <label>
     return 0
 }
 
-if [ ! -f "$PREFIX/etc/vpn_always.txt" ] && [ -f "$DIR/vpn_always.txt" ]; then
-    cp "$DIR/vpn_always.txt" "$PREFIX/etc/vpn_always.txt"
+_va=$(find_file vpn_always.txt) || _va=""
+if [ ! -f "$PREFIX/etc/vpn_always.txt" ] && [ -n "$_va" ]; then
+    cp "$_va" "$PREFIX/etc/vpn_always.txt"
     say "vpn_always list installed: $PREFIX/etc/vpn_always.txt"
 else
-    say "vpn_always list kept (not overwritten)"
+    say "vpn_always list kept (not overwritten; may be merged with new entries)"
+    if [ -n "$_va" ]; then
+        merge_list "$PREFIX/etc/vpn_always.txt" "$_va" "vpn_always"
+    fi
 fi
-if [ ! -f "$PREFIX/etc/vpn_never.txt" ] && [ -f "$DIR/vpn_never.txt" ]; then
-    cp "$DIR/vpn_never.txt" "$PREFIX/etc/vpn_never.txt"
+_vn=$(find_file vpn_never.txt) || _vn=""
+if [ ! -f "$PREFIX/etc/vpn_never.txt" ] && [ -n "$_vn" ]; then
+    cp "$_vn" "$PREFIX/etc/vpn_never.txt"
     say "vpn_never list installed: $PREFIX/etc/vpn_never.txt"
 else
-    say "vpn_never list kept (not overwritten)"
-    merge_list "$PREFIX/etc/vpn_never.txt" "$DIR/vpn_never.txt" "vpn_never"
+    say "vpn_never list kept (not overwritten; may be merged with new entries)"
+    if [ -n "$_vn" ]; then
+        merge_list "$PREFIX/etc/vpn_never.txt" "$_vn" "vpn_never"
+    fi
+fi
+_cdn=$(find_file cdn_ranges.txt) || _cdn=""
+if [ ! -f "$PREFIX/etc/cdn_ranges.txt" ] && [ -n "$_cdn" ]; then
+    cp "$_cdn" "$PREFIX/etc/cdn_ranges.txt"
+    say "CDN ranges installed: $PREFIX/etc/cdn_ranges.txt"
+else
+    say "CDN ranges kept (not overwritten; auto-updates from cdn_ranges_url)"
 fi
 
-if [ -f "$DIR/S94susanin" ]; then
-    cp "$DIR/S94susanin" "$INITD/S94susanin"
+# Дописать отсутствующие дефолтные ключи: старый susanin.conf мог их не
+# содержать, и тогда `sed 's|^key=.*|...|'` молча ничего не делал (web_*,
+# egress_type, tproxy_port и т.п.). Ничего не перезаписываем — только добавляем.
+ensure_key() { # ensure_key <file> <key> <default>
+    _f="$1"; _k="$2"; _d="$3"
+    [ -f "$_f" ] || return 0
+    grep -q "^${_k}=" "$_f" 2>/dev/null || printf '%s=%s\n' "$_k" "$_d" >> "$_f"
+}
+if [ -f "$PREFIX/etc/susanin.conf" ]; then
+    ensure_key "$PREFIX/etc/susanin.conf" web_enable 0
+    ensure_key "$PREFIX/etc/susanin.conf" web_listen ""
+    ensure_key "$PREFIX/etc/susanin.conf" web_port 8087
+    ensure_key "$PREFIX/etc/susanin.conf" web_token ""
+    ensure_key "$PREFIX/etc/susanin.conf" egress_type interface
+    ensure_key "$PREFIX/etc/susanin.conf" tproxy_port 12345
+    ensure_key "$PREFIX/etc/susanin.conf" discover_exclude "wdtt0,wdttraw0,tun0,tap0"
+    ensure_key "$PREFIX/etc/susanin.conf" fast_syn_min_op 2
+    ensure_key "$PREFIX/etc/susanin.conf" ok_max_entries 4096
+    ensure_key "$PREFIX/etc/susanin.conf" ok_evict_misses 3
+    ensure_key "$PREFIX/etc/susanin.conf" promo_per_min 30
+    ensure_key "$PREFIX/etc/susanin.conf" soft_state_interval 12
+    ensure_key "$PREFIX/etc/susanin.conf" learn_exclude_ports "22,23,53,135,137,138,139,445,554,1433,1723,3306,3389,5432,5900,6379,7547,9100,11211,27017"
+    ensure_key "$PREFIX/etc/susanin.conf" vpn_always_file /opt/susanin/etc/vpn_always.txt
+    ensure_key "$PREFIX/etc/susanin.conf" vpn_always_dns ""
+    ensure_key "$PREFIX/etc/susanin.conf" vpn_always_interval 300
+    ensure_key "$PREFIX/etc/susanin.conf" vpn_never_file /opt/susanin/etc/vpn_never.txt
+    ensure_key "$PREFIX/etc/susanin.conf" vpn_never_interval 300
+    ensure_key "$PREFIX/etc/susanin.conf" lan_server_interfaces ""
+    ensure_key "$PREFIX/etc/susanin.conf" dp_check_interval 15
+    ensure_key "$PREFIX/etc/susanin.conf" learn_min_op 10
+    ensure_key "$PREFIX/etc/susanin.conf" learn_min_bytes 2000
+    ensure_key "$PREFIX/etc/susanin.conf" confirm_min_bytes 512
+    ensure_key "$PREFIX/etc/susanin.conf" learn_strict 0
+    ensure_key "$PREFIX/etc/susanin.conf" cdn_ranges_file /opt/susanin/etc/cdn_ranges.txt
+    ensure_key "$PREFIX/etc/susanin.conf" cdn_ranges_url https://www.cloudflare.com/ips-v4
+    ensure_key "$PREFIX/etc/susanin.conf" cdn_ranges_interval 86400
+    ensure_key "$PREFIX/etc/susanin.conf" cdn_prefix_learn 1
+    ensure_key "$PREFIX/etc/susanin.conf" cdn_prefix_ttl 3600
+    ensure_key "$PREFIX/etc/susanin.conf" cdn_prefix_max 24
+    ensure_key "$PREFIX/etc/susanin.conf" ipv6_block 1
+    ensure_key "$PREFIX/etc/susanin.conf" quic_block 1
+    ensure_key "$PREFIX/etc/susanin.conf" health_mode icmp
+    ensure_key "$PREFIX/etc/susanin.conf" health_tcp_port 443
+fi
+
+_s94=$(find_file S94susanin) || _s94=""
+if [ -n "$_s94" ]; then
+    cp "$_s94" "$INITD/S94susanin"
     chmod +x "$INITD/S94susanin"
+fi
+_s93=$(find_file S93xray-tproxy) || _s93=""
+if [ -n "$_s93" ]; then
+    cp "$_s93" "$INITD/S93xray-tproxy"
+    chmod +x "$INITD/S93xray-tproxy"
+fi
+
+# Веб-панель: статика и (при наличии в пакете) init-сервис.
+mkdir -p "$PREFIX/www"
+if [ -d "$DIR/www" ]; then
+    cp -r "$DIR/www/." "$PREFIX/www/" 2>/dev/null || true
+    say "web assets installed: $PREFIX/www"
+fi
+_s95=$(find_file S95susanin-web) || _s95=""
+if [ -n "$_s95" ]; then
+    cp "$_s95" "$INITD/S95susanin-web"
+    chmod +x "$INITD/S95susanin-web"
+fi
+
+# Если оставшийся/выбранный конфиг в tproxy-режиме — поднять Xray ДО старта
+# агента, иначе агент не станет поднимать tproxy-правила (fail-open -> DIRECT).
+if grep -q '^egress_type=tproxy' "$PREFIX/etc/susanin.conf" 2>/dev/null; then
+    if [ -x /opt/sbin/xray ] && [ -f "$PREFIX/etc/xray-tproxy.json" ]; then
+        # restart (не start): чтобы применился свежий уровень логов Xray и конфиг,
+        # даже если Xray уже был запущен с прошлых тестов.
+        [ -x "$INITD/S93xray-tproxy" ] && sh "$INITD/S93xray-tproxy" restart >/dev/null 2>&1 || true
+        say "tproxy: Xray поднят перед стартом агента"
+    else
+        say "ВНИМАНИЕ: egress_type=tproxy, но нет /opt/sbin/xray или $PREFIX/etc/xray-tproxy.json"
+        say "         пока Xray не готов, агент оставит трафик в DIRECT (fail-open)"
+    fi
 fi
 
 if [ "$NO_START" -ne 1 ]; then
@@ -378,3 +494,27 @@ if [ "$NO_START" -ne 1 ]; then
     fi
 fi
 say "installed to $PREFIX (run: sh $PREFIX/tools/susanin.sh status)"
+
+# XRay-egress (tproxy): проверяет Xray и кладёт шаблон tproxy-конфига.
+if [ "$XRAYTUN" -eq 1 ]; then
+    say "XRay-egress (tproxy): проверяю инструменты ..."
+    if [ -x /opt/sbin/xray ]; then
+        say "xray: есть (/opt/sbin/xray)"
+    else
+        say "xray: НЕТ — положите рабочий бинарь Xray (напр. 1.8.24 softfloat) в /opt/sbin/xray и chmod +x"
+    fi
+    _xtp=$(find_file xray-tproxy.json.example) || _xtp=""
+    if [ -n "$_xtp" ]; then
+        cp "$_xtp" "$PREFIX/etc/xray-tproxy.json.example"
+    fi
+    # Бинарь Xray из комплекта (xray/xray.<arch>), если ещё не установлен.
+    XB="$DIR/xray/xray.$ARCH"
+    if [ -x "$XB" ] && [ ! -x /opt/sbin/xray ]; then
+        cp "$XB" /opt/sbin/xray && chmod +x /opt/sbin/xray \
+            && say "xray установлен из комплекта: /opt/sbin/xray"
+    elif [ -x "$XB" ]; then
+        say "xray уже есть (/opt/sbin/xray) — из комплекта не ставлю"
+    fi
+    say "шаблон: $PREFIX/etc/xray-tproxy.json.example (подставьте SERVER/UUID/SNI/PBK/SID)"
+    say "в susanin.conf: egress_type=tproxy, tproxy_port=12345"
+fi

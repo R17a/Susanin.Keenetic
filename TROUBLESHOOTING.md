@@ -1,102 +1,251 @@
 # Susanin.Keenetic — если что-то не работает
 
-Сначала — диагностика и отчёт:
-
+Сначала соберите диагностику:
 ```sh
 sh /opt/susanin/tools/diagnose.sh   # проверит окружение, конфиг, правила, списки
-sh /opt/susanin/tools/report.sh     # соберёт полный отчёт: /opt/susanin/var/report.txt
+sh /opt/susanin/tools/report.sh     # отчёт: /opt/susanin/var/report.txt
 ```
-
-`diagnose.sh` в конце печатает рекомендации. Полный отчёт приложите в Issue или
-форум.
+`diagnose.sh` в конце сам печатает подсказки, что поправить.
 
 ## Сайт не открывается
 
-1. **Проверьте VPN.** `sh /opt/susanin/tools/susanin.sh status` — должен быть
-   `daemon: RUNNING` и живые `ip rule`/таблица. Если VPN-интерфейс удалили или
+1. **Проверьте VPN.** `sh /opt/susanin/tools/susanin.sh status` — демон должен
+   быть запущен, а правила и таблица — на месте. Если VPN-интерфейс удалили или
    переименовали — `sh /opt/susanin/tools/susanin.sh rescan`.
-2. **DNS.** Без шифрованного DNS (DoH/DoT) провайдер подменяет ответы — клиент
-   не получит настоящий адрес даже при рабочем VPN. Включите DoH/DoT на роутере
-   или клиенте. Проверка: `nslookup example.com` должен вернуть реальный IP.
-3. **Политика Keenetic.** Если у клиента назначена любая «политика» Keenetic
-   (Web → «Приоритеты подключений»), она перекрывает Susanin. В conntrack такие
-   клиенты видны как `mark=2684xxxxx` (`0xffffaXX`). Оставьте клиенту системную
-   политику «по умолчанию», чтобы решал Susanin.
-4. **Домен в `vpn_never.txt`.** Приоритет у «напрямую» — заблокированный сервис
-   в этом списке не пойдёт в VPN. Проверьте списки.
+2. **DNS.** Без шифрованного DNS (DoH/DoT) провайдер подменяет ответы, и клиент
+   не получает настоящий адрес даже при рабочем VPN. Включите DoH/DoT. Проверка:
+   `nslookup example.com` должен вернуть реальный IP.
+3. **Политика Keenetic.** Любая политика у клиента (Web → «Приоритеты
+   подключений») перекрывает Susanin.Keenetic. У такого клиента оставьте системную
+   политику «по умолчанию».
+4. **Домен в `vpn_never.txt`.** Такой адрес специально идёт напрямую. Проверьте
+   списки.
 
 ## Открывается, но с задержкой в первый раз
 
-Так работает реактивное обучение: первый заход на новый адрес идёт напрямую →
-обрывается → Susanin заворачивает адрес в VPN → клиент переподключается. Дальше
-адрес в кэше (`ok_ttl=0`) и открывается сразу.
+Так работает обучение: первый заход идёт напрямую → обрывается → Susanin.Keenetic
+заворачивает адрес в VPN → клиент переподключается. Дальше адрес в кэше и
+открывается сразу.
 
-Ускорить:
-- добавить домен/`*.домен` в `vpn_always.txt` — тогда сразу в VPN, без обучения;
-- `fast_syn_min_op=1`, `soft_interval=1s`, меньше `watch_ttl` — быстрее детект,
-  но больше ложных заворотов в VPN.
+Ускорить: добавьте домен (или `*.домен`) в `vpn_always.txt` — тогда сразу через
+VPN, без обучения.
 
 ## Превью/видео YouTube, медиа Instagram/x.com
 
-Работает через CDN-поддомены (`i.ytimg.com`, `rr*-sn-*.googlevideo.com`), а не
-через apex-домен. Голый `googlevideo.com` покрывает только apex. Добавьте зоны:
-
+Они работают через поддомены (`i.ytimg.com`, `*.googlevideo.com` и т.п.), а не
+через основной домен. Добавьте зоны:
 ```
 *.ytimg.com
 *.googlevideo.com
 *.ggpht.com
 *.googleusercontent.com
 ```
-
-Изменения подхватываются без перезапуска. Проверить, попал ли IP в VPN:
-`ipset test susanin_ok_tcp <IP>` (и `susanin_ok_udp`).
+Изменения подхватываются без перезапуска.
 
 ## В логе много «no A records»
 
-Это норма для многих CDN: у apex нет A-записей, работают поддомены. В логе теперь
-одна сводка вместо строки на каждый домен. Если домен из `vpn_always.txt`
-не разрешается — он не пинится; укажите поддомен или `*.domен`/CIDR.
+Это норма для CDN: у основного домена может не быть A-записей, работают
+поддомены. В логе теперь одна сводка вместо строки на каждый домен. Если домен из
+`vpn_always.txt` не разрешается — укажите поддомен или `*.домен`.
 
 ## VPN-интерфейс исчез / подключение удалили
 
 Демон сам переоценивает egress: пропавший интерфейс исключается, живой
-подхватывается; если живых нет — fail-open (прямой доступ, запись в логе).
-Чтобы применить новый интерфейс из системы: `sh /opt/susanin/tools/susanin.sh rescan`.
+подхватывается; если живых нет — всё идёт напрямую (запись в логе). Чтобы
+подтянуть новый интерфейс из системы:
+`sh /opt/susanin/tools/susanin.sh rescan`.
 
 ## Трафик идёт мимо VPN (правила снесены)
 
-Keenetic (NDM) пересобирает netfilter при изменениях в Web. Susanin
-восстанавливает свои правила автоматически (reconcile). Проверьте:
-`sh /opt/susanin/tools/datapath.sh status` — `jump: present`, `ip rule` на месте.
-Если нет — `sh /opt/susanin/tools/susanin.sh install` или `diagnose.sh`.
+Keenetic пересобирает правила при изменениях в Web. Susanin.Keenetic восстанавливает свои
+правила сам. Проверьте `sh /opt/susanin/tools/datapath.sh status` — должен быть
+`jump: present`. Если нет — `sh /opt/susanin/tools/susanin.sh install`.
 
-## Автообучение не работает (наборы `ok` пусты)
+## Обучение не работает (наборы пустые)
 
 - у клиента политика Keenetic (см. выше);
-- порт в `learn_exclude_ports` — по нему учится только «поток с ответами, который
-  заглох»; для полностью заблокированного сервиса на нестандартном порту добавьте
-  его домен/IP в `vpn_always.txt`;
-- нет реального трафика через роутер.
+- порт в списке `learn_exclude_ports` — по нему обучение ограничено (скан-шум).
+  Для полностью заблокированного сервиса на таком порту добавьте его домен/IP в
+  `vpn_always.txt`;
+- через роутер просто нет трафика.
 
-## Адрес «мельтешит» (OK-CHURN)
+## Адрес «мельтешит» (то в VPN, то нет)
 
-`ok_evict_misses` (по умолчанию 3) — сколько «сбоев» подряд нужно, чтобы убрать
-адрес из VPN-кэша. Увеличьте, если адрес то появляется, то исчезает.
+`ok_evict_misses` (по умолчанию 3) — сколько сбоев подряд нужно, чтобы убрать
+адрес из VPN-кэша. Увеличьте, если адрес «прыгает».
 
 ## Много записей на носитель
 
-Включите `disk_mode=soft` (лог не ведётся, бэкапов нет, состояние — раз в
-`soft_state_interval`). Установщик включает его сам при установке во внутреннюю
-память.
+Включите `disk_mode=soft` — лог не ведётся, бэкапов нет, состояние сохраняется
+редко. Установщик включает его сам при установке во внутреннюю память.
 
-## Как собрать отчёт для Issue
+## После установки/перезагрузки часть сайтов не открывается (tproxy + Xray)
+
+Симптом: в конфиге `egress_type=tproxy`, но Xray не запущен — тогда выученные
+(помеченные) сайты уходят в никуда. Признак: `ps | grep '[x]ray'` пусто и
+`netstat -lnt | grep 12345` пусто.
+
+Что делает Susanin.Keenetic: при старте проверяет порт `tproxy_port`; если Xray не
+слушает — правила tproxy **не поднимает** и пускает трафик напрямую (fail-open),
+в лог пишет предупреждение. Так что «глухой» чёрной дыры быть не должно; если
+она возникла — значит правила остались с прошлого запуска:
+
+```sh
+sh /opt/susanin/tools/datapath.sh down        # снять правила (вернуть DIRECT)
+sed -i 's/^egress_type=.*/egress_type=interface/' /opt/susanin/etc/susanin.conf
+sh /opt/susanin/tools/susanin.sh restart      # обычный режим, пока Xray не готов
+```
+Либо поднимите Xray и оставьте tproxy:
+```sh
+/opt/etc/init.d/S93xray-tproxy start
+sh /opt/susanin/tools/susanin.sh restart
+sh /opt/susanin/tools/susanin.sh status       # строка mode=tproxy ... (Xray LISTEN)
+```
+
+## XRay-режим: не идёт через туннель
+
+Режим XRay — `egress_type=tproxy`. Проверяйте по шагам:
+
+1. **Xray слушает:** `netstat -lntu 2>/dev/null | grep -E ':(12345|1080)'`
+   (12345/TCP и 1080/TCP+UDP).
+2. **Правила на месте:** `iptables -t nat -S PREROUTING | grep REDIRECT` (TCP) и
+   `iptables -t mangle -S PREROUTING | grep TPROXY` (UDP). Если пусто — включите
+   заново: `sh /opt/susanin/tools/xray-egress.sh enable`.
+3. **Тест одного адреса:** `sh /opt/susanin/tools/xray-egress.sh run 1.1.1.1 both`,
+   затем с компьютера `curl -s https://1.1.1.1/cdn-cgi/trace | grep '^ip='`
+   (ожидаем IP сервера) и `nslookup ya.ru 1.1.1.1`.
+4. **TCP идёт, UDP — нет:** смотрите
+   `grep -i 'udp-relay' /opt/susanin/var/susanin.log` и
+   `grep 'accepted udp:' /opt/susanin/var/xray.log`. UDP проверяйте
+   **с компьютера**, не с роутера.
+5. **Xray не стартует:** `tail -n 40 /opt/susanin/var/xray.log`. Для mipsel нужен
+   бинарь 1.8.24 softfloat.
+6. **Вернуть DIRECT:** `sh /opt/susanin/tools/xray-egress.sh disable`.
+
+## xray.log быстро растёт (строки `from … accepted …`)
+
+Это **access-лог Xray**. Он **не управляется `loglevel`** — выключается
+отдельным параметром `"access": "none"` в блоке `log` файла
+`/opt/susanin/etc/xray-tproxy.json`:
+```json
+"log": { "access": "none", "loglevel": "warning" },
+```
+В свежих сборках `xray-egress.sh enable|run` выставляет это сам и перезапускает
+Xray. Вручную:
+```sh
+sed -i 's|"log"[[:space:]]*:[[:space:]]*{|"log": { "access": "none",|' /opt/susanin/etc/xray-tproxy.json
+sh /opt/susanin/tools/xray-egress.sh enable     # перезапустит Xray
+: > /opt/susanin/var/xray.log                    # обрезать старый
+```
+(`log_level` Susanin.Keenetic и `xray_loglevel` Xray — независимые ключи.)
+
+## XKeen и Susanin.Keenetic вместе
+
+**XKeen** — отдельный перехватчик трафика, у него свои правила и маршруты. Если он
+запущен, он мешает Susanin.Keenetic: сайты «то работают, то нет», правила Susanin.Keenetic
+сбрасываются. Не запускайте XKeen вместе с Susanin.Keenetic; для Reality используйте
+встроенный XRay-режим Susanin.Keenetic (скрипт `S05xkeen` держите выключенным).
+
+## Веб-панель не открывается
+
+- В `susanin.conf`: `web_enable=1`, `web_listen` — **LAN-адрес роутера**
+  (`192.168.1.1`), не `0.0.0.0` и не `127.0.0.1`.
+- Запустите сервис: `/opt/etc/init.d/S95susanin-web start` или
+  `sh /opt/susanin/tools/susanin.sh web start` (`… web status` — состояние).
+- Панель пропала после кнопки Restart? В 0.4.0-dev4 это исправлено (демон и web
+  разведены). До обновления поможет `S95susanin-web start`.
+- Проверка: `netstat -lnt | grep 8087` и
+  `curl -s "http://127.0.0.1:8087/api/status?token=ТОКЕН" | head -c 200`.
+- Пустой `web_token` — вход без пароля (только из вашей сети).
+
+## Профили маршрутизации не применяются
+
+- профиль включается, только если задан `profileN_name`; файл списка
+  (`profileN_list`) должен существовать и быть непустым;
+- `profileN_egress` — существующий интерфейс;
+- проверьте `diagnose.sh`, затем `sh /opt/susanin/tools/profiles.sh up` и
+  `sh /opt/susanin/tools/profiles.sh status`;
+- адрес обрабатывается **первым совпавшим** профилем.
+
+## Постоянно мигает носитель (флешка/USB), система подтормаживает
+
+Частая причина — `datapath.sh up` падает, а агент повторяет его (с записью
+бэкапа на носитель). В логе видно строки `datapath provisioning failed`.
+
+- Посмотреть причину:
+  ```sh
+  grep -c 'provisioning failed' /opt/susanin/var/susanin.log
+  tail -40 /opt/susanin/var/susanin.log
+  ```
+- Частый конкретный случай — не загружен модуль ядра для UDP-релея:
+  `iptables ... -j TPROXY` → `iptables: No chain/target/match by that name`.
+  TCP при этом работает. На Keenetic `modprobe` обычно нет — грузите `insmod`:
+  ```sh
+  K=/lib/modules/$(uname -r)
+  insmod $K/nf_tproxy_ipv4.ko 2>/dev/null
+  insmod $K/xt_socket.ko 2>/dev/null
+  insmod $K/xt_TPROXY.ko 2>/dev/null
+  cat /proc/modules | grep -iE 'tproxy|socket'
+  ```
+  (в свежих сборках `datapath.sh` делает это сам). Если модуля .ko нет — UDP
+  через XRay не пойдёт, это не мешает TCP.
+- Если пишет `xray.log` (много `accepted`-строк) — понизьте уровень Xray, см.
+  раздел «xray.log быстро растёт».
+- Убрать поток записей на носитель:
+  ```sh
+  sed -i 's/^disk_mode=.*/disk_mode=soft/' /opt/susanin/etc/susanin.conf
+  sh /opt/susanin/tools/susanin.sh restart
+  rm -rf /opt/susanin/var/datapath-* /opt/susanin/var/archive/*
+  ```
+  (в свежих сборках бэкапы уже ограничены — не чаще раза в час).
+
+## Отчёт для Issue
 
 ```sh
 sh /opt/susanin/tools/report.sh
 # файл: /opt/susanin/var/report.txt
 ```
 
-Либо без установки:
+## IPTV / сайт за Cloudflare: «то грузится, то нет»
+
+Симптом: приложение/плеер периодически встаёт, показывает ссылку и конечную
+страницу сервиса; у части пользователей работает, у части — нет. Сервис за CDN
+(Cloudflare/Fastly) — у него много быстро меняющихся edge-адресов.
+
+Что важно знать:
+- **Не кладите адреса провайдера/сайта в `vpn_never.txt`.** `vpn_never` — это
+  принудительный DIRECT: правило `susanin_never dst -j RETURN` срабатывает
+  раньше маркировки, и Susanin уже не сможет завернуть адрес в VPN, даже если
+  автообучение поймёт, что прямой путь «ломается». Именно это даёт «CONFIRMED
+  есть, а всё равно лагает».
+- **`ok_ttl=0` (не истекает)** опасен: однажды выученный адрес остаётся в VPN
+  навсегда, наборы растут. Ставьте конечный TTL (напр. `ok_ttl=21600`).
+- **IPv6.** Susanin работает только по IPv4. Если у клиента/провайдера есть
+  глобальный IPv6, а у CDN есть AAAA-записи — часть трафика идёт мимо Susanin и
+  может душиться. Проверка: `ip -6 route show default` (пусто — IPv6 нет).
+- **FASTNAT/offload.** Уже установленный поток (`mark=0`, `[FASTNAT]`) не
+  удаляется `conntrack -F` и держится на старом пути. Чтобы применить новый
+  маршрут, перезапустите воспроизведение на клиенте (или временно снимите
+  «Аппаратное ускорение NAT» в Keenetic).
+
+Диагностика (заменить `<TV>` на IP приставки, напр. `192.168.1.64`):
 ```sh
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/tools/report.sh | sh
+# 1) какой хост резолвит плеер (LAN-DNS открытым текстом; DoT — уже наружу)
+tcpdump -i br0 -n "host <TV> and port 53"
+
+# 2) куда реально идёт поток: через Xray (sport=12345) или напрямую (mark=0)
+grep -F '<TV>' /proc/net/nf_conntrack | grep -E 'dport=80|dport=443|sport=12345'
+
+# 3) что решил агент по этим адресам
+grep -iE 'STALL|CONFIRMED|COOLDOWN' /opt/susanin/var/susanin.log | tail -40
+
+# 4) не залип ли адрес в never (должно быть пусто)
+grep -nE '<первые-октеты-IP>' /opt/susanin/etc/vpn_never.txt
+ipset list susanin_never | grep '<IP>'
 ```
+
+Обходное на время (если подтвердилось, что прямой путь режется): добавить
+нужные хосты в `vpn_always.txt` (для конкретных доменов) и перезапустить:
+`sh /opt/susanin/tools/susanin.sh reload`. Универсальное решение (агрегация по
+CDN-префиксу без ручных списков) — в `PLAN.md`, раздел «Универсальное решение
+для CDN/Cloudflare».

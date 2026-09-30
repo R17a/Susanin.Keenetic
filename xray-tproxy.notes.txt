@@ -1,0 +1,31 @@
+xray-tproxy.json.example — пояснения к клиентскому конфигу Xray (REALITY)
+
+Плейсхолдеры (заменить на свои):
+  <SERVER>  адрес вашего VPS. ЛУЧШЕ указывать IP (напр. 203.0.113.10), а не домен —
+            меньше «утечки» адреса сервера через DNS.
+  <UUID>    id пользователя VLESS (должен совпадать с сервером).
+  <SNI>     имя сайта-прикрытия (camo). ДОЛЖНО совпадать с serverNames/dest на
+            сервере. Требования: иностранный, реально доступный из РФ (SNI не из
+            блок-листа), TLS 1.3 + X25519 + HTTP/2, и НЕ «слишком популярный»
+            (топ-домены вроде google.com/microsoft.com/ozon.ru — в чёрных списках).
+            Примеры: apache.org, docker.com, www.postgresql.org.
+  <PBK>     publicKey REALITY. Вычисляется из приватного ключа сервера:
+            `xray x25519 -i <privateKey>`  → строка "Public key".
+  <SID>     shortId (должен совпадать с одним из shortIds на сервере).
+
+Сертификаты (важно):
+  - Клиенту Xray на роутере сертификаты НЕ нужны: REALITY не проверяет цепочку
+    как обычный TLS — он аутентифицируется ключами REALITY (publicKey/shortId).
+  - ca-certificates на роутере нужны только для Xray-сервера и обычных HTTPS-
+    проверок, не для этого клиента.
+  - На сервере REALITY сам «одалживает» TLS у camo-сайта (dest/serverNames);
+    сертификат вашего домена в handshake не используется — поэтому свой домен
+    как SNI указывать нельзя (это палится и ломает маскировку).
+
+Прочее:
+  - flow=xtls-rprx-vision, network=tcp, security=reality, fingerprint=chrome (uTLS).
+  - mark=1073741824 (0x40000000) — для сосуществования с zapret/nfqws.
+  - log: access="none" (иначе лог растёт строкой на каждое соединение),
+    loglevel="warning".
+  - Адрес сервера в клиенте — IP; SNI (serverName) — camo-домен; ключи/flow —
+    как на сервере.

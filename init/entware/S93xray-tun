@@ -1,0 +1,66 @@
+#!/bin/sh
+# XRay-egress: поднять Xray (socks) + hev-socks5-tunnel (TUN sbtun0)
+# ДО старта Susanin.Keenetic (init.d запускает скрипты по имени: S93 < S94).
+# Если конфигов/утилит нет — тихо выходит (XRay-egress не используется).
+#
+# Установка: /opt/etc/init.d/S93xray-tun (chmod +x).
+# Управление: S93xray-tun start|stop|restart
+
+XRAY=/opt/sbin/xray
+XCFG=/opt/susanin/etc/xray-socks.json
+HEV=/opt/bin/hev-socks5-tunnel
+HCFG=/opt/susanin/etc/hev-socks5-tunnel.conf
+TUN=sbtun0
+TADDR=172.19.0.1/30
+IPT=$(command -v iptables 2>/dev/null || echo /opt/sbin/iptables)
+LOGX=/opt/susanin/var/xray.log
+LOGH=/opt/susanin/var/hev.log
+
+start() {
+    [ -x "$XRAY" ] && [ -f "$XCFG" ] || { echo "xray-tun: нет Xray/конфига — пропуск"; return 0; }
+    mkdir -p /opt/susanin/var
+    if ! pidof xray >/dev/null 2>&1; then
+        "$XRAY" run -config "$XCFG" >>"$LOGX" 2>&1 &
+    fi
+    sleep 1
+    if [ -x "$HEV" ] && [ -f "$HCFG" ]; then
+        if ! ip link show "$TUN" >/dev/null 2>&1; then
+            "$HEV" "$HCFG" >>"$LOGH" 2>&1 &
+        fi
+    fi
+    # Ждём появления TUN (до ~10с), чтобы Susanin.Keenetic (S94) стартовал уже с готовым tun.
+    i=0
+    while [ "$i" -lt 10 ] && ! ip link show "$TUN" >/dev/null 2>&1; do
+        sleep 1
+        i=$((i + 1))
+    done
+    if ip link show "$TUN" >/dev/null 2>&1; then
+        ip addr show "$TUN" 2>/dev/null | grep -q 'inet 172.19.0.1' \
+            || ip addr add "$TADDR" dev "$TUN" 2>/dev/null
+        ip link set "$TUN" up 2>/dev/null
+        ip link set "$TUN" mtu 1500 2>/dev/null
+        # hev может добавить «всеобщие» маршруты — убираем: маршрутами
+        # управляет Susanin.Keenetic (иначе перехватится весь трафик и сломается).
+        ip route del 0.0.0.0/1 dev "$TUN" 2>/dev/null
+        ip route del 128.0.0.0/1 dev "$TUN" 2>/dev/null
+        # SNAT для трафика, уходящего в tun: userspace-tun2socks (hev) принимает
+        # из tun только «свою» подсеть, иначе клиентский трафик дропается.
+        "$IPT" -t nat -C POSTROUTING -o "$TUN" -j MASQUERADE 2>/dev/null \
+            || "$IPT" -t nat -A POSTROUTING -o "$TUN" -j MASQUERADE 2>/dev/null
+    fi
+    echo "xray-tun: started (tun=$TUN)"
+}
+
+stop() {
+    "$IPT" -t nat -D POSTROUTING -o "$TUN" -j MASQUERADE 2>/dev/null
+    for p in $(pidof hev-socks5-tunnel 2>/dev/null); do kill "$p" 2>/dev/null; done
+    for p in $(pidof xray 2>/dev/null); do kill "$p" 2>/dev/null; done
+    echo "xray-tun: stopped"
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; sleep 1; start ;;
+    *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

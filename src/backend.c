@@ -168,12 +168,20 @@ static void set_env(const susanin_config *c)
     setenv("SUSANIN_TABLE", (snprintf(v, sizeof(v), "%d", c->routing_table), v), 1);
     setenv("SUSANIN_MARK_OK", (snprintf(v, sizeof(v), "0x%lx", c->mark_ok), v), 1);
     setenv("SUSANIN_MARK_TEST", (snprintf(v, sizeof(v), "0x%lx", c->mark_test), v), 1);
+    setenv("SUSANIN_MARK_MASK", (snprintf(v, sizeof(v), "0x%lx", c->mark_mask), v), 1);
     setenv("SUSANIN_PRI_OK", (snprintf(v, sizeof(v), "%d", c->ip_rule_priority_start), v), 1);
     setenv("SUSANIN_PRI_TEST", (snprintf(v, sizeof(v), "%d", c->ip_rule_priority_start + 1), v), 1);
     setenv("SUSANIN_LAN", c->lan_interfaces[0] ? c->lan_interfaces : "br0", 1);
     setenv("SUSANIN_TTL_TEST", (snprintf(v, sizeof(v), "%d", c->test_ttl), v), 1);
     setenv("SUSANIN_TTL_OK", (snprintf(v, sizeof(v), "%d", c->ok_ttl), v), 1);
     setenv("SUSANIN_DISK_MODE", c->disk_mode[0] ? c->disk_mode : "normal", 1);
+    setenv("SUSANIN_TPROXY_PORT",
+           (snprintf(v, sizeof(v), "%d",
+                     !strcmp(c->egress_type, "tproxy") ? c->tproxy_port : 0), v), 1);
+    setenv("SUSANIN_UDP_RELAY_PORT",
+           (snprintf(v, sizeof(v), "%d", c->udp_relay ? c->udp_relay_port : 0), v), 1);
+    setenv("SUSANIN_IPV6_BLOCK", c->ipv6_block ? "1" : "0", 1);
+    setenv("SUSANIN_QUIC_BLOCK", c->quic_block ? "1" : "0", 1);
 }
 
 static int run_script(const susanin_config *c, const char *a1, const char *a2)
@@ -204,6 +212,40 @@ int backend_provision(const susanin_config *c)
     return rc;
 }
 
+/* Отметка о последнем ре-провижене (для наблюдаемости в status/diagnose). */
+#define DP_REPROV_FILE "/opt/susanin/var/dp-reprov"
+
+void backend_mark_reprov(const char *reason)
+{
+    FILE *fp = fopen(DP_REPROV_FILE, "w");
+    if (!fp)
+        return;
+    fprintf(fp, "%ld %s\n", (long)time(NULL),
+            (reason && reason[0]) ? reason : "re-provision");
+    fclose(fp);
+}
+
+int backend_read_reprov(long *when, char *reason, size_t reasonsz)
+{
+    FILE *fp = fopen(DP_REPROV_FILE, "r");
+    char line[256], r[200] = "";
+    long t = 0;
+    if (!fp)
+        return -1;
+    if (!fgets(line, sizeof(line), fp)) {
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+    if (sscanf(line, "%ld %199[^\n]", &t, r) < 1)
+        return -1;
+    if (when)
+        *when = t;
+    if (reason && reasonsz)
+        snprintf(reason, reasonsz, "%s", r);
+    return 0;
+}
+
 static const char *tool_iptables(void)
 {
     static char buf[160];
@@ -212,21 +254,112 @@ static const char *tool_iptables(void)
     return buf;
 }
 
+static const char *tool_ip(void)
+{
+    static char buf[160];
+    if (!buf[0])
+        tool_path("ip", buf, sizeof(buf));
+    return buf;
+}
+
+/* Готов ли датаплейн? Для interface-режима достаточно цепочки SUSANIN.
+ * Для tproxy этого МАЛО: NDM может снести nat REDIRECT / mangle TPROXY / ip rule,
+ * и тогда цепочка есть, а трафик идёт напрямую. Поэтому проверяем и их. */
 int backend_ready(const susanin_config *c)
 {
     char *argv[6];
-    (void)c;
+    char out[8192], needle[96];
+
     argv[0] = (char *)tool_iptables();
     argv[1] = "-t";
     argv[2] = "mangle";
     argv[3] = "-S";
     argv[4] = "SUSANIN";
     argv[5] = NULL;
-    return run_argv(argv) == 0;
+    if (run_argv(argv) != 0)
+        return 0;
+
+    if (strcmp(c->egress_type, "tproxy") != 0)
+        return 1;
+
+    /* TCP REDIRECT -> tproxy_port */
+    snprintf(needle, sizeof(needle), "-j REDIRECT --to-ports %d", c->tproxy_port);
+    argv[0] = (char *)tool_iptables();
+    argv[1] = "-t"; argv[2] = "nat"; argv[3] = "-S"; argv[4] = "PREROUTING"; argv[5] = NULL;
+    if (run_capture_argv(argv, out, sizeof(out)) != 0 || !strstr(out, needle))
+        return 0;
+
+    /* UDP TPROXY -> udp_relay_port (если релей включён) */
+    if (c->udp_relay) {
+        snprintf(needle, sizeof(needle), "TPROXY --on-port %d", c->udp_relay_port);
+        argv[0] = (char *)tool_iptables();
+        argv[1] = "-t"; argv[2] = "mangle"; argv[3] = "-S"; argv[4] = "PREROUTING"; argv[5] = NULL;
+        if (run_capture_argv(argv, out, sizeof(out)) != 0 || !strstr(out, needle))
+            return 0;
+    }
+
+    /* ip rule fwmark 0x1 -> table (доставка TPROXY) */
+    {
+        char *ipargv[4];
+        snprintf(needle, sizeof(needle), "fwmark 0x1 lookup %d", c->routing_table);
+        ipargv[0] = (char *)tool_ip();
+        ipargv[1] = "rule"; ipargv[2] = "show"; ipargv[3] = NULL;
+        if (run_capture_argv(ipargv, out, sizeof(out)) != 0 || !strstr(out, needle))
+            return 0;
+    }
+    return 1;
 }
 
 /* Check the environment the data plane needs: external tools and the egress
  * interface. Returns 0, or -1 with a human-readable reason in err. */
+/* LISTEN на порту в одном из /proc-файлов (tcp = IPv4, tcp6 = IPv6).
+ * Xray dokodemo-door слушает обычно `::` (IPv6), поэтому проверять только
+ * /proc/net/tcp недостаточно. */
+static int listen_in_proc(const char *path, int port)
+{
+    FILE *fp = fopen(path, "r");
+    char line[256];
+    if (!fp)
+        return 0;
+    if (!fgets(line, sizeof(line), fp)) {   /* заголовок */
+        fclose(fp);
+        return 0;
+    }
+    while (fgets(line, sizeof(line), fp)) {
+        char local[64] = "", rem[64] = "", sthex[16] = "";
+        char *colon;
+        if (sscanf(line, "%*s %63s %63s %15s", local, rem, sthex) != 3)
+            continue;
+        colon = strrchr(local, ':');
+        if (!colon)
+            continue;
+        if ((unsigned)strtoul(sthex, NULL, 16) == 0x0A &&
+            (unsigned)strtoul(colon + 1, NULL, 16) == (unsigned)port) {
+            fclose(fp);
+            return 1;
+        }
+    }
+    fclose(fp);
+    return 0;
+}
+
+/* Слушает ли кто-нибудь TCP-порт на локальном адресе (IPv4 или IPv6).
+ * Нужен для tproxy: без живого Xray поднимать REDIRECT/TPROXY нельзя —
+ * иначе помеченный трафик уйдёт «в никуда». Если /proc/net/tcp недоступен —
+ * не блокируем (возвращаем 1). */
+int backend_local_listen(int port)
+{
+    FILE *probe = fopen("/proc/net/tcp", "r");
+    if (!probe)
+        return 1;               /* проверить нельзя — не мешаем */
+    fclose(probe);
+    if (listen_in_proc("/proc/net/tcp", port))
+        return 1;
+    if (listen_in_proc("/proc/net/tcp6", port))
+        return 1;
+    return 0;
+}
+
 int backend_preflight(const susanin_config *c, char *err, size_t errsz)
 {
     char p[320];

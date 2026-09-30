@@ -1,0 +1,50 @@
+#!/bin/sh
+# XRay-egress (tproxy): Xray dokodemo-door (tproxy) ДО старта Susanin.Keenetic
+# (init.d запускает скрипты по имени: S93 < S94). Без TUN/tun2socks.
+# Порт должен совпадать с tproxy_port в susanin.conf.
+# Если бинаря/конфига нет — тихо выходит (режим не используется).
+#
+# Установка: /opt/etc/init.d/S93xray-tproxy (chmod +x).
+# Управление: S93xray-tproxy start|stop|restart
+
+XRAY=/opt/sbin/xray
+XCFG=/opt/susanin/etc/xray-tproxy.json
+LOGF=/opt/susanin/var/xray.log
+PORT=12345
+
+start() {
+    [ -x "$XRAY" ] && [ -f "$XCFG" ] || { echo "xray-tproxy: нет Xray/конфига — пропуск"; return 0; }
+    mkdir -p /opt/susanin/var
+    # Уровень логов Xray (независимо от log_level Susanin.Keenetic) — из susanin.conf.
+    # Xray читает уровень только при старте, поэтому применяем его до запуска,
+    # а для уже запущенного процесса нужен restart.
+    _lvl=$(sed -n 's/^xray_loglevel=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
+    [ -n "$_lvl" ] || _lvl=warning
+    if grep -q '"loglevel"' "$XCFG" 2>/dev/null; then
+        sed -i "s|\"loglevel\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"loglevel\": \"$_lvl\"|" "$XCFG" 2>/dev/null || true
+    fi
+    # access-лог («accepted …») не зависит от loglevel — выключаем отдельно.
+    if grep -q '"access"' "$XCFG" 2>/dev/null; then
+        sed -i "s|\"access\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"access\": \"none\"|" "$XCFG" 2>/dev/null || true
+    elif grep -q '"log"[[:space:]]*:[[:space:]]*{' "$XCFG" 2>/dev/null; then
+        sed -i "s|\"log\"[[:space:]]*:[[:space:]]*{|\"log\": { \"access\": \"none\",|" "$XCFG" 2>/dev/null || true
+    fi
+    if ! pidof xray >/dev/null 2>&1; then
+        "$XRAY" run -config "$XCFG" >>"$LOGF" 2>&1 &
+        echo "xray-tproxy: started (port=$PORT, loglevel=$_lvl)"
+    else
+        echo "xray-tproxy: уже запущен; новый loglevel=$_lvl применится после 'restart'"
+    fi
+}
+
+stop() {
+    for p in $(pidof xray 2>/dev/null); do kill "$p" 2>/dev/null; done
+    echo "xray-tproxy: stopped"
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; sleep 1; start ;;
+    *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

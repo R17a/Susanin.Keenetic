@@ -420,8 +420,19 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     ensure_key "$PREFIX/etc/susanin.conf" egress_type interface
     ensure_key "$PREFIX/etc/susanin.conf" tproxy_port 12345
     ensure_key "$PREFIX/etc/susanin.conf" discover_exclude "wdtt0,wdttraw0,tun0,tap0"
+    ensure_key "$PREFIX/etc/susanin.conf" fast_syn_min_op 2
+    ensure_key "$PREFIX/etc/susanin.conf" ok_max_entries 4096
+    ensure_key "$PREFIX/etc/susanin.conf" ok_evict_misses 3
+    ensure_key "$PREFIX/etc/susanin.conf" promo_per_min 30
+    ensure_key "$PREFIX/etc/susanin.conf" soft_state_interval 12
+    ensure_key "$PREFIX/etc/susanin.conf" learn_exclude_ports "22,23,53,135,137,138,139,445,554,1433,1723,3306,3389,5432,5900,6379,7547,9100,11211,27017"
+    ensure_key "$PREFIX/etc/susanin.conf" vpn_always_file /opt/susanin/etc/vpn_always.txt
+    ensure_key "$PREFIX/etc/susanin.conf" vpn_always_dns ""
+    ensure_key "$PREFIX/etc/susanin.conf" vpn_always_interval 300
+    ensure_key "$PREFIX/etc/susanin.conf" vpn_never_file /opt/susanin/etc/vpn_never.txt
+    ensure_key "$PREFIX/etc/susanin.conf" vpn_never_interval 300
     ensure_key "$PREFIX/etc/susanin.conf" lan_server_interfaces ""
-    ensure_key "$PREFIX/etc/susanin.conf" dp_check_interval 15s
+    ensure_key "$PREFIX/etc/susanin.conf" dp_check_interval 15
     ensure_key "$PREFIX/etc/susanin.conf" learn_min_op 10
     ensure_key "$PREFIX/etc/susanin.conf" learn_min_bytes 2000
     ensure_key "$PREFIX/etc/susanin.conf" confirm_min_bytes 512

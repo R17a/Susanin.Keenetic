@@ -6,6 +6,7 @@
 #include "log.h"
 #include "ops.h"
 #include "version.h"
+#include "web.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,12 +30,13 @@ static void usage(void)
         "  susanin-agent ct-scan\n"
         "  susanin-agent datapath {up|down|status|flush|add|del}\n"
         "  susanin-agent run\n"
+        "  susanin-agent web\n"
         "  susanin-agent status\n"
         "  susanin-agent setup\n"
         "  susanin-agent apply [--dry-run]\n"
         "  susanin-agent install\n"
         "  susanin-agent uninstall\n"
-        "  susanin-agent forget <ip>\n"
+        "  susanin-agent reset <ip|domain>   (forget — синоним)\n"
         "  susanin-agent diag [start|stop|sample|errors]\n",
         SUSANIN_VERSION);
 }
@@ -129,6 +131,9 @@ int main(int argc, char **argv)
         return engine_run(&cfg, cfg_path());
     }
 
+    if (!strcmp(cmd, "web"))
+        return web_run(&cfg);
+
     if (!strcmp(cmd, "setup"))
         return ops_setup(&cfg, cfg_path(), argc, argv);
 
@@ -143,11 +148,12 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "install"))
         return ops_setup(&cfg, cfg_path(), argc, argv);
 
-    if (!strcmp(cmd, "forget"))
-        return ops_forget(&cfg, argc > 2 ? argv[2] : NULL);
+    /* reset <ip|domain> — сброс из кэша/ipsets/conntrack (forget — синоним). */
+    if (!strcmp(cmd, "reset") || !strcmp(cmd, "forget"))
+        return ops_reset(&cfg, argc > 2 ? argv[2] : NULL);
 
     if (!strcmp(cmd, "uninstall")) {
-        printf("removing Susanin data plane ...\n");
+        printf("removing Susanin.Keenetic data plane ...\n");
         backend_teardown(&cfg);
         return 0;
     }
