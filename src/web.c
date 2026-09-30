@@ -720,7 +720,12 @@ static int list_edit(const char *path, const char *val, int add,
     }
     if (in) {
         while (fgets(line, sizeof(line), in)) {
+            char orig[sizeof(line)];
             char *p = line, *e;
+            /* Сохраняем ИСХОДНУЮ строку (с переводом строки). Сравнение делаем
+             * по обрезанной копии, а пишем обратно оригинал — иначе теряются
+             * концы строк и файл «склеивается» в одну строку. */
+            snprintf(orig, sizeof(orig), "%s", line);
             while (*p == ' ' || *p == '\t')
                 p++;
             e = p + strlen(p);
@@ -729,15 +734,15 @@ static int list_edit(const char *path, const char *val, int add,
             if (!strcmp(p, val)) {
                 found = 1;
                 if (add) {
-                    fputs(line, out);
-                    last_nl = (line[0] && line[strlen(line) - 1] == '\n');
+                    fputs(orig, out);
+                    last_nl = (orig[0] && orig[strlen(orig) - 1] == '\n');
                 } else {
                     changed = 1; /* строку пропускаем */
                 }
                 continue;
             }
-            fputs(line, out);
-            last_nl = (line[0] && line[strlen(line) - 1] == '\n');
+            fputs(orig, out);
+            last_nl = (orig[0] && orig[strlen(orig) - 1] == '\n');
         }
         fclose(in);
     }
