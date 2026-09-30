@@ -180,7 +180,7 @@
           f('web_enable', 'Веб-панель включена', '', 'bool'),
           f('web_listen', 'Адрес (LAN)', 'не 0.0.0.0', 'text', { kind: 'ip', noZero: true }),
           f('web_port', 'Порт', '', 'number', { kind: 'int' }),
-          f('web_token', 'Токен доступа', '', 'readonly')
+          f('web_token', 'Токен доступа', 'пусто = оставить как есть; «Сбросить» — снять токен', 'token')
         ]}
       ]
     },
@@ -189,11 +189,11 @@
       groups: [1, 2, 3, 4].map(function (n) {
         var p = 'profile' + n + '_';
         return { title: 'Профиль ' + n, fields: [
-          f(p + 'name', 'Имя', 'a-z, 0-9, _ ; пусто = профиль выключен', 'text', { kind: 'ident' }),
-          f(p + 'egress', 'Egress (туннель)', 'интерфейс, например nwg1', 'text'),
-          f(p + 'list', 'Файл списка', 'путь, например /opt/susanin/etc/profiles/имя.txt (по строке: домен / IP / CIDR)', 'text'),
-          f(p + 'table', 'Таблица маршрутизации', 'пусто = по умолчанию (201…204)', 'number', { kind: 'int' }),
-          f(p + 'mark', 'fwmark', 'hex; пусто = по умолчанию', 'text', { kind: 'hex' })
+          f(p + 'name', 'Имя', 'a-z, 0-9, _ ; пусто = профиль выключен', 'text', { kind: 'ident', creatable: true }),
+          f(p + 'egress', 'Egress (туннель)', 'интерфейс, например nwg1', 'text', { creatable: true }),
+          f(p + 'list', 'Файл списка', 'путь, например /opt/susanin/etc/profiles/имя.txt (по строке: домен / IP / CIDR)', 'text', { creatable: true }),
+          f(p + 'table', 'Таблица маршрутизации', 'пусто = по умолчанию (201…204)', 'number', { kind: 'int', creatable: true }),
+          f(p + 'mark', 'fwmark', 'hex; пусто = по умолчанию', 'text', { kind: 'hex', creatable: true })
         ]};
       }),
       note: 'Экспериментальная функция (P1): до 4 статических профилей — свой список доменов/IP на отдельный ' +
@@ -325,6 +325,30 @@
       return wrap;
     }
 
+    if (fld.type === 'token') {
+      /* web_token: значение write-only (GET его не отдаёт). Пустое поле =
+       * «не менять»; «Сбросить» = снять токен (сохранить web_token=). */
+      var tinp = document.createElement('input');
+      tinp.type = 'password';
+      tinp.dataset.key = fld.key;
+      tinp.autocomplete = 'new-password';
+      tinp.placeholder = tokenSet ? '(задан — оставьте пустым, чтобы не менять)'
+                                  : '(пусто — доступ без пароля)';
+      wrap.appendChild(tinp);
+      var tclr = document.createElement('button');
+      tclr.type = 'button';
+      tclr.className = 'btn btn-sm';
+      tclr.textContent = 'Сбросить';
+      tclr.title = 'Снять токен (сохранить web_token=)';
+      tclr.onclick = function () {
+        tinp.value = '';
+        tinp.dataset.clear = '1';
+        toast('Токен будет снят после «Сохранить раздел»', true);
+      };
+      wrap.appendChild(tclr);
+      return wrap;
+    }
+
     var raw = fileValue(fld.key);
     var present = raw !== undefined;
     var val = present ? raw : '';
@@ -378,29 +402,45 @@
       inp.type = fld.type === 'password' ? 'password' : (fld.type === 'number' ? 'number' : 'text');
       inp.dataset.key = fld.key;
       if (val) inp.value = val;
-      else inp.placeholder = present ? '(пусто)' : '(' + missingLabel() + ')';
-      if (!present) inp.disabled = true;
+      else inp.placeholder = present ? '(пусто)' : (fld.creatable ? 'будет создано при сохранении' : '(' + missingLabel() + ')');
+      if (!present && !fld.creatable) inp.disabled = true; /* creatable — можно задать и создать */
       if (fld.kind || fld.noZero) attachValidation(inp, fld);
       wrap.appendChild(inp);
-      if (!present) wrap.appendChild(missingTag());
+      if (!present && !fld.creatable) wrap.appendChild(missingTag());
     }
 
     return wrap;
   }
 
   function saveTab(tab, bodyEl) {
-    var params = new URLSearchParams();
+    var pairs = [];
     var invalidField = null, n = 0;
+    var newToken = null, clearToken = false;
+
+    function push(key, val) { pairs.push([key, val]); n++; }
 
     tab.groups.forEach(function (g) {
+      /* Профиль: сохраняем группу, только если задано имя ИЛИ профиль уже есть
+       * в файле (иначе пустые блоки profileN_* не создаём). */
+      if (g.fields.length && /^profile[1-4]_name$/.test(g.fields[0].key)) {
+        var nl = bodyEl.querySelector('[data-key="' + g.fields[0].key + '"]');
+        var nv = nl ? nl.value.trim() : '';
+        var anyPresent = g.fields.some(function (fld) { return fileValue(fld.key) !== undefined; });
+        if (!nv && !anyPresent) return;
+      }
+
       g.fields.forEach(function (fld) {
-        if (fld.type === 'readonly') return;
         var el = bodyEl.querySelector('[data-key="' + fld.key + '"]');
-        if (!el || el.disabled) return; /* нет в файле — нечего сохранять */
+        if (!el) return;
+        if (fld.type === 'token') {
+          if (el.value) { push(fld.key, el.value); newToken = el.value; }
+          else if (el.dataset.clear === '1') { push(fld.key, ''); clearToken = true; }
+          return;
+        }
+        if (fld.type === 'readonly') return;
+        if (el.disabled) return; /* нет в файле и не creatable — нечего сохранять */
         if (el.classList && el.classList.contains('invalid')) { invalidField = fld; return; }
-        var v = el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value;
-        params.append(fld.key, v);
-        n++;
+        push(fld.key, el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value);
       });
     });
 
@@ -413,12 +453,21 @@
       return;
     }
 
+    var body = new URLSearchParams();
+    pairs.forEach(function (p) { body.append(p[0], p[1]); });
+
     fetch(API_URL, {
       method: 'POST',
       headers: authHeaders({ 'Content-Type': 'application/x-www-form-urlencoded' }),
-      body: params.toString()
+      body: body.toString()
     }).then(function (r) { return r.json(); }).then(function (r) {
       if (r && r.ok) {
+        /* web_token — write-only: после смены запоминаем/снимаем локально,
+         * иначе следующий же запрос уйдёт со старым токеном. */
+        try {
+          if (newToken) localStorage.setItem('susanin_token', newToken);
+          else if (clearToken) localStorage.removeItem('susanin_token');
+        } catch (e) {}
         toast('Сохранено, конфиг перечитан агентом (SIGHUP)', true);
         return loadConfig();
       }

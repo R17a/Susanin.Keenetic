@@ -447,7 +447,40 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     ensure_key "$PREFIX/etc/susanin.conf" quic_block 1
     ensure_key "$PREFIX/etc/susanin.conf" health_mode icmp
     ensure_key "$PREFIX/etc/susanin.conf" health_tcp_port 443
+    # Остальные ключи, которые есть в веб-панели — чтобы поля не показывались
+    # как «нет в файле». Существующие значения НЕ меняются (ensure_key только
+    # дописывает отсутствующую строку).
+    ensure_key "$PREFIX/etc/susanin.conf" egress_interface nwg0
+    ensure_key "$PREFIX/etc/susanin.conf" egress_address 10.8.1.1
+    ensure_key "$PREFIX/etc/susanin.conf" lan_interfaces br0
+    ensure_key "$PREFIX/etc/susanin.conf" lan_subnets ""
+    ensure_key "$PREFIX/etc/susanin.conf" routing_table 100
+    ensure_key "$PREFIX/etc/susanin.conf" mark_test 0x10000000
+    ensure_key "$PREFIX/etc/susanin.conf" mark_ok 0x20000000
+    ensure_key "$PREFIX/etc/susanin.conf" mark_mask 0x30000000
+    ensure_key "$PREFIX/etc/susanin.conf" ip_rule_priority_start 2000
+    ensure_key "$PREFIX/etc/susanin.conf" fast_interval 1
+    ensure_key "$PREFIX/etc/susanin.conf" soft_interval 1
+    ensure_key "$PREFIX/etc/susanin.conf" judge_interval 1
+    ensure_key "$PREFIX/etc/susanin.conf" health_interval 5
+    ensure_key "$PREFIX/etc/susanin.conf" ok_ttl 21600
+    ensure_key "$PREFIX/etc/susanin.conf" ok_refresh_below 3
+    ensure_key "$PREFIX/etc/susanin.conf" test_ttl 1
+    ensure_key "$PREFIX/etc/susanin.conf" cooldown_ttl 5
+    ensure_key "$PREFIX/etc/susanin.conf" cooldown_ok_ttl 30
+    ensure_key "$PREFIX/etc/susanin.conf" watch_ttl 8
+    ensure_key "$PREFIX/etc/susanin.conf" watch_retry_below 4
+    ensure_key "$PREFIX/etc/susanin.conf" health_probe "1.1.1.1,8.8.8.8"
+    ensure_key "$PREFIX/etc/susanin.conf" udp_relay 0
+    ensure_key "$PREFIX/etc/susanin.conf" udp_relay_port 1081
+    ensure_key "$PREFIX/etc/susanin.conf" socks_addr 127.0.0.1
+    ensure_key "$PREFIX/etc/susanin.conf" socks_port 1080
+    ensure_key "$PREFIX/etc/susanin.conf" log_level info
+    ensure_key "$PREFIX/etc/susanin.conf" xray_loglevel warning
 fi
+
+# Каталог для файлов-списков профилей маршрутизации.
+mkdir -p "$PREFIX/etc/profiles" 2>/dev/null || true
 
 _s94=$(find_file S94susanin) || _s94=""
 if [ -n "$_s94" ]; then

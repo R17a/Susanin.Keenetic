@@ -566,12 +566,15 @@ static int cfg_val_charset_ok(const char *v)
     return 1;
 }
 
-int config_file_set(const char *path, const char *key, const char *val)
+/* allow_create=0 — правим только существующий ключ (общее правило: новых ключей
+ * через web не создаём). allow_create=1 — разрешено ДОПИСАТЬ ключ, если его нет
+ * (только для ключей из белого списка, напр. profileN_*). */
+int config_file_set(const char *path, const char *key, const char *val, int allow_create)
 {
     FILE *in, *out;
     char line[1024], tmp[CFG_PATH_MAX + 8];
     size_t kl;
-    int found = 0;
+    int found = 0, last_nl = 1;
 
     if (!path || !key || !val)
         return -1;
@@ -592,16 +595,23 @@ int config_file_set(const char *path, const char *key, const char *val)
         if (!strncmp(line, key, kl) && line[kl] == '=') {
             fprintf(out, "%s=%s\n", key, val);
             found = 1;
+            last_nl = 1;
         } else {
             fputs(line, out);
+            last_nl = line[0] ? (line[strlen(line) - 1] == '\n') : last_nl;
         }
     }
     fclose(in);
+    if (!found && allow_create) {
+        if (!last_nl)
+            fputc('\n', out);
+        fprintf(out, "%s=%s\n", key, val);
+        found = 1;
+    }
     if (fclose(out) != 0) {
         remove(tmp);
         return -1;
     }
-    /* Обновляем только существующий ключ: новых ключей через web не создаём. */
     if (!found) {
         remove(tmp);
         return -1;

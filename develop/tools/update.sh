@@ -137,6 +137,13 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
               discover_exclude=wdtt0,wdttraw0,tun0,tap0 \
               fast_syn_min_op=2 ok_max_entries=4096 ok_evict_misses=3 promo_per_min=30 \
               soft_state_interval=12 \
+              egress_interface=nwg0 egress_address=10.8.1.1 lan_interfaces=br0 lan_subnets= \
+              routing_table=100 mark_test=0x10000000 mark_ok=0x20000000 mark_mask=0x30000000 \
+              ip_rule_priority_start=2000 fast_interval=1 soft_interval=1 judge_interval=1 \
+              health_interval=5 ok_ttl=21600 ok_refresh_below=3 test_ttl=1 cooldown_ttl=5 \
+              cooldown_ok_ttl=30 watch_ttl=8 watch_retry_below=4 health_probe=1.1.1.1,8.8.8.8 \
+              udp_relay=0 udp_relay_port=1081 socks_addr=127.0.0.1 socks_port=1080 \
+              log_level=info xray_loglevel=warning \
               learn_exclude_ports=22,23,53,135,137,138,139,445,554,1433,1723,3306,3389,5432,5900,6379,7547,9100,11211,27017 \
               vpn_always_file=/opt/susanin/etc/vpn_always.txt vpn_always_dns= \
               vpn_always_interval=300 \

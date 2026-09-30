@@ -529,15 +529,98 @@ static int pair_get(const char *p, size_t seg, char *k, size_t ksz, char *v, siz
 
 /* Что можно править через /api/config. Секрет web_token менять нельзя;
  * web_listen не должен стать 0.0.0.0 (иначе веб не поднимется). */
+static int all_digits(const char *s)
+{
+    if (!s || !*s)
+        return 0;
+    for (; *s; s++)
+        if (*s < '0' || *s > '9')
+            return 0;
+    return 1;
+}
+
+/* profileN_<field>, N=1..4. Пустое значение = «не задан» (разрешено). */
+static int profile_field_ok(const char *k, const char *v)
+{
+    const char *fld;
+    if (strncmp(k, "profile", 7) != 0 || k[7] < '1' || k[7] > '4' || k[8] != '_')
+        return 0;
+    fld = k + 9;
+    if (!strcmp(fld, "name")) {
+        for (; *v; v++)
+            if (!((*v >= 'a' && *v <= 'z') || (*v >= '0' && *v <= '9') || *v == '_'))
+                return 0;
+        return 1;
+    }
+    if (!strcmp(fld, "egress")) {
+        for (; *v; v++)
+            if (!((*v >= 'a' && *v <= 'z') || (*v >= '0' && *v <= '9') ||
+                  *v == '_' || *v == '.' || *v == '-'))
+                return 0;
+        return 1;
+    }
+    if (!strcmp(fld, "list")) {
+        if (!*v)
+            return 1;               /* пусто = не задан */
+        if (v[0] != '/')
+            return 0;               /* только абсолютный путь */
+        if (strstr(v, ".."))
+            return 0;               /* без '..' */
+        for (; *v; v++) {
+            char c = *v;
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '/' || c == '.' || c == '_' || c == '-'))
+                return 0;
+        }
+        return 1;
+    }
+    if (!strcmp(fld, "table"))
+        return (!*v) || (all_digits(v) && atoi(v) > 0 && atoi(v) < 256);
+    if (!strcmp(fld, "mark")) {
+        if (!*v)
+            return 1;
+        if (v[0] != '0' || (v[1] != 'x' && v[1] != 'X'))
+            return 0;
+        v += 2;
+        if (!*v || strlen(v) > 8)
+            return 0;
+        for (; *v; v++)
+            if (!((*v >= '0' && *v <= '9') || (*v >= 'a' && *v <= 'f') || (*v >= 'A' && *v <= 'F')))
+                return 0;
+        return 1;
+    }
+    return 0;
+}
+
+/* Ключи, которые web РАЗРЕШЕНО создавать в susanin.conf, если их там нет:
+ * только профили (profileN_*). Прочие ключи должны быть в файле. */
+static int key_creatable(const char *k)
+{
+    return (strncmp(k, "profile", 7) == 0 && k[7] >= '1' && k[7] <= '4' && k[8] == '_');
+}
+
 static int config_value_ok(const char *k, const char *v)
 {
-    if (!strcmp(k, "web_token"))
-        return 0;
+    if (!strcmp(k, "web_token")) {
+        /* Токен теперь правится через панель. Значение — write-only: GET его не
+         * отдаёт. Пусто = доступ без пароля (только LAN). */
+        if (strlen(v) > 63)
+            return 0;
+        for (; *v; v++) {
+            unsigned char c = (unsigned char)*v;
+            if (c < 0x20 || c == 0x7f)
+                return 0;
+        }
+        return 1;
+    }
     if (!strcmp(k, "web_listen")) {
         struct in_addr a;
         if (!v[0] || !strcmp(v, "0.0.0.0") || inet_pton(AF_INET, v, &a) != 1)
             return 0;
+        return 1;
     }
+    if (strncmp(k, "profile", 7) == 0)
+        return profile_field_ok(k, v);
     return 1;
 }
 
@@ -698,7 +781,7 @@ static void handle_action(int fd, const susanin_config *cfg, const char *target,
             char k[64], v[512];
             if (seg && pair_get(p, seg, k, sizeof(k), v, sizeof(v)) && k[0]) {
                 if (config_value_ok(k, v) &&
-                    config_file_set(ops_default_conf_path(), k, v) == 0)
+                    config_file_set(ops_default_conf_path(), k, v, key_creatable(k)) == 0)
                     applied++;
                 else if (!bad[0])
                     snprintf(bad, sizeof(bad), "%s", k);
@@ -750,8 +833,10 @@ static void handle_action(int fd, const susanin_config *cfg, const char *target,
     reply_text(fd, 404, "no such api", 0);
 }
 
-static void handle_conn(int fd, const susanin_config *cfg)
+static void handle_conn(int fd, const susanin_config *cfg_in)
 {
+    susanin_config lcfg;
+    const susanin_config *cfg = cfg_in;
     char req[REQ_MAX];
     char method[8] = { 0 };
     char target[1024] = { 0 };
@@ -759,6 +844,11 @@ static void handle_conn(int fd, const susanin_config *cfg)
     char *query = NULL;
     size_t len = 0;
     int head_only = 0;
+
+    /* Конфиг перечитываем на каждый запрос: правки web_token и параметров
+     * (в т.ч. через саму панель) применяются сразу, без перезапуска web. */
+    if (config_load(ops_default_conf_path(), &lcfg) == 0)
+        cfg = &lcfg;
 
     while (len < sizeof(req) - 1) {
         ssize_t r = recv(fd, req + len, sizeof(req) - 1 - len, 0);

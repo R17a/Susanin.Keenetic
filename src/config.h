@@ -118,6 +118,6 @@ void config_print(const susanin_config *c);
 /* Точечно обновить ОДИН существующий ключ в файле конфига (не создаёт новых
  * ключей): комментарии и остальные строки сохраняются, запись атомарная
  * (tmp+rename). Возврат 0 — ок; -1 — нет ключа/плохое значение/ошибка. */
-int config_file_set(const char *path, const char *key, const char *val);
+int config_file_set(const char *path, const char *key, const char *val, int allow_create);
 
 #endif
