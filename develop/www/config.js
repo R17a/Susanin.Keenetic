@@ -186,10 +186,19 @@
     },
     {
       id: 'profiles', label: 'Профили',
-      groups: [],
-      placeholder: 'Экспериментальная функция (P1): до 4 профилей — свой список доменов/IP на отдельный ' +
-        'туннель, со своей меткой и таблицей маршрутизации (profile1_name…profile4_mark в конфиге). ' +
-        'Форма редактирования профилей появится отдельным шагом.'
+      groups: [1, 2, 3, 4].map(function (n) {
+        var p = 'profile' + n + '_';
+        return { title: 'Профиль ' + n, fields: [
+          f(p + 'name', 'Имя', 'a-z, 0-9, _ ; пусто = профиль выключен', 'text', { kind: 'ident' }),
+          f(p + 'egress', 'Egress (туннель)', 'интерфейс, например nwg1', 'text'),
+          f(p + 'list', 'Файл списка', 'путь, например /opt/susanin/etc/profiles/имя.txt (по строке: домен / IP / CIDR)', 'text'),
+          f(p + 'table', 'Таблица маршрутизации', 'пусто = по умолчанию (201…204)', 'number', { kind: 'int' }),
+          f(p + 'mark', 'fwmark', 'hex; пусто = по умолчанию', 'text', { kind: 'hex' })
+        ]};
+      }),
+      note: 'Экспериментальная функция (P1): до 4 статических профилей — свой список доменов/IP на отдельный ' +
+        'туннель, со своей меткой и таблицей. Профиль включается только при заданном имени. ' +
+        'Применяется после Reload/Restart (sh /opt/susanin/tools/profiles.sh up).'
     }
   ];
 
@@ -202,7 +211,8 @@
     hex: /[0-9a-fA-Fx]/,
     duration: /[0-9]/,
     cidrlist: /[0-9./, ]/,
-    intlist: /[0-9, ]/
+    intlist: /[0-9, ]/,
+    ident: /[a-z0-9_]/
   };
 
   function filterValue(kind, value) {
@@ -239,6 +249,7 @@
         var m = s.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\/(\d{1,2})$/);
         return !!m && isValidIPv4(m[1]) && +m[2] <= 32;
       });
+      case 'ident': return /^[a-z0-9_]+$/.test(value);
       case 'intlist': return value.split(',').every(function (s) { s = s.trim(); return /^[0-9]+$/.test(s); });
       default: return true;
     }
