@@ -525,6 +525,10 @@ if [ "$NO_START" -ne 1 ]; then
     else
         sh "$PREFIX/tools/susanin.sh" start || true
     fi
+    # web — ОТДЕЛЬНЫЙ процесс: `restart` демона его не трогает (чтобы /api/restart
+    # не ронял панель). После подмены бинаря его нужно перезапустить принудительно,
+    # иначе панель продолжит работать СТАРЫМ кодом из памяти.
+    sh "$PREFIX/tools/susanin.sh" web restart || true
 fi
 say "installed to $PREFIX (run: sh $PREFIX/tools/susanin.sh status)"
 
