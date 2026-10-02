@@ -14,7 +14,7 @@
 opkg update && opkg install ca-certificates ipset iptables conntrack
 
 # 2. Установка (одной строкой)
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/v0.3.10/install.sh | sh
 
 # 3. Проверка
 sh /opt/susanin/tools/susanin.sh status

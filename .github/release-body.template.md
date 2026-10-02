@@ -3,7 +3,7 @@ Susanin.Keenetic {{TAG}}
 ### Установка (первый раз)
 ```sh
 opkg update && opkg install ca-certificates ipset iptables conntrack
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/{{TAG}}/install.sh | sh
 ```
 Установщик скачивает готовый архив под вашу архитектуру, определяет LAN/VPN и
 (при наличии) OpenConnect, запрашивает подтверждение и запускает демон.
