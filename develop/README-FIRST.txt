@@ -17,10 +17,10 @@ ca-certificates ipset iptables conntrack:
   opkg update && opkg install ca-certificates ipset iptables conntrack
 
 Установка:
-  1) Создать папку на роутере и скачать туда архив из папки develop:
+  1) Создать папку на роутере и скачать туда архив из ветки develop (папка develop/):
        mkdir -p /opt/tmp/sus-dist && cd /opt/tmp/sus-dist
        wget -O susanin-dev.tar.gz \
-         https://github.com/R17a/Susanin.Keenetic/raw/main/develop/susanin-keenetic-0.4.0-dev.tar.gz
+         https://github.com/R17a/Susanin.Keenetic/raw/develop/develop/susanin-keenetic-0.4.0-dev.tar.gz
 
   2) Распаковать и запустить установщик:
        tar -xzf susanin-dev.tar.gz
