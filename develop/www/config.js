@@ -61,6 +61,12 @@
           f('udp_relay_port', 'Порт приёма (TPROXY)', '', 'number', { kind: 'int' }),
           f('socks_addr', 'Адрес Xray SOCKS', '', 'text', { kind: 'ip' }),
           f('socks_port', 'Порт Xray SOCKS', '', 'number', { kind: 'int' })
+        ]},
+        { title: 'Отказоустойчивость (Master/Slave)', fields: [
+          f('egress_failback', 'Возврат на приоритетный VPN', 'первый в egress_interface — основной; после его восстановления трафик возвращается на него', 'bool'),
+          f('egress_failback_debounce', 'Пауза до возврата', 'сек; сколько основной должен держаться, прежде чем вернуться', 'text', { kind: 'duration' }),
+          f('egress_race', 'Автовыбор быстрейшего VPN', 'замерять отклик и держать трафик на самом быстром', 'bool'),
+          f('egress_race_list', 'Кандидаты race', 'интерфейсы через запятую; пусто = egress_interface', 'text')
         ]}
       ]
     },
@@ -84,6 +90,15 @@
           f('mark_ok', 'mark_ok', 'fwmark, hex', 'text', { kind: 'hex' }),
           f('mark_mask', 'mark_mask', 'fwmark, hex', 'text', { kind: 'hex' }),
           f('ip_rule_priority_start', 'Приоритет ip rule (старт)', '', 'number', { kind: 'int' })
+        ]},
+        { title: 'Kernel-offload (быстрый путь для CDN)', fields: [
+          f('kernel_offload', 'Offload включён', 'адреса из ok_net идут маршрутом через интерфейс, минуя userspace-обработку', 'bool'),
+          f('kernel_egress', 'Интерфейс offload', 'например nwg0; пусто = выключено', 'text'),
+          f('kernel_offload_max', 'Макс. длина префикса', 'бит; шире — не агрегировать', 'number', { kind: 'int' })
+        ]},
+        { title: 'MSS/PMTU (если сайты через VPN зависают)', fields: [
+          f('mss_clamp', 'Ограничить размер пакета', '0 = выкл; число байт (напр. 1380) или pmtu', 'text'),
+          f('mss_clamp_lan', 'Применять ко всему LAN', 'выкл — только к помеченному VPN-трафику', 'bool')
         ]}
       ]
     },
@@ -129,7 +144,8 @@
         { fields: [
           f('vpn_always_interval', 'Период обновления «всегда через VPN»', 'сек', 'text', { kind: 'duration' }),
           f('vpn_always_dns', 'Резолвер для списка', 'пусто = авто (роутер/LAN-мост)', 'text', { kind: 'ip' }),
-          f('vpn_never_interval', 'Период обновления «всегда напрямую»', 'сек', 'text', { kind: 'duration' })
+          f('vpn_never_interval', 'Период обновления «всегда напрямую»', 'сек', 'text', { kind: 'duration' }),
+          f('pin_reassert', 'Самолечение пинов списков', 'периодически передобавлять адреса «всегда через VPN» (восстанавливать потерянные)', 'bool')
         ]}
       ],
       note: 'Сами домены/IP редактируются в разделе «Списки маршрутизации» ниже (перетаскиванием). Здесь — только настройки периода/резолвера для этих списков.'
@@ -168,6 +184,22 @@
       ]
     },
     {
+      id: 'xray', label: 'Xray и DNS',
+      groups: [
+        { title: 'Xray (память и watchdog)', fields: [
+          f('xray_watchdog', 'Самоподъём упавшего Xray', 'агент сам перезапускает Xray при падении (режим tproxy)', 'bool'),
+          f('xray_gogc', 'GOGC (чаще уборка мусора)', 'меньше = агрессивнее; пусто = по умолчанию Go', 'text'),
+          f('xray_gomemlimit', 'Лимит памяти', 'мягкий лимит, напр. 64MiB', 'text')
+        ]},
+        { title: 'DNS-снифинг (домен → IP)', fields: [
+          f('dns_sniff', 'Снифинг включён', 'зеркально смотреть DNS-ответы; штатный DNS не трогается', 'bool'),
+          f('dns_sniff_ttl', 'TTL записи', 'сек', 'text', { kind: 'duration' }),
+          f('dns_sniff_iface', 'Интерфейс захвата', 'пусто = первый lan_interface', 'text')
+        ]}
+      ],
+      note: 'DNS-снифинг помогает точнее заворачивать домены из списков вместе с поддоменами (по умолчанию выключен).'
+    },
+    {
       id: 'web', label: 'Диагностика и Web',
       groups: [
         { title: 'Диагностика', fields: [
@@ -186,19 +218,25 @@
     },
     {
       id: 'profiles', label: 'Профили',
-      groups: [1, 2, 3, 4].map(function (n) {
+      groups: [
+        { title: 'Общие', fields: [
+          f('profile_failover', 'Держать профиль на рабочем VPN', 'следить, чтобы таблица профиля указывала на первый живой egress из списка', 'bool')
+        ]}
+      ].concat([1, 2, 3, 4].map(function (n) {
         var p = 'profile' + n + '_';
         return { title: 'Профиль ' + n, fields: [
           f(p + 'name', 'Имя', 'a-z, 0-9, _ ; пусто = профиль выключен', 'text', { kind: 'ident', creatable: true }),
-          f(p + 'egress', 'Egress (туннель)', 'интерфейс, например nwg1', 'text', { creatable: true }),
+          f(p + 'egress', 'Egress (туннель)', 'интерфейс или список через запятую (первый живой)', 'text', { creatable: true }),
           f(p + 'list', 'Файл списка', 'путь, например /opt/susanin/etc/profiles/имя.txt (по строке: домен / IP / CIDR)', 'text', { creatable: true }),
+          f(p + 'geo_url', 'Ссылка на список (гео)', 'скачиваемый CIDR-список; кэш в var/profiles/', 'text', { creatable: true }),
+          f(p + 'auto', 'Автообучение профиля', 'пополнять профиль новыми адресами из его диапазона', 'bool', { creatable: true }),
           f(p + 'table', 'Таблица маршрутизации', 'пусто = по умолчанию (201…204)', 'number', { kind: 'int', creatable: true }),
           f(p + 'mark', 'fwmark', 'hex; пусто = по умолчанию', 'text', { kind: 'hex', creatable: true })
         ]};
-      }),
-      note: 'Экспериментальная функция (P1): до 4 статических профилей — свой список доменов/IP на отдельный ' +
-        'туннель, со своей меткой и таблицей. Профиль включается только при заданном имени. ' +
-        'Применяется после Reload/Restart (sh /opt/susanin/tools/profiles.sh up).'
+      })),
+      note: 'Профили: свой список доменов/IP на отдельный туннель, со своей меткой и таблицей. ' +
+        'Профиль включается при заданном имени; можно задавать и файлом /opt/susanin/etc/profiles.d/<имя>.conf. ' +
+        'Применяется после Reload/Restart (sh /opt/susanin/tools/profiles.sh up), списки — profiles.sh refresh.'
     }
   ];
 

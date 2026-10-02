@@ -22,18 +22,18 @@
 - **`xray-egress.sh start` и `restart`.** `start` — синоним `enable`; `restart`
   перезапускает **только Xray и агента**, не меняя режим (`egress_type`) и не
   трогая `vpn_always`. Закрыт вопрос «есть STOP, почему нет START».
-- **DNS-снифинг (`dns_sniff`, P3/N1).** Зеркальный захват DNS-ответов LAN через
+- **DNS-снифинг (`dns_sniff`).** Зеркальный захват DNS-ответов LAN через
   AF_PACKET (штатный DNS не перехватываем): таблица `домен -> IP`, и адрес из
   ответа сразу пинится, если домен попадает в `vpn_always`/`vpn_never` — так
   поддомены покрываются до их собственного резолва. По умолчанию выключен
   (`dns_sniff=0`); настройки `dns_sniff_ttl`, `dns_sniff_iface`.
-- **N2: kernel-offload.** При `kernel_offload=1` и заданном `kernel_egress`
+- **Kernel-offload.** При `kernel_offload=1` и заданном `kernel_egress`
   адреса из `susanin_ok_net` уводятся маршрутом через настоящий интерфейс, минуя
   userspace tproxy (быстрее на слабом CPU). Отдельная метка/таблица; состояние
   видно в `status`/`diagnose`.
-- **N3: race-пробинг egress (`egress_race=1`).** Агент замеряет всех живых
+- **Race-пробинг egress (`egress_race=1`).** Агент замеряет всех живых
   кандидатов и выбирает быстрейшего; в логе — `race: <A> -> <B> (fastest Nms)`.
-- **Профили маршрутизации (P2), полноценный слой.** Профиль задаётся ключами
+- **Профили маршрутизации, полноценный слой.** Профиль задаётся ключами
   `profileN_*` в `susanin.conf` **или** отдельным файлом
   `/opt/susanin/etc/profiles.d/<name>.conf` (поля `name`, `egress`, `list`,
   `geo_url`, `table`, `mark`, `auto`); читают и агент, и `profiles.sh`.
@@ -41,7 +41,7 @@
   живом egress из списка `profileN_egress`. `profileN_auto=1` — автообучение на
   профиль: подтверждённый адрес, попадающий в CIDR/IP профиля, пинится в набор
   `susanin_prof_<name>`. Профили видны в `status`/`diagnose`.
-- **Профили (P3-гео и shell).** `profileN_geo_url` — скачиваемый CIDR-список
+- **Профили: гео-списки и shell.** `profileN_geo_url` — скачиваемый CIDR-список
   профиля с кэшем в `var/profiles/`; `profileN_egress` принимает список (берётся
   первый живой); `profiles.sh refresh` перечитывает списки/geo_url без
   пересборки правил.
@@ -52,6 +52,12 @@
 - **Статус и диагностика.** `susanin-agent status` показывает пул egress
   (failback/race), профили и признаки (`dns_sniff`, `offload`, `pin_reassert`,
   `xray_watchdog`); `diagnose.sh` дополнен профилями и памятью.
+- **Новые настройки в веб-панели.** Все ключи dev5 добавлены в разделы панели:
+  «VPN / Egress» (failback/race), «Маршрутизация» (kernel-offload, MSS/PMTU),
+  «Списки VPN» (`pin_reassert`), новая вкладка «Xray и DNS»
+  (`xray_watchdog`, `xray_gogc`, `xray_gomemlimit`, `dns_sniff`), «Профили»
+  (гео-ссылка, автообучение, `profile_failover`). Раньше они были только в
+  `susanin.conf`.
 - Затронуто: новые `src/dns_sniff.[ch]`, `src/profiles.[ch]`; `src/engine.c`,
   `src/health.[ch]`, `src/classifier.c`, `src/config.[ch]`, `src/backend.c`,
   `src/ops.c`, `Makefile`; `tools/{datapath,diagnose,profiles,update,xray-egress}.sh`,
@@ -121,12 +127,12 @@
   `soft_state_interval`, `learn_exclude_ports`, `vpn_always_*`, `vpn_never_*`).
 - **Документация:** добавлен `USER_GUIDE.md`; в `XRAY.md` — пояснения по полям
   `xray-tproxy.json.example` (REALITY, camo-домен, `publicKey`/`shortId`).
-- **P1: пины `vpn_always` больше не теряются.** На восстановлении туннеля
+- **Пины `vpn_always` больше не теряются.** На восстановлении туннеля
   `resync_sets()` чистит ipset'ы — теперь списки помечаются «грязными» и пины
   возвращаются; желаемые адреса/сети передобавляются каждый проход (`ipset
   -exist`), так что внешняя потеря пина само-исправляется (иначе сайты из списка
   уходили напрямую, напр. Claude).
-- **P2: авто-детект блокировки по SNI.** Новый сигнал `FAST/DPI-RST` —
+- **Авто-детект блокировки по SNI.** Новый сигнал `FAST/DPI-RST` —
   «TCP-рукопожатие прошло, ClientHello отправлен, ответа нет, соединение
   сброшено» → адрес уводится в VPN (раньше такие блокировки не ловились).
 - **`deepseek.com` → `vpn_never`** (всегда напрямую): через VPN API DeepSeek
@@ -151,7 +157,7 @@ GitHub Releases; передаётся тестерам архивом.
 - **Веб-панель (встроенная).** Мини-HTTP в демоне: `/api/status`, `/api/log`,
   статика `www/`; действия reload/rescan/restart/reset, правка `vpn_always` /
   `vpn_never` из браузера. Служба `S95susanin-web`, по умолчанию выключена.
-- **Профили маршрутизации (P1, экспериментально).** До 4 статических профилей
+- **Профили маршрутизации (экспериментально).** До 4 статических профилей
   «список (домены/IP/CIDR) → свой туннель» (`profileN_*`, `tools/profiles.sh`).
 - **Совместимость с qWDTT_Server_Keenetic.** `discover_exclude` не даёт затащить
   серверные туннели `wdtt0`/`wdttraw0` в `lan_interfaces`/`egress_interface`;
