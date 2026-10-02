@@ -12,7 +12,7 @@ f8b453ee49fd1e5cf9d501954086e7a10dd2482b5b2b303ffae072648a9b728d  ./bin/susanin-
 fc04c05f8b3917100e7a7c1a7622a04a84b9535dab7176feec660899372ff800  ./docs/XRAY.md
 bdfd13cc7d80909b9414c1ebb3bc84698f7892a7332bf11f69234131e6ca9ce1  ./etc/cdn_ranges.txt
 c2c13d24fec69ba1f3f0f4d063a8007361dd6fa6aff99c88c3c52b610ab33939  ./etc/config.example.conf
-fc124014637b327d7dc3cbc717adfa99085524a177dcaa87fdcab0a6a3b9ff83  ./etc/vpn_always.txt
+ee852adbc22636824ad603bcd0ea1463fafcf5875b15fb128168fd1ab32c1cfd  ./etc/vpn_always.txt
 001e1968c4fca7bb936b94aea7631657f34bc401c124f9871caaf2d2dbbe74ec  ./etc/vpn_never.txt
 347e00306413ec5f3629e31f5b06e96256783ef5a3efb6800b7112fa345d4e64  ./etc/xray-tproxy.json.example
 8a3bcdea3a31c3c9d8c78f7bc2e3b54caccbfea519b82cbb4dd6304526a3eed0  ./init/S93xray-tproxy
