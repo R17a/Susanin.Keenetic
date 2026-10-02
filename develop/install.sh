@@ -445,7 +445,7 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     ensure_key "$PREFIX/etc/susanin.conf" ok_evict_misses 3
     ensure_key "$PREFIX/etc/susanin.conf" promo_per_min 30
     ensure_key "$PREFIX/etc/susanin.conf" soft_state_interval 12
-    ensure_key "$PREFIX/etc/susanin.conf" learn_exclude_ports "22,23,53,135,137,138,139,445,554,1433,1723,3306,3389,5432,5900,6379,7547,9100,11211,27017"
+    ensure_key "$PREFIX/etc/susanin.conf" learn_exclude_ports "22,23,53,135,137,138,139,445,500,554,1433,1723,3306,3389,4500,5432,5900,6379,7547,8567,9100,11211,27017"
     ensure_key "$PREFIX/etc/susanin.conf" vpn_always_file /opt/susanin/etc/vpn_always.txt
     ensure_key "$PREFIX/etc/susanin.conf" vpn_always_dns ""
     ensure_key "$PREFIX/etc/susanin.conf" vpn_always_interval 300

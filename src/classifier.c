@@ -16,15 +16,25 @@ static int is_udp(const ct_flow *f) { return f->l4proto == 17; }
 
 /* Порты из learn_exclude_ports не участвуют в автообучении (типовой скан-шум
  * на 22/23/445/554 и т.п.): такие потоки пропускаем целиком. */
-static int port_excluded(const susanin_config *cfg, unsigned dport)
+/* Служебные/прикладные порты, которые не учим и не заворачиваем никогда:
+ * 500/4500 — IPsec (IKE/NAT-T); 8567 — UDP-мессенджер Битрикс24 (мобильный).
+ * Иначе автообучение уводит IPsec/Битрикс в VPN, и они ломаются. */
+static int service_port(unsigned p)
+{
+    return p == 500 || p == 4500 || p == 8567;
+}
+
+static int port_excluded(const susanin_config *cfg, unsigned port)
 {
     char buf[256], *save = NULL, *tok;
+    if (service_port(port))
+        return 1;
     if (!cfg->learn_exclude_ports[0])
         return 0;
     snprintf(buf, sizeof(buf), "%s", cfg->learn_exclude_ports);
     for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
         while (*tok == ' ' || *tok == '\t') tok++;
-        if ((unsigned)strtoul(tok, NULL, 10) == dport)
+        if ((unsigned)strtoul(tok, NULL, 10) == port)
             return 1;
     }
     return 0;
@@ -308,7 +318,7 @@ void clr_fast(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         if (f->ctmark != 0 || ours(f, cfg)) continue;
         if (!from_lan(cfg, f->src)) continue;
         if (is_private_dst(f->dst, NULL)) continue;
-        if (port_excluded(cfg, f->dport)) continue;
+        if (port_excluded(cfg, f->dport) || port_excluded(cfg, f->sport)) continue;
         if (!candidate_ok(ctx, f, now)) continue;
 
         if (f->l4proto == 6) {

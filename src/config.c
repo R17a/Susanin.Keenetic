@@ -140,7 +140,7 @@ void config_set_defaults(susanin_config *c)
     c->soft_state_interval = 12 * 3600;   /* soft: сохранять состояние раз в 12 ч */
     /* Порты, которые не участвуют в автообучении (типовой скан-шум). */
     snprintf(c->learn_exclude_ports, sizeof(c->learn_exclude_ports), "%s",
-             "22,23,53,135,137,138,139,445,554,1433,1723,3306,3389,5432,5900,6379,7547,9100,11211,27017");
+             "22,23,53,135,137,138,139,445,500,554,1433,1723,3306,3389,4500,5432,5900,6379,7547,8567,9100,11211,27017");
     snprintf(c->discover_exclude, sizeof(c->discover_exclude), "%s",
              "wdtt0,wdttraw0,tun0,tap0");
     snprintf(c->lan_server_interfaces, sizeof(c->lan_server_interfaces), "%s", "");

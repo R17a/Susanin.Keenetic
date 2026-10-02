@@ -149,6 +149,15 @@ rule_mark() {
             mangle "$CHAIN" -i "$i" -m mark --mark "$KERNEL_MARK/$KERNEL_MARK" -j ACCEPT
         fi
         mangle "$CHAIN" -i "$i" -m set --match-set susanin_never dst -j RETURN
+        # Служебные/прикладные UDP, которые ВСЕГДА идут напрямую (не в VPN и не
+        # в udp-relay): 500/4500 — IPsec (IKE/NAT-T); 8567 — UDP-мессенджер
+        # Битрикс24 (мобильный клиент). Иначе IPsec за роутером и мобильный
+        # Битрикс уходят через Xray и ломаются. RETURN стоит ДО правил наборов,
+        # поэтому действует даже если адрес уже выучен в susanin_ok_udp.
+        for _p in 500 4500 8567; do
+            mangle "$CHAIN" -i "$i" -p udp --dport "$_p" -j RETURN
+            mangle "$CHAIN" -i "$i" -p udp --sport "$_p" -j RETURN
+        done
         for p in tcp udp; do
             mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
                 -m mark --mark "0x0/$MARK_MASK" \
