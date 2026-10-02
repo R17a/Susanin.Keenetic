@@ -240,20 +240,20 @@ opkg update && opkg install ca-certificates ipset iptables conntrack
 `curl` обычно нет — используйте `wget`:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/v0.3.10/install.sh | sh
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
 ```
 
 Либо поставьте curl и используйте его:
 ```sh
 opkg install curl
-curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/v0.3.10/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
 ```
 
-Ссылка указывает на тег релиза (`v0.3.10`), поэтому установщик и скачиваемый
-архив всегда из одной версии. Для другой версии замените тег, например
-`/vX.Y.Z/install.sh`.
+Установка идёт с ветки `main` — это стабильная версия; установщик сам скачает
+архив последнего стабильного релиза под вашу архитектуру.
 
-Архитектура определяется сама (по `uname -m`). Дополнительные флаги:
+Архитектура определяется автоматически по данным Entware
+(`/opt/etc/entware_release`, запасной вариант — `uname -m`). Дополнительные флаги:
 `--arch mipsel|mips|aarch64|armv7|x86_64` (задать вручную),
 `--version latest|vX.Y.Z`, `--egress <if>`, `--lan <if,if>`,
 `--subnets <cidr,cidr>`, `--yes` (без подтверждений), `--force`

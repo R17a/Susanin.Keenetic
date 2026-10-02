@@ -26,15 +26,35 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$ARCH" ]; then
-    _m=$(uname -m 2>/dev/null || echo unknown)
-    case "$_m" in
-        mips|mipsel) ARCH=mipsel ;;
-        mips64) ARCH=mips64el ;;
-        aarch64|arm64) ARCH=aarch64 ;;
-        armv7l|armv7|armhf) ARCH=armv7 ;;
-        x86_64|amd64) ARCH=x86_64 ;;
-        *) die "cannot detect arch; pass --arch" ;;
+    # Архитектуру берём из Entware (авторитетен для userland/ABI): ядро (uname -m)
+    # ненадёжно — не различает endianness MIPS и путается при 64-битном ядре с
+    # 32-битным userland. uname -m оставлен только запасным вариантом.
+    _a=""
+    if [ -r /opt/etc/entware_release ]; then
+        _a=$(awk -F= '$1=="arch"{gsub(/["[:space:]]/,"",$2); print $2; exit}' /opt/etc/entware_release 2>/dev/null)
+    fi
+    if [ -z "$_a" ] && command -v opkg >/dev/null 2>&1; then
+        _a=$(opkg print-architecture 2>/dev/null | awk '$1=="arch" && $2!="all"{print $2; exit}')
+    fi
+    _a=$(printf '%s' "$_a" | sed 's/-k[0-9.][0-9.]*$//')
+    case "$_a" in
+        mipsel*|mipselsf*) ARCH=mipsel ;;
+        mips64el*|mips64*) ARCH=mips64el ;;
+        mips*|mipssf*)     ARCH=mips ;;
+        aarch64*|arm64*)   ARCH=aarch64 ;;
+        armv7*|armv7l*|armhf*) ARCH=armv7 ;;
+        x86_64*|amd64*|x86-64*)    ARCH=x86_64 ;;
     esac
+    if [ -z "$ARCH" ]; then
+        _m=$(uname -m 2>/dev/null || echo unknown)
+        case "$_m" in
+            mips|mipsel) ARCH=mipsel ;;
+            aarch64|arm64) ARCH=aarch64 ;;
+            armv7l|armv7|armhf) ARCH=armv7 ;;
+            x86_64|amd64) ARCH=x86_64 ;;
+            *) die "cannot detect arch; pass --arch" ;;
+        esac
+    fi
 fi
 
 if command -v curl >/dev/null 2>&1; then
