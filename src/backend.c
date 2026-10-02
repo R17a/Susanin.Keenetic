@@ -182,6 +182,10 @@ static void set_env(const susanin_config *c)
            (snprintf(v, sizeof(v), "%d", c->udp_relay ? c->udp_relay_port : 0), v), 1);
     setenv("SUSANIN_IPV6_BLOCK", c->ipv6_block ? "1" : "0", 1);
     setenv("SUSANIN_QUIC_BLOCK", c->quic_block ? "1" : "0", 1);
+    setenv("SUSANIN_KERNEL_OFFLOAD", c->kernel_offload ? "1" : "0", 1);
+    setenv("SUSANIN_KERNEL_EGRESS", c->kernel_egress, 1);
+    setenv("SUSANIN_MSS_CLAMP", c->mss_clamp[0] ? c->mss_clamp : "0", 1);
+    setenv("SUSANIN_MSS_CLAMP_LAN", c->mss_clamp_lan ? "1" : "0", 1);
 }
 
 static int run_script(const susanin_config *c, const char *a1, const char *a2)

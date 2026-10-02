@@ -46,6 +46,16 @@ UDP_RELAY_PORT=${SUSANIN_UDP_RELAY_PORT:-0}
 IPV6_BLOCK=${SUSANIN_IPV6_BLOCK:-0}
 # QUIC (UDP 443) из LAN: 1 = запретить, чтобы приложения шли по TCP.
 QUIC_BLOCK=${SUSANIN_QUIC_BLOCK:-0}
+# N2: kernel-offload — адреса susanin_ok_net уводить маршрутом через НАСТОЯЩИЙ
+# интерфейс (KERNEL_EGRESS), минуя userspace tproxy (быстрее на слабом CPU).
+# Работает только в tproxy-режиме и только при заданном KERNEL_EGRESS.
+KERNEL_OFFLOAD=${SUSANIN_KERNEL_OFFLOAD:-0}
+KERNEL_EGRESS=${SUSANIN_KERNEL_EGRESS:-}
+KERNEL_TABLE=${SUSANIN_KERNEL_TABLE:-210}
+KERNEL_MARK=0x00800000
+# MSS/PMTU для туннеля/CDN: "0"=выкл, число байт или "pmtu".
+MSS_CLAMP=${SUSANIN_MSS_CLAMP:-0}
+MSS_CLAMP_LAN=${SUSANIN_MSS_CLAMP_LAN:-0}
 
 CHAIN=SUSANIN
 SETS="susanin_ok_tcp susanin_ok_udp susanin_test_tcp susanin_test_udp"
@@ -131,6 +141,13 @@ rule_priv() {
 
 rule_mark() {
     for i in $LAN; do
+        # N2: ok_net -> kernel-offload (отдельная метка + ACCEPT, чтобы не уйти
+        # в tproxy REDIRECT и не получить MARK_OK).
+        if [ "$KERNEL_OFFLOAD" = "1" ] && [ -n "$KERNEL_EGRESS" ]; then
+            mangle "$CHAIN" -i "$i" -m set --match-set "$NETSET" dst \
+                -j MARK --set-xmark "$KERNEL_MARK/$KERNEL_MARK"
+            mangle "$CHAIN" -i "$i" -m mark --mark "$KERNEL_MARK/$KERNEL_MARK" -j ACCEPT
+        fi
         mangle "$CHAIN" -i "$i" -m set --match-set susanin_never dst -j RETURN
         for p in tcp udp; do
             mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
@@ -168,6 +185,13 @@ ensure_table() {
         "$IPCMD" route del default dev "$EGRESS" table "$TABLE" >/dev/null 2>&1 || true
         redirect_rules
         udp_relay_rules
+        if [ "$KERNEL_OFFLOAD" = "1" ] && [ -n "$KERNEL_EGRESS" ]; then
+            "$IPCMD" rule del fwmark "$KERNEL_MARK/$KERNEL_MARK" lookup "$KERNEL_TABLE" >/dev/null 2>&1 || true
+            "$IPCMD" route del default table "$KERNEL_TABLE" >/dev/null 2>&1 || true
+            "$IPCMD" route add default dev "$KERNEL_EGRESS" table "$KERNEL_TABLE" 2>/dev/null || true
+            "$IPCMD" rule add fwmark "$KERNEL_MARK/$KERNEL_MARK" lookup "$KERNEL_TABLE" 2>/dev/null || true
+            say "kernel-offload: ok_net -> $KERNEL_EGRESS table=$KERNEL_TABLE"
+        fi
         say "redirect ready (port=$TPROXY_PORT, udp_relay=$UDP_RELAY_PORT, mask=$MARK_MASK)"
     else
         "$IPCMD" route del default dev "$EGRESS" table "$TABLE" >/dev/null 2>&1 || true
@@ -227,6 +251,8 @@ tproxy_clean() {
         done || true
     "$IPCMD" rule del fwmark "$TPROXY_MARK" priority "$((PRI_OK + 2))" lookup "$TABLE" >/dev/null 2>&1 || true
     "$IPCMD" route del local default dev lo table "$TABLE" >/dev/null 2>&1 || true
+    "$IPCMD" rule del fwmark "$KERNEL_MARK/$KERNEL_MARK" lookup "$KERNEL_TABLE" >/dev/null 2>&1 || true
+    "$IPCMD" route del default table "$KERNEL_TABLE" >/dev/null 2>&1 || true
 }
 
 # C3: блокировка IPv6 из LAN, чтобы клиенты уходили на IPv4
@@ -279,6 +305,46 @@ quic_block_clean() {
     done
 }
 
+# MSS/PMTU clamping: всегда снимаем прошлые TCPMSS-правила, затем ставим по
+# настройке. По умолчанию только к НАШИМ помеченным (VPN) потокам (идёт от LAN),
+# mss_clamp_lan=1 — ко всему LAN-forward.
+mss_clamp_clean() {
+    "ipt" -t mangle -S FORWARD 2>/dev/null | grep -E -- '-j TCPMSS' | \
+        while read -r line; do
+            spec=$(printf '%s' "$line" | sed 's/^-A FORWARD //')
+            "ipt" -t mangle -D FORWARD $spec >/dev/null 2>&1 || true
+        done || true
+}
+
+mss_clamp_rules() {
+    mss_clamp_clean
+    case "$MSS_CLAMP" in ''|0) return 0;; esac
+    if [ "$MSS_CLAMP" = "pmtu" ] || [ "$MSS_CLAMP" = "auto" ]; then
+        _tgt="--clamp-mss-to-pmtu"; _desc="pmtu"
+    else
+        case "$MSS_CLAMP" in
+            *[!0-9]*) say "mss_clamp: некорректное значение '$MSS_CLAMP' — пропускаю"; return 0;;
+        esac
+        _tgt="--set-mss $MSS_CLAMP"; _desc="$MSS_CLAMP"
+    fi
+    if [ "$MSS_CLAMP_LAN" = "1" ]; then
+        for i in $LAN; do
+            if ! "ipt" -t mangle -A FORWARD -i "$i" -p tcp --tcp-flags SYN,RST SYN \
+                    -j TCPMSS $_tgt 2>/dev/null; then
+                say "mss_clamp: цель TCPMSS недоступна (модуль?) — пропускаю"; return 0
+            fi
+        done
+    else
+        for m in "$MARK_OK" "$MARK_TEST"; do
+            if ! "ipt" -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN \
+                    -m mark --mark "$m/$MARK_MASK" -j TCPMSS $_tgt 2>/dev/null; then
+                say "mss_clamp: цель TCPMSS недоступна (модуль?) — пропускаю"; return 0
+            fi
+        done
+    fi
+    say "mss_clamp=$_desc (lan=$MSS_CLAMP_LAN)"
+}
+
 command_up() {
     backup
     ensure_sets
@@ -289,6 +355,7 @@ command_up() {
     ensure_table
     ipv6_block_rules
     quic_block_rules
+    mss_clamp_rules
     say "data plane UP (table=$TABLE dev=$EGRESS mask=$MARK_MASK)"
 }
 
@@ -310,6 +377,7 @@ command_down() {
     tproxy_clean || true
     ipv6_block_clean || true
     quic_block_clean || true
+    mss_clamp_clean || true
     say "data plane DOWN"
 }
 
@@ -349,12 +417,22 @@ command_status() {
         v6=$("$IP6T" -w -t filter -S FORWARD 2>/dev/null | grep -c -- '-j REJECT' || true)
         echo "ipv6_block: on (FORWARD REJECT rules=$v6)"
     fi
+    if [ "$KERNEL_OFFLOAD" = "1" ] && [ -n "$KERNEL_EGRESS" ]; then
+        ko=$("$IPCMD" rule show 2>/dev/null | grep -c "lookup $KERNEL_TABLE" || true)
+        echo "kernel_offload: on ($KERNEL_EGRESS table=$KERNEL_TABLE rules=$ko)"
+    fi
     q=$("ipt" -t mangle -S PREROUTING 2>/dev/null | grep -c -- '-p udp .* --dport 443 -j DROP' || true)
     if [ "$QUIC_BLOCK" = "1" ]; then
         echo "quic_block: on (mangle PREROUTING DROP rules=$q)"
     elif [ "${q:-0}" -gt 0 ] 2>/dev/null; then
         echo "quic_block: off, но найдены остаточные правила ($q) — перезапустите susanin.sh"
     fi
+    mssq=$("ipt" -t mangle -S FORWARD 2>/dev/null | grep -c -- '-j TCPMSS' || true)
+    case "$MSS_CLAMP" in
+        ''|0) [ "${mssq:-0}" -gt 0 ] 2>/dev/null \
+                  && echo "mss_clamp: off, но есть остаточные правила ($mssq)";;
+        *) echo "mss_clamp: on ($MSS_CLAMP, lan=$MSS_CLAMP_LAN, rules=$mssq)";;
+    esac
 }
 
 command_egress() {

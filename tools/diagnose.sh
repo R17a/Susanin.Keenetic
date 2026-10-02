@@ -132,6 +132,69 @@ if [ -n "$EGR" ]; then
     IFS=$oldifs
 fi
 
+# -------------------------------------------- возможности и память (0.4.0-dev5)
+sec "Возможности и память (dev5)"
+echo "egress pool: failback=$(cfg egress_failback) debounce=$(cfg egress_failback_debounce)s race=$(cfg egress_race)"
+echo "dns_sniff=$(cfg dns_sniff) offload=$(cfg kernel_offload) kernel_egress=$(cfg kernel_egress) xray_watchdog=$(cfg xray_watchdog)"
+ET=$(cfg egress_type); [ -n "$ET" ] || ET=interface
+if [ "$ET" = "tproxy" ]; then
+    echo "tproxy: port=$(cfg tproxy_port) udp_relay=$(cfg udp_relay)"
+    if pidof xray >/dev/null 2>&1; then
+        echo "xray: RUNNING"
+    else
+        echo "xray: НЕ запущен"
+        rec "egress_type=tproxy, но Xray не запущен — трафик идёт DIRECT. Поднимите: /opt/etc/init.d/S93xray-tproxy start (при xray_watchdog=1 агент поднимет сам)."
+    fi
+fi
+if command -v free >/dev/null 2>&1; then
+    echo "--- память ---"
+    free 2>/dev/null | sed -n '1,3p'
+    if [ -r /proc/swaps ] && [ ! -s /proc/swaps ]; then
+        echo "swap: нет"
+        rec "Нет swap, а RAM ~128 МБ: возможен OOM-killer. Для tproxy задайте xray_gomemlimit (напр. 64MiB) и xray_gogc (напр. 50). На USB-носителе можно swap-файл; на встроенной flash — только zram."
+    fi
+    _top=$(ps w 2>/dev/null | sort -k4 -rn 2>/dev/null | head -n4)
+    [ -n "$_top" ] && { echo "--- топ по памяти ---"; echo "$_top"; }
+fi
+if command -v dmesg >/dev/null 2>&1; then
+    _oom=$(dmesg 2>/dev/null | grep -iE 'killed process|out of memory' | tail -n3)
+    if [ -n "$_oom" ]; then
+        echo "--- OOM в dmesg ---"; echo "$_oom"
+        rec "В dmesg есть OOM-killer. Ограничьте память Xray (xray_gomemlimit/xray_gogc) и/или добавьте swap/zram; включённый xray_watchdog поднимет упавший Xray."
+    fi
+fi
+
+# Профили маршрутизации (P2): заданные профили, живой egress, набор.
+_pn=0
+for _i in 1 2 3 4; do
+    _nm=$(cfg "profile${_i}_name")
+    [ -n "$_nm" ] || continue
+    _eg=$(cfg "profile${_i}_egress")
+    _tb=$(cfg "profile${_i}_table"); [ -n "$_tb" ] || _tb=$((200 + _i))
+    _au=$(cfg "profile${_i}_auto")
+    _live=""
+    if [ -n "$_eg" ]; then
+        oldifs=$IFS; IFS=','
+        for _e in $_eg; do
+            IFS=$oldifs
+            _e=$(printf '%s' "$_e" | tr -d ' \t')
+            if [ -e "/sys/class/net/$_e" ]; then _live="$_e"; break; fi
+            IFS=','
+        done
+        IFS=$oldifs
+    fi
+    echo "profile $_nm: egress=${_eg:-?} live=${_live:-НЕТ} table=$_tb auto=${_au:-0}"
+    if [ -z "$_live" ]; then
+        rec "Профиль '$_nm': ни один egress (${_eg:-?}) не существует — маршрут профиля не поднимется."
+    fi
+    _pn=$((_pn + 1))
+done
+if [ -d /opt/susanin/etc/profiles.d ]; then
+    _pd=$(ls -1 /opt/susanin/etc/profiles.d/*.conf 2>/dev/null | wc -l)
+    echo "profiles.d: $_pd файл(ов)"
+fi
+[ "$_pn" -eq 0 ] && echo "профили: не заданы"
+
 # ------------------------------------------------------------ правила (data plane)
 sec "Правила"
 if command -v iptables >/dev/null 2>&1; then

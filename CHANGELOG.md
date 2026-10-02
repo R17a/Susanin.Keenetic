@@ -2,6 +2,63 @@
 
 Все заметные изменения проекта. Формат — по версиям (новые сверху).
 
+## v0.4.0-dev5
+
+- **Возврат на основной VPN (failback, Master/Slave).** Список
+  `egress_interface=nwg2,nwg0` — первый egress приоритетный: если он упал,
+  трафик уходит на резервный (failover, как раньше), а когда снова поднялся —
+  автоматически **возвращается** на него (failback), без ручного `reload`.
+  Антидребезг — `egress_failback_debounce` (по умолчанию 30 с, «UP держится N
+  секунд»); отключить возврат — `egress_failback=0`. Health проверяет каждый
+  egress независимо (привязка к интерфейсу); в логе — `egress <X> DOWN,
+  failover -> <Y>`, `egress <X> UP`, `... (failback)`.
+- **Watchdog Xray.** Если при `egress_type=tproxy` Xray перестал слушать порт,
+  агент сам поднимает его с backoff (init-скрипт `S93xray-tproxy restart` или
+  прямой запуск бинаря), а не только снимает правила. Ключ `xray_watchdog=1`.
+- **Память Xray на слабом роутере.** Ключи `xray_gogc` (по умолчанию 50) и
+  `xray_gomemlimit` (64MiB): Xray запускается с агрессивным GC и мягким лимитом
+  памяти. `diagnose.sh` показывает `free`, swap/zram, топ по RSS и случаи OOM
+  из `dmesg` с рекомендациями.
+- **`xray-egress.sh start` и `restart`.** `start` — синоним `enable`; `restart`
+  перезапускает **только Xray и агента**, не меняя режим (`egress_type`) и не
+  трогая `vpn_always`. Закрыт вопрос «есть STOP, почему нет START».
+- **DNS-снифинг (`dns_sniff`, P3/N1).** Зеркальный захват DNS-ответов LAN через
+  AF_PACKET (штатный DNS не перехватываем): таблица `домен -> IP`, и адрес из
+  ответа сразу пинится, если домен попадает в `vpn_always`/`vpn_never` — так
+  поддомены покрываются до их собственного резолва. По умолчанию выключен
+  (`dns_sniff=0`); настройки `dns_sniff_ttl`, `dns_sniff_iface`.
+- **N2: kernel-offload.** При `kernel_offload=1` и заданном `kernel_egress`
+  адреса из `susanin_ok_net` уводятся маршрутом через настоящий интерфейс, минуя
+  userspace tproxy (быстрее на слабом CPU). Отдельная метка/таблица; состояние
+  видно в `status`/`diagnose`.
+- **N3: race-пробинг egress (`egress_race=1`).** Агент замеряет всех живых
+  кандидатов и выбирает быстрейшего; в логе — `race: <A> -> <B> (fastest Nms)`.
+- **Профили маршрутизации (P2), полноценный слой.** Профиль задаётся ключами
+  `profileN_*` в `susanin.conf` **или** отдельным файлом
+  `/opt/susanin/etc/profiles.d/<name>.conf` (поля `name`, `egress`, `list`,
+  `geo_url`, `table`, `mark`, `auto`); читают и агент, и `profiles.sh`.
+  `profile_failover=1` — движок держит default в таблице профиля на первом
+  живом egress из списка `profileN_egress`. `profileN_auto=1` — автообучение на
+  профиль: подтверждённый адрес, попадающий в CIDR/IP профиля, пинится в набор
+  `susanin_prof_<name>`. Профили видны в `status`/`diagnose`.
+- **Профили (P3-гео и shell).** `profileN_geo_url` — скачиваемый CIDR-список
+  профиля с кэшем в `var/profiles/`; `profileN_egress` принимает список (берётся
+  первый живой); `profiles.sh refresh` перечитывает списки/geo_url без
+  пересборки правил.
+- **MSS/PMTU для туннеля/CDN.** Ключи `mss_clamp` (`0`=выкл, число байт,
+  напр. `1380`, или `pmtu`) и `mss_clamp_lan` (`0` — только помеченные
+  VPN-потоки, `1` — весь LAN-forward): `datapath.sh` ставит TCPMSS в mangle
+  FORWARD, снимает при `down` и показывает в `status`.
+- **Статус и диагностика.** `susanin-agent status` показывает пул egress
+  (failback/race), профили и признаки (`dns_sniff`, `offload`, `pin_reassert`,
+  `xray_watchdog`); `diagnose.sh` дополнен профилями и памятью.
+- Затронуто: новые `src/dns_sniff.[ch]`, `src/profiles.[ch]`; `src/engine.c`,
+  `src/health.[ch]`, `src/classifier.c`, `src/config.[ch]`, `src/backend.c`,
+  `src/ops.c`, `Makefile`; `tools/{datapath,diagnose,profiles,update,xray-egress}.sh`,
+  `install.sh`, `init/entware/S93xray-tproxy`, `config.example.conf`, доки.
+- Пересобраны бинарники (mipsel/mips/aarch64/armv7/x86_64), обновлены
+  `develop/SHA256SUMS` и `develop/susanin-keenetic-0.4.0-dev.tar.gz`.
+
 ## v0.4.0-dev4
 
 - **Зафиксирован в git весь dev-набор.** Раньше XRay-tproxy, профили, веб-панель,

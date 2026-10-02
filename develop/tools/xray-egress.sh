@@ -11,6 +11,8 @@
 #                                    # заворачивает ТОЛЬКО [IP] (proto: tcp|udp|both)
 #   xray-egress.sh enable            # БОЕВОЙ режим: egress_type=tproxy + udp_relay,
 #                                    # запуск Xray и рестарт агента (vpn_always НЕ гасим)
+#   xray-egress.sh start             # = enable (синоним)
+#   xray-egress.sh restart           # перезапустить ТОЛЬКО Xray (+агент), режим не менять
 #   xray-egress.sh disable           # выключить боевой режим и вернуть всё в DIRECT
 #   xray-egress.sh default           # ВЕРНУТЬ ВСЁ в обычный канал (direct):
 #                                    # стоп всего, снятие правил, сброс conntrack,
@@ -42,6 +44,11 @@ et=$(sed -n 's/^egress_type=//p' "$CONF" 2>/dev/null | tail -n1)
 # xray-tproxy.json при enable/run (Xray читает уровень только при старте).
 xlog=$(sed -n 's/^xray_loglevel=//p' "$CONF" 2>/dev/null | tail -n1)
 [ -n "$xlog" ] || xlog=warning
+# Память Xray (роутер без swap): агрессивнее GC + мягкий лимит.
+xgogc=$(sed -n 's/^xray_gogc=//p' "$CONF" 2>/dev/null | tail -n1)
+[ -n "$xgogc" ] || xgogc=50
+xgomem=$(sed -n 's/^xray_gomemlimit=//p' "$CONF" 2>/dev/null | tail -n1)
+[ -n "$xgomem" ] || xgomem=64MiB
 
 say() { echo "[xray-egress] $*"; }
 xray_running()  { pidof xray >/dev/null 2>&1; }
@@ -120,7 +127,8 @@ start_xray() {
     if [ -x "$INITD/S93xray-tproxy" ]; then
         sh "$INITD/S93xray-tproxy" start
     else
-        /opt/sbin/xray run -config "$XCFG" >>"$PREFIX/var/xray.log" 2>&1 &
+        GOGC="$xgogc" GOMEMLIMIT="$xgomem" \
+            /opt/sbin/xray run -config "$XCFG" >>"$PREFIX/var/xray.log" 2>&1 &
     fi
 }
 
@@ -231,7 +239,7 @@ case "${1:-}" in
     default|stop)
         reset_all
         ;;
-    enable)
+    start|enable)
         # БОЕВОЙ режим: egress_type=tproxy + udp_relay=1, БЕЗ гашения vpn_always.
         # Учимся/заворачиваем как обычно, но egress — XRay.
         ensure_tproxy_cfg
@@ -260,6 +268,20 @@ case "${1:-}" in
         say "tproxy ВКЛЮЧЁН: трафик ok/vpn_always идёт через XRay (TCP REDIRECT + UDP relay)."
         say "откат: sh $0 disable"
         ;;
+    restart)
+        # Перезапуск Xray (с применением xray_loglevel) и агента. Режим
+        # egress_type НЕ меняем — в отличие от enable/start/run.
+        if ! xray_running && [ ! -f "$XCFG" ]; then
+            say "нет запущенного Xray и нет $XCFG — нечего перезапускать"
+            exit 1
+        fi
+        restart_xray
+        wait_listen "$port" 15 || say "ВНИМАНИЕ: Xray :$port не слушает"
+        sh "$SH" restart || true
+        sleep 2
+        status
+        say "Xray и агент перезапущены (режим egress_type=$et не менялся)."
+        ;;
     disable)
         reset_all
         [ -f "$INITD/S93xray-tproxy" ] && sh "$INITD/S93xray-tproxy" stop >/dev/null 2>&1 || true
@@ -269,5 +291,5 @@ case "${1:-}" in
     status) status ;;
     test)   [ -n "${2:-}" ] || { echo "usage: $0 test <IP> [tcp|udp|both]"; exit 2; }; add_test "$2" "${3:-tcp}" ;;
     untest) [ -n "${2:-}" ] || { echo "usage: $0 untest <IP> [tcp|udp|both]"; exit 2; }; del_test "$2" "${3:-tcp}" ;;
-    *) echo "usage: $0 {run [IP] [tcp|udp|both]|enable|disable|default|stop|status|test <IP> [proto]|untest <IP> [proto]}"; exit 2 ;;
+    *) echo "usage: $0 {run [IP] [tcp|udp|both]|enable|start|restart|disable|default|stop|status|test <IP> [proto]|untest <IP> [proto]}"; exit 2 ;;
 esac

@@ -175,6 +175,11 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
               cdn_ranges_interval=86400 cdn_prefix_learn=1 cdn_prefix_ttl=3600 \
               cdn_prefix_max=24 ipv6_block=1 \
               quic_block=1 \
+              egress_failback=1 egress_failback_debounce=30 egress_race=0 egress_race_list= \
+              xray_gogc=50 xray_gomemlimit=64MiB xray_watchdog=1 \
+              kernel_offload=0 kernel_egress= kernel_offload_max=24 \
+              dns_sniff=0 dns_sniff_ttl=300 dns_sniff_iface= pin_reassert=1 \
+              mss_clamp=0 mss_clamp_lan=0 profile_failover=1 \
               health_mode=icmp health_tcp_port=443; do
         k=${kv%%=*}; d=${kv#*=}
         grep -q "^${k}=" "$PREFIX/etc/susanin.conf" 2>/dev/null \

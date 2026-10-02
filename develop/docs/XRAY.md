@@ -107,8 +107,12 @@ sh /opt/susanin/tools/xray-egress.sh default     # вернуть всё в DIRE
 
 ```sh
 sh /opt/susanin/tools/xray-egress.sh enable     # боевой режим: всё помеченное -> XRay
+sh /opt/susanin/tools/xray-egress.sh start      # = enable (синоним)
+sh /opt/susanin/tools/xray-egress.sh restart    # перезапустить ТОЛЬКО Xray и агента, режим не менять
 sh /opt/susanin/tools/xray-egress.sh disable    # выключить, вернуть DIRECT
 ```
+`restart` удобен после правки `xray-tproxy.json`/`xray_loglevel`: режим
+(`egress_type`) не меняется, `vpn_always` не гасится.
 
 ## Тонкости
 
@@ -153,6 +157,11 @@ sh /opt/susanin/tools/xray-egress.sh disable    # выключить, верну
   `xray-egress.sh enable`.
 - Смотрите логи: `tail -n 40 /opt/susanin/var/xray.log` и
   `tail -f /opt/susanin/var/susanin.log`.
+- **Watchdog.** При `xray_watchdog=1` (по умолчанию) агент сам поднимает
+  упавший Xray с backoff и возвращает правила; в логе — `tproxy: Xray … поднимаю`.
+- **Память.** На роутере ~128 МБ без swap задайте `xray_gomemlimit=64MiB` и
+  `xray_gogc=50` (эти ключи применяет `S93xray-tproxy`/`xray-egress.sh` при
+  запуске Xray). `diagnose.sh` покажет память/swap/OOM.
 - Подробнее — [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## Безопасность

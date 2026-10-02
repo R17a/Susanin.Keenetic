@@ -16,6 +16,17 @@
 #ifndef SO_MARK
 #define SO_MARK 36
 #endif
+#ifndef SO_BINDTODEVICE
+#define SO_BINDTODEVICE 25
+#endif
+
+/* Привязать сокет к устройству (для независимой пробы конкретного egress). */
+static void bind_dev(int fd, const char *dev)
+{
+    if (dev && dev[0])
+        (void)setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, dev,
+                         (socklen_t)(strlen(dev) + 1));
+}
 
 static uint16_t csum(const void *data, int len)
 {
@@ -27,7 +38,8 @@ static uint16_t csum(const void *data, int len)
     return (uint16_t)~sum;
 }
 
-static int probe_one(const char *dst, const char *src, unsigned long mark)
+static int probe_one(const char *dst, const char *src, const char *dev,
+                     unsigned long mark)
 {
     int fd;
     struct sockaddr_in sin, to;
@@ -47,6 +59,7 @@ static int probe_one(const char *dst, const char *src, unsigned long mark)
     sin.sin_port = 0;
     if (inet_pton(AF_INET, src, &sin.sin_addr) != 1) { close(fd); return -1; }
 
+    bind_dev(fd, dev);
     setsockopt(fd, SOL_SOCKET, SO_MARK, &mark, sizeof(mark));
     if (bind(fd, (struct sockaddr *)&sin, sizeof(sin)) != 0) { close(fd); return -1; }
 
@@ -94,7 +107,8 @@ static int probe_one(const char *dst, const char *src, unsigned long mark)
 
 /* TCP-проба туннеля: подходит для egress без ICMP (VLESS/XRay через TUN).
  * Успех — установилось TCP-соединение (даже если сервер сразу закрыл). */
-static int probe_tcp(const char *dst, int port, const char *src, unsigned long mark)
+static int probe_tcp(const char *dst, int port, const char *src, const char *dev,
+                     unsigned long mark)
 {
     int fd, r;
     struct sockaddr_in to, sin;
@@ -103,6 +117,7 @@ static int probe_tcp(const char *dst, int port, const char *src, unsigned long m
     fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0)
         return -1;
+    bind_dev(fd, dev);
     if (src && src[0]) {
         memset(&sin, 0, sizeof(sin));
         sin.sin_family = AF_INET;
@@ -125,7 +140,8 @@ static int probe_tcp(const char *dst, int port, const char *src, unsigned long m
     return r == 0 ? 1 : 0;
 }
 
-int health_probe(const susanin_config *c, const char *src, int *ok, int *total)
+int health_probe_dev(const susanin_config *c, const char *dev, const char *src,
+                     int *ok, int *total)
 {
     char buf[512], *save = NULL, *tok;
     int o = 0, t = 0;
@@ -140,9 +156,9 @@ int health_probe(const susanin_config *c, const char *src, int *ok, int *total)
         while (*tok == ' ') tok++;
         t++;
         if (tcp_mode)
-            r = probe_tcp(tok, tcp_port, psrc, c->mark_test);
+            r = probe_tcp(tok, tcp_port, psrc, dev, c->mark_test);
         else
-            r = probe_one(tok, psrc, c->mark_test);
+            r = probe_one(tok, psrc, dev, c->mark_test);
         if (r > 0) o++;
         else if (r < 0)
             slogf(SL_DEBUG, "health probe to %s failed (%d)", tok, r);
@@ -150,4 +166,9 @@ int health_probe(const susanin_config *c, const char *src, int *ok, int *total)
     if (ok) *ok = o;
     if (total) *total = t;
     return 0;
+}
+
+int health_probe(const susanin_config *c, const char *src, int *ok, int *total)
+{
+    return health_probe_dev(c, NULL, src, ok, total);
 }

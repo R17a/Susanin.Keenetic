@@ -215,6 +215,7 @@ cp /opt/susanin/etc/xray-tproxy.json.example /opt/susanin/etc/xray-tproxy.json
 и т.д. выставляются автоматически):
 ```sh
 sh /opt/susanin/tools/xray-egress.sh enable     # ok/vpn_always -> XRay
+sh /opt/susanin/tools/xray-egress.sh restart    # перезапуск только Xray+агента
 sh /opt/susanin/tools/xray-egress.sh disable    # обратно в DIRECT
 ```
 TCP/UDP проверяются безопасным тестом одного адреса:

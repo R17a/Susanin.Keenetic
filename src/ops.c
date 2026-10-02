@@ -223,6 +223,24 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
                backend_local_listen(cfg->tproxy_port) ? "LISTEN" : "NOT LISTENING");
     else
         printf("mode=interface\n");
+    printf("egress pool: n=%d failback=%d debounce=%ds race=%d\n",
+           cfg->n_egress, cfg->egress_failback, cfg->egress_failback_debounce,
+           cfg->egress_race);
+    printf("features: dns_sniff=%d offload=%d(%s) pin_reassert=%d xray_watchdog=%d\n",
+           cfg->dns_sniff, cfg->kernel_offload,
+           cfg->kernel_egress[0] ? cfg->kernel_egress : "-",
+           cfg->pin_reassert, cfg->xray_watchdog);
+    if (cfg->n_profiles > 0) {
+        int k;
+        printf("profiles (failover=%d):\n", cfg->profile_failover);
+        for (k = 0; k < cfg->n_profiles; k++)
+            printf("  %s: egress=%s table=%d mark=0x%lx auto=%d list=%s\n",
+                   cfg->profile_name[k][0] ? cfg->profile_name[k] : "?",
+                   cfg->profile_egress[k][0] ? cfg->profile_egress[k] : "-",
+                   cfg->profile_table[k], cfg->profile_mark[k],
+                   cfg->profile_auto[k],
+                   cfg->profile_list[k][0] ? cfg->profile_list[k] : "-");
+    }
 
     printf("data plane:\n");
     a[0] = (char *)ipt; a[1] = "-t"; a[2] = "mangle"; a[3] = "-S"; a[4] = (char *)CHAIN; a[5] = NULL;

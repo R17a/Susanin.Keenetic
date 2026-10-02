@@ -14,6 +14,8 @@ typedef struct {
     char egress_list[CFG_MAX_EGRESS][64];
     char egress_addr[CFG_MAX_EGRESS][64];
     int n_egress;
+    int egress_failback;           /* 1 = вернуться на приоритетный (Master) egress */
+    int egress_failback_debounce;  /* сек стабильного UP до возврата (антидребезг) */
     char lan_interfaces[CFG_PATH_MAX];
     char lan_subnets[CFG_PATH_MAX];
     int routing_table;
@@ -49,6 +51,9 @@ typedef struct {
     int vpn_never_interval;
     char log_level[16];
     char xray_loglevel[16]; /* уровень логов Xray (читает xray-egress.sh, не сам агент) */
+    char xray_gogc[16];      /* GOGC Xray (память; читает init/xray-egress.sh) */
+    char xray_gomemlimit[16];/* GOMEMLIMIT Xray (память) */
+    int xray_watchdog;       /* 1 = агент сам поднимает упавший Xray (tproxy) */
     char disk_mode[8];      /* normal | soft: soft = минимум записей на диск */
     int soft_state_interval; /* soft: как часто сохранять состояние (сек; 0=никогда) */
     char learn_exclude_ports[CFG_PATH_MAX]; /* порты, которые не учим (скан-шум) */
@@ -77,6 +82,11 @@ typedef struct {
     /* C3: политика IPv6 — 1 = блокировать IPv6 из LAN, чтобы весь трафик шёл
      * по IPv4 (иначе IPv6-трафик идёт мимо Susanin и может душиться). */
     int ipv6_block;
+    /* MSS/PMTU для туннеля/CDN: строка mss_clamp ("0"=выкл, число байт или
+     * "pmtu" = --clamp-mss-to-pmtu). mss_clamp_lan=1 — применять ко всему
+     * LAN-forward, иначе только к нашим помеченным (VPN) потокам. */
+    char mss_clamp[16];
+    int mss_clamp_lan;
     /* QUIC (UDP 443): 1 = запретить из LAN, чтобы приложения шли по TCP.
      * UDP-релей для QUIC ненадёжен (крупные датаграммы/MTU), а TCP через
      * туннель работает стабильно; заодно уходит «зависание» на ожидании QUIC. */
@@ -98,6 +108,20 @@ typedef struct {
     int udp_relay_port;
     char socks_addr[64];
     int socks_port;
+    /* DNS-снифинг (P3/N1): зеркальный захват DNS-ответов LAN (AF_PACKET) для
+     * связи домен->IP. По умолчанию выключен; штатный DNS не перехватываем. */
+    int dns_sniff;
+    int dns_sniff_ttl;      /* TTL записи домен->IP, сек */
+    char dns_sniff_iface[64];/* интерфейс захвата; пусто = первый lan_interface */
+    int pin_reassert;       /* P1: периодически передобавлять пины списков */
+    /* N2: kernel-offload — подтверждённые CDN/ok-адреса уводить маршрутом через
+     * VPN-интерфейс (быстрее tproxy); требует заданного kernel_egress. */
+    int kernel_offload;
+    char kernel_egress[64];
+    int kernel_offload_max; /* макс. длина префикса для offload-маршрута */
+    /* N3: race-пробинг egress — параллельно замерить кандидатов. */
+    int egress_race;
+    char egress_race_list[CFG_PATH_MAX]; /* кандидаты через запятую; пусто = egress_list */
     /* Профили маршрутизации (P1): статический список -> свой туннель.
      * Задаются повторяющимися ключами profileN_name/_egress/_list/_table/_mark
      * (N = 1..CFG_MAX_PROFILES). Нет ни одного profileN_name — профилей нет,
@@ -106,8 +130,11 @@ typedef struct {
     char profile_name[CFG_MAX_PROFILES][32];
     char profile_egress[CFG_MAX_PROFILES][64];
     char profile_list[CFG_MAX_PROFILES][CFG_PATH_MAX];
+    char profile_geo_url[CFG_MAX_PROFILES][CFG_PATH_MAX]; /* P3: скачиваемый CIDR-список */
     int profile_table[CFG_MAX_PROFILES];
     unsigned long profile_mark[CFG_MAX_PROFILES];
+    int profile_auto[CFG_MAX_PROFILES]; /* P2: авто-пин подтверждённых IP, попадающих в диапазон профиля */
+    int profile_failover;               /* P2: движок поддерживает default в table профиля на живом egress */
 } susanin_config;
 
 void config_set_defaults(susanin_config *c);

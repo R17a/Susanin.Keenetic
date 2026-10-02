@@ -2,6 +2,7 @@
 #include "classifier.h"
 #include "backend.h"
 #include "cdn.h"
+#include "profiles.h"
 #include "vpn_never.h"
 #include "log.h"
 
@@ -448,6 +449,7 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 backend_ipset_del(cfg, udp, 0, f->dst);
                 slogf(SL_INFO, "AUTO-SUSANIN: CONFIRMED %s:%u", f->dst, f->dport);
                 cdn_aggregate(ctx, f);
+                profile_auto_learn(ctx->cfg, f->dst);
             } else if (failed) {
                 state_remove(st_test(ctx->st, udp), f->dst);
                 state_remove(st_watch(ctx->st, udp), f->dst);

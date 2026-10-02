@@ -497,10 +497,28 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     ensure_key "$PREFIX/etc/susanin.conf" socks_port 1080
     ensure_key "$PREFIX/etc/susanin.conf" log_level info
     ensure_key "$PREFIX/etc/susanin.conf" xray_loglevel warning
+    # 0.4.0-dev5: failback/watchdog/offload/dns-sniff/pin_reassert.
+    ensure_key "$PREFIX/etc/susanin.conf" egress_failback 1
+    ensure_key "$PREFIX/etc/susanin.conf" egress_failback_debounce 30
+    ensure_key "$PREFIX/etc/susanin.conf" egress_race 0
+    ensure_key "$PREFIX/etc/susanin.conf" egress_race_list ""
+    ensure_key "$PREFIX/etc/susanin.conf" xray_gogc 50
+    ensure_key "$PREFIX/etc/susanin.conf" xray_gomemlimit 64MiB
+    ensure_key "$PREFIX/etc/susanin.conf" xray_watchdog 1
+    ensure_key "$PREFIX/etc/susanin.conf" kernel_offload 0
+    ensure_key "$PREFIX/etc/susanin.conf" kernel_egress ""
+    ensure_key "$PREFIX/etc/susanin.conf" kernel_offload_max 24
+    ensure_key "$PREFIX/etc/susanin.conf" dns_sniff 0
+    ensure_key "$PREFIX/etc/susanin.conf" dns_sniff_ttl 300
+    ensure_key "$PREFIX/etc/susanin.conf" dns_sniff_iface ""
+    ensure_key "$PREFIX/etc/susanin.conf" pin_reassert 1
+    ensure_key "$PREFIX/etc/susanin.conf" mss_clamp 0
+    ensure_key "$PREFIX/etc/susanin.conf" mss_clamp_lan 0
+    ensure_key "$PREFIX/etc/susanin.conf" profile_failover 1
 fi
 
-# Каталог для файлов-списков профилей маршрутизации.
-mkdir -p "$PREFIX/etc/profiles" 2>/dev/null || true
+# Каталоги профилей маршрутизации: profiles (списки) и profiles.d (секции).
+mkdir -p "$PREFIX/etc/profiles" "$PREFIX/etc/profiles.d" 2>/dev/null || true
 
 _s94=$(find_file S94susanin) || _s94=""
 if [ -n "$_s94" ]; then

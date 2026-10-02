@@ -199,6 +199,35 @@ sh /opt/susanin/tools/xray-egress.sh enable     # перезапустит Xray
   ```
   (в свежих сборках бэкапы уже ограничены — не чаще раза в час).
 
+## Не возвращается на основной VPN после восстановления (failback)
+
+Симптом: `egress_interface=nwg2,nwg0`; `nwg2` упал, трафик ушёл на `nwg0`, а
+когда `nwg2` поднялся — трафик остался на `nwg0` (WARP) до ручного `reload`.
+
+- Убедитесь, что включён возврат: `egress_failback=1` в `susanin.conf`.
+- Возврат происходит после антидребезга `egress_failback_debounce` (по умолчанию
+  30 с стабильного UP). Уменьшите, если нужно быстрее.
+- В логе ищите строки `egress <X> UP` и `egress <X> -> <Y> (failback)`.
+- Проверка выхода: `curl -s https://chatgpt.com/cdn-cgi/trace`.
+
+## Xray пропал / падает (память, OOM, watchdog)
+
+Симптом: страницы «крутятся», в `susanin.log` — `tproxy: Xray :12345 пропал …
+fail-open DIRECT`.
+
+- С `xray_watchdog=1` (по умолчанию) агент сам поднимает Xray с backoff и
+  возвращает правила — в логе `tproxy: Xray … поднимаю`. Если Xray падает
+  регулярно, смотрите память.
+- Диагностика: `sh /opt/susanin/tools/diagnose.sh` — покажет `free`, swap, топ
+  по RSS и случаи OOM из `dmesg`.
+- На роутере ~128 МБ без swap задайте в `susanin.conf`:
+  ```
+  xray_gogc=50
+  xray_gomemlimit=64MiB
+  ```
+  и перезапустите Xray: `xray-egress.sh restart`.
+- Ручной подъём: `/opt/etc/init.d/S93xray-tproxy start`.
+
 ## Отчёт для Issue
 
 ```sh

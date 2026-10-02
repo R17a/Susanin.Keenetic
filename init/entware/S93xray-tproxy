@@ -29,9 +29,16 @@ start() {
     elif grep -q '"log"[[:space:]]*:[[:space:]]*{' "$XCFG" 2>/dev/null; then
         sed -i "s|\"log\"[[:space:]]*:[[:space:]]*{|\"log\": { \"access\": \"none\",|" "$XCFG" 2>/dev/null || true
     fi
+    # Память Xray: агрессивнее GC и мягкий лимит (роутер без swap, ~120 МБ RAM).
+    # Ключи xray_gogc / xray_gomemlimit в susanin.conf; значения по умолчанию
+    # безопасны для mipsel/aarch64.
+    _gogc=$(sed -n 's/^xray_gogc=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
+    [ -n "$_gogc" ] || _gogc=50
+    _gomem=$(sed -n 's/^xray_gomemlimit=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
+    [ -n "$_gomem" ] || _gomem=64MiB
     if ! pidof xray >/dev/null 2>&1; then
-        "$XRAY" run -config "$XCFG" >>"$LOGF" 2>&1 &
-        echo "xray-tproxy: started (port=$PORT, loglevel=$_lvl)"
+        GOGC="$_gogc" GOMEMLIMIT="$_gomem" "$XRAY" run -config "$XCFG" >>"$LOGF" 2>&1 &
+        echo "xray-tproxy: started (port=$PORT, loglevel=$_lvl, GOGC=$_gogc, GOMEMLIMIT=$_gomem)"
     else
         echo "xray-tproxy: уже запущен; новый loglevel=$_lvl применится после 'restart'"
     fi

@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "config.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -132,6 +133,9 @@ void config_set_defaults(susanin_config *c)
     c->vpn_never_interval = 300;
     snprintf(c->log_level, sizeof(c->log_level), "%s", "info");
     snprintf(c->xray_loglevel, sizeof(c->xray_loglevel), "%s", "warning");
+    snprintf(c->xray_gogc, sizeof(c->xray_gogc), "%s", "50");
+    snprintf(c->xray_gomemlimit, sizeof(c->xray_gomemlimit), "%s", "64MiB");
+    c->xray_watchdog = 1;
     snprintf(c->disk_mode, sizeof(c->disk_mode), "%s", "normal");
     c->soft_state_interval = 12 * 3600;   /* soft: сохранять состояние раз в 12 ч */
     /* Порты, которые не участвуют в автообучении (типовой скан-шум). */
@@ -155,6 +159,8 @@ void config_set_defaults(susanin_config *c)
     c->cdn_prefix_max = 24;
     c->ipv6_block = 1;
     c->quic_block = 1;
+    snprintf(c->mss_clamp, sizeof(c->mss_clamp), "%s", "0");
+    c->mss_clamp_lan = 0;
     /* Встроенная веб-панель: по умолчанию выключена, адрес не задан. */
     c->web_enable = 0;
     snprintf(c->web_listen, sizeof(c->web_listen), "%s", "");
@@ -166,6 +172,15 @@ void config_set_defaults(susanin_config *c)
     c->udp_relay_port = 1081;
     snprintf(c->socks_addr, sizeof(c->socks_addr), "%s", "127.0.0.1");
     c->socks_port = 1080;
+    c->egress_failback = 1;
+    c->egress_failback_debounce = 30;
+    c->dns_sniff = 0;
+    c->dns_sniff_ttl = 300;
+    c->pin_reassert = 1;
+    c->kernel_offload = 0;
+    c->kernel_offload_max = 24;
+    c->egress_race = 0;
+    c->profile_failover = 1;
     c->n_profiles = 0;
     parse_egress(c);
 }
@@ -226,6 +241,16 @@ int config_load(const char *path, susanin_config *c)
                 snprintf(pk, sizeof(pk), "profile%d_list", pi);
                 if (!strcmp(key, pk)) {
                     set_str(c->profile_list[pi - 1], sizeof(c->profile_list[pi - 1]), val);
+                    handled = 1; break;
+                }
+                snprintf(pk, sizeof(pk), "profile%d_geo_url", pi);
+                if (!strcmp(key, pk)) {
+                    set_str(c->profile_geo_url[pi - 1], sizeof(c->profile_geo_url[pi - 1]), val);
+                    handled = 1; break;
+                }
+                snprintf(pk, sizeof(pk), "profile%d_auto", pi);
+                if (!strcmp(key, pk)) {
+                    c->profile_auto[pi - 1] = (int)strtol(val, NULL, 0);
                     handled = 1; break;
                 }
                 snprintf(pk, sizeof(pk), "profile%d_table", pi);
@@ -313,6 +338,12 @@ int config_load(const char *path, susanin_config *c)
                 set_str(c->log_level, sizeof(c->log_level), val);
             else if (!strcmp(key, "xray_loglevel"))
                 set_str(c->xray_loglevel, sizeof(c->xray_loglevel), val);
+            else if (!strcmp(key, "xray_gogc"))
+                set_str(c->xray_gogc, sizeof(c->xray_gogc), val);
+            else if (!strcmp(key, "xray_gomemlimit"))
+                set_str(c->xray_gomemlimit, sizeof(c->xray_gomemlimit), val);
+            else if (!strcmp(key, "xray_watchdog"))
+                c->xray_watchdog = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "disk_mode"))
             set_str(c->disk_mode, sizeof(c->disk_mode), val);
         else if (!strcmp(key, "soft_state_interval"))
@@ -349,6 +380,34 @@ int config_load(const char *path, susanin_config *c)
             c->ipv6_block = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "quic_block"))
             c->quic_block = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "mss_clamp"))
+            set_str(c->mss_clamp, sizeof(c->mss_clamp), val);
+        else if (!strcmp(key, "mss_clamp_lan"))
+            c->mss_clamp_lan = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "egress_failback"))
+            c->egress_failback = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "egress_failback_debounce"))
+            c->egress_failback_debounce = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "dns_sniff"))
+            c->dns_sniff = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "dns_sniff_ttl"))
+            c->dns_sniff_ttl = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "dns_sniff_iface"))
+            set_str(c->dns_sniff_iface, sizeof(c->dns_sniff_iface), val);
+        else if (!strcmp(key, "pin_reassert"))
+            c->pin_reassert = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "kernel_offload"))
+            c->kernel_offload = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "kernel_egress"))
+            set_str(c->kernel_egress, sizeof(c->kernel_egress), val);
+        else if (!strcmp(key, "kernel_offload_max"))
+            c->kernel_offload_max = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "egress_race"))
+            c->egress_race = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "egress_race_list"))
+            set_str(c->egress_race_list, sizeof(c->egress_race_list), val);
+        else if (!strcmp(key, "profile_failover"))
+            c->profile_failover = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "egress_type"))
             set_str(c->egress_type, sizeof(c->egress_type), val);
         else if (!strcmp(key, "tproxy_port"))
@@ -372,6 +431,78 @@ int config_load(const char *path, susanin_config *c)
     }
 
     fclose(fp);
+
+    /* P2: профили из profiles.d (один профиль = один файл .conf) дополняют
+     * profileN_* из susanin.conf. Каталог: $SUSANIN_PROFILES_DIR или
+     * /opt/susanin/etc/profiles.d. Ключи файла: name, egress, list, geo_url,
+     * table, mark, auto. */
+    {
+        const char *pdir = getenv("SUSANIN_PROFILES_DIR");
+        DIR *d;
+        struct dirent *de;
+        if (!pdir || !*pdir)
+            pdir = "/opt/susanin/etc/profiles.d";
+        d = opendir(pdir);
+        if (d) {
+            while ((de = readdir(d))) {
+                char fp[CFG_PATH_MAX + 300];
+                FILE *pf;
+                char line[512];
+                int slot = -1, i;
+                size_t nl = strlen(de->d_name);
+                if (de->d_name[0] == '.' || nl < 6 ||
+                    strcmp(de->d_name + nl - 5, ".conf"))
+                    continue;
+                for (i = 0; i < CFG_MAX_PROFILES; i++)
+                    if (!c->profile_name[i][0]) { slot = i; break; }
+                if (slot < 0)
+                    break;
+                snprintf(fp, sizeof(fp), "%s/%s", pdir, de->d_name);
+                pf = fopen(fp, "r");
+                if (!pf)
+                    continue;
+                while (fgets(line, sizeof(line), pf)) {
+                    char *p = line, *eq, *v, *q;
+                    while (*p == ' ' || *p == '\t') p++;
+                    if (*p == '#' || *p == '\n' || *p == '\0')
+                        continue;
+                    eq = strchr(p, '=');
+                    if (!eq)
+                        continue;
+                    *eq = '\0';
+                    v = eq + 1;
+                    q = v + strlen(v);
+                    while (q > v && (q[-1] == '\n' || q[-1] == '\r' ||
+                                     q[-1] == ' ' || q[-1] == '\t'))
+                        *--q = '\0';
+                    if (!strcmp(p, "name"))
+                        set_str(c->profile_name[slot], sizeof(c->profile_name[slot]), v);
+                    else if (!strcmp(p, "egress"))
+                        set_str(c->profile_egress[slot], sizeof(c->profile_egress[slot]), v);
+                    else if (!strcmp(p, "list"))
+                        set_str(c->profile_list[slot], sizeof(c->profile_list[slot]), v);
+                    else if (!strcmp(p, "geo_url"))
+                        set_str(c->profile_geo_url[slot], sizeof(c->profile_geo_url[slot]), v);
+                    else if (!strcmp(p, "table"))
+                        c->profile_table[slot] = (int)strtol(v, NULL, 0);
+                    else if (!strcmp(p, "mark"))
+                        c->profile_mark[slot] = strtoul(v, NULL, 0);
+                    else if (!strcmp(p, "auto"))
+                        c->profile_auto[slot] = (int)strtol(v, NULL, 0);
+                }
+                fclose(pf);
+                if (!c->profile_name[slot][0]) {
+                    size_t k;
+                    for (k = 0; k + 1 < sizeof(c->profile_name[slot]) &&
+                                de->d_name[k] && de->d_name[k] != '.'; k++)
+                        c->profile_name[slot][k] = de->d_name[k];
+                    c->profile_name[slot][k] = '\0';
+                }
+            }
+            closedir(d);
+        }
+    }
+
     {
         static const int def_tbl[CFG_MAX_PROFILES] = { 201, 202, 203, 204 };
         static const unsigned long def_mark[CFG_MAX_PROFILES] = {
@@ -473,6 +604,12 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "log_level=%s\n", c->log_level);
     fprintf(fp, "# Уровень логов Xray: debug | info | warning | none (читает xray-egress.sh).\n");
     fprintf(fp, "xray_loglevel=%s\n", c->xray_loglevel);
+    fprintf(fp, "# GOGC Xray (память; меньше = агрессивнее GC).\n");
+    fprintf(fp, "xray_gogc=%s\n", c->xray_gogc);
+    fprintf(fp, "# GOMEMLIMIT Xray (мягкий лимит памяти, напр. 64MiB).\n");
+    fprintf(fp, "xray_gomemlimit=%s\n", c->xray_gomemlimit);
+    fprintf(fp, "# Watchdog Xray: 1 = агент сам поднимает упавший Xray (tproxy).\n");
+    fprintf(fp, "xray_watchdog=%d\n", c->xray_watchdog);
     fprintf(fp, "# Режим носителя: normal | soft (минимум записей на NAND/flash).\n");
     fprintf(fp, "disk_mode=%s\n", c->disk_mode);
     fprintf(fp, "# Период сохранения состояния в soft-режиме, ч; 0 = никогда.\n");
@@ -485,6 +622,26 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "lan_server_interfaces=%s\n", c->lan_server_interfaces);
     fprintf(fp, "# Период сверки датаплейна (reconcile), сек; 0 = 15.\n");
     fprintf(fp, "dp_check_interval=%d\n", out_dur(c->dp_check_interval, U_SEC));
+    fprintf(fp, "# DNS-снифинг (домен->IP, зеркально, штатный DNS не трогаем): 0 | 1.\n");
+    fprintf(fp, "dns_sniff=%d\n", c->dns_sniff);
+    fprintf(fp, "# TTL записи домен->IP в снифинге, сек.\n");
+    fprintf(fp, "dns_sniff_ttl=%d\n", out_dur(c->dns_sniff_ttl, U_SEC));
+    fprintf(fp, "# Интерфейс захвата DNS; пусто = первый lan_interface.\n");
+    fprintf(fp, "dns_sniff_iface=%s\n", c->dns_sniff_iface);
+    fprintf(fp, "# Периодически передобавлять пины списков (самолечение): 0 | 1.\n");
+    fprintf(fp, "pin_reassert=%d\n", c->pin_reassert);
+    fprintf(fp, "# N2: kernel-offload ok/CDN-адресов маршрутом через интерфейс: 0 | 1.\n");
+    fprintf(fp, "kernel_offload=%d\n", c->kernel_offload);
+    fprintf(fp, "# N2: интерфейс для offload (напр. nwg1); пусто = выключено.\n");
+    fprintf(fp, "kernel_egress=%s\n", c->kernel_egress);
+    fprintf(fp, "# N2: макс. длина префикса offload-маршрута (бит).\n");
+    fprintf(fp, "kernel_offload_max=%d\n", c->kernel_offload_max);
+    fprintf(fp, "# N3: race-пробинг egress (выбор быстрейшего): 0 | 1.\n");
+    fprintf(fp, "egress_race=%d\n", c->egress_race);
+    fprintf(fp, "# N3: кандидаты race через запятую; пусто = egress_interface.\n");
+    fprintf(fp, "egress_race_list=%s\n", c->egress_race_list);
+    fprintf(fp, "# P2: движок поддерживает default в table профиля на живом egress: 0 | 1.\n");
+    fprintf(fp, "profile_failover=%d\n", c->profile_failover);
     fprintf(fp, "# L1: мин. пакетов к адресу для обучения.\n");
     fprintf(fp, "learn_min_op=%d\n", c->learn_min_op);
     fprintf(fp, "# L2: мин. байт «от нас» для обучения.\n");
@@ -509,6 +666,10 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "ipv6_block=%d\n", c->ipv6_block);
     fprintf(fp, "# Блокировать QUIC (UDP/443) из LAN: 0 | 1.\n");
     fprintf(fp, "quic_block=%d\n", c->quic_block);
+    fprintf(fp, "# MSS для туннеля: 0 = выкл, число байт (напр. 1380) или pmtu.\n");
+    fprintf(fp, "mss_clamp=%s\n", c->mss_clamp);
+    fprintf(fp, "# 1 = MSS ко всему LAN-forward, 0 = только к VPN-потокам.\n");
+    fprintf(fp, "mss_clamp_lan=%d\n", c->mss_clamp_lan);
     fprintf(fp, "# Встроенная веб-панель включена: 0 | 1.\n");
     fprintf(fp, "web_enable=%d\n", c->web_enable);
     fprintf(fp, "# Адрес веб-панели (LAN, не 0.0.0.0).\n");
@@ -517,6 +678,10 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "web_port=%d\n", c->web_port);
     fprintf(fp, "# Токен доступа к веб-панели (пусто = без пароля).\n");
     fprintf(fp, "web_token=%s\n", c->web_token);
+    fprintf(fp, "# Возврат на приоритетный (первый живой) egress после восстановления: 0 | 1.\n");
+    fprintf(fp, "egress_failback=%d\n", c->egress_failback);
+    fprintf(fp, "# Сколько секунд Master должен держать UP до возврата (антидребезг).\n");
+    fprintf(fp, "egress_failback_debounce=%d\n", out_dur(c->egress_failback_debounce, U_SEC));
     fprintf(fp, "# Тип egress: interface (nwg*/wdtt*/tun*) | tproxy (XRay/REALITY).\n");
     fprintf(fp, "egress_type=%s\n", c->egress_type);
     fprintf(fp, "# Порт локального Xray (dokodemo-door redirect) для egress_type=tproxy.\n");
@@ -537,8 +702,11 @@ int config_save(const char *path, const susanin_config *c)
         fprintf(fp, "profile%d_name=%s\n", i + 1, c->profile_name[i]);
         fprintf(fp, "profile%d_egress=%s\n", i + 1, c->profile_egress[i]);
         fprintf(fp, "profile%d_list=%s\n", i + 1, c->profile_list[i]);
+        if (c->profile_geo_url[i][0])
+            fprintf(fp, "profile%d_geo_url=%s\n", i + 1, c->profile_geo_url[i]);
         fprintf(fp, "profile%d_table=%d\n", i + 1, c->profile_table[i]);
         fprintf(fp, "profile%d_mark=0x%lx\n", i + 1, c->profile_mark[i]);
+        fprintf(fp, "profile%d_auto=%d\n", i + 1, c->profile_auto[i]);
     }
     fclose(fp);
     return 0;
@@ -661,12 +829,25 @@ void config_print(const susanin_config *c)
     printf("vpn_never_interval=%d\n", out_dur(c->vpn_never_interval, U_SEC));
     printf("log_level=%s\n", c->log_level);
     printf("xray_loglevel=%s\n", c->xray_loglevel);
+    printf("xray_gogc=%s\n", c->xray_gogc);
+    printf("xray_gomemlimit=%s\n", c->xray_gomemlimit);
+    printf("xray_watchdog=%d\n", c->xray_watchdog);
     printf("disk_mode=%s\n", c->disk_mode);
     printf("soft_state_interval=%d\n", out_dur(c->soft_state_interval, U_HOUR));
     printf("learn_exclude_ports=%s\n", c->learn_exclude_ports);
     printf("discover_exclude=%s\n", c->discover_exclude);
     printf("lan_server_interfaces=%s\n", c->lan_server_interfaces);
     printf("dp_check_interval=%d\n", out_dur(c->dp_check_interval, U_SEC));
+    printf("dns_sniff=%d\n", c->dns_sniff);
+    printf("dns_sniff_ttl=%d\n", out_dur(c->dns_sniff_ttl, U_SEC));
+    printf("dns_sniff_iface=%s\n", c->dns_sniff_iface);
+    printf("pin_reassert=%d\n", c->pin_reassert);
+    printf("kernel_offload=%d\n", c->kernel_offload);
+    printf("kernel_egress=%s\n", c->kernel_egress);
+    printf("kernel_offload_max=%d\n", c->kernel_offload_max);
+    printf("egress_race=%d\n", c->egress_race);
+    printf("egress_race_list=%s\n", c->egress_race_list);
+    printf("profile_failover=%d\n", c->profile_failover);
     printf("learn_min_op=%d\n", c->learn_min_op);
     printf("learn_min_bytes=%d\n", c->learn_min_bytes);
     printf("confirm_min_bytes=%d\n", c->confirm_min_bytes);
@@ -679,10 +860,14 @@ void config_print(const susanin_config *c)
     printf("cdn_prefix_max=%d\n", c->cdn_prefix_max);
     printf("ipv6_block=%d\n", c->ipv6_block);
     printf("quic_block=%d\n", c->quic_block);
+    printf("mss_clamp=%s\n", c->mss_clamp);
+    printf("mss_clamp_lan=%d\n", c->mss_clamp_lan);
     printf("web_enable=%d\n", c->web_enable);
     printf("web_listen=%s\n", c->web_listen);
     printf("web_port=%d\n", c->web_port);
     printf("web_token=%s\n", c->web_token);
+    printf("egress_failback=%d\n", c->egress_failback);
+    printf("egress_failback_debounce=%d\n", out_dur(c->egress_failback_debounce, U_SEC));
     printf("egress_type=%s\n", c->egress_type);
     printf("tproxy_port=%d\n", c->tproxy_port);
     printf("udp_relay=%d\n", c->udp_relay);
@@ -695,7 +880,10 @@ void config_print(const susanin_config *c)
         printf("profile%d_name=%s\n", i + 1, c->profile_name[i]);
         printf("profile%d_egress=%s\n", i + 1, c->profile_egress[i]);
         printf("profile%d_list=%s\n", i + 1, c->profile_list[i]);
+        if (c->profile_geo_url[i][0])
+            printf("profile%d_geo_url=%s\n", i + 1, c->profile_geo_url[i]);
         printf("profile%d_table=%d\n", i + 1, c->profile_table[i]);
         printf("profile%d_mark=0x%lx\n", i + 1, c->profile_mark[i]);
+        printf("profile%d_auto=%d\n", i + 1, c->profile_auto[i]);
     }
 }
