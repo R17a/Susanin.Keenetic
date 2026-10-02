@@ -347,7 +347,8 @@ opkg install curl
 curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
 ```
 
-Архитектура определяется сама (по `uname -m`). Дополнительные флаги:
+Архитектура определяется автоматически по данным Entware
+(`/opt/etc/entware_release`, запасной вариант — `uname -m`). Дополнительные флаги:
 `--arch mipsel|mips|aarch64|armv7|x86_64` (задать вручную),
 `--version latest|vX.Y.Z`, `--egress <if>`, `--lan <if,if>`,
 `--subnets <cidr,cidr>`, `--yes` (без подтверждений), `--force`
