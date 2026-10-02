@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "config.h"
+#include "platform.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -104,12 +105,12 @@ void config_set_defaults(susanin_config *c)
     c->health_miss_debounce = 4;
     snprintf(c->health_probe, sizeof(c->health_probe), "%s", "1.1.1.1,8.8.8.8");
     snprintf(c->health_probe_src, sizeof(c->health_probe_src), "%s", "10.8.1.1");
-    snprintf(c->vpn_always_file, sizeof(c->vpn_always_file), "%s",
-             "/opt/susanin/etc/vpn_always.txt");
+    susanin_join(c->vpn_always_file, sizeof(c->vpn_always_file),
+                 susanin_etcdir(), "vpn_always.txt");
     snprintf(c->vpn_always_dns, sizeof(c->vpn_always_dns), "%s", "");
     c->vpn_always_interval = 300;
-    snprintf(c->vpn_never_file, sizeof(c->vpn_never_file), "%s",
-             "/opt/susanin/etc/vpn_never.txt");
+    susanin_join(c->vpn_never_file, sizeof(c->vpn_never_file),
+                 susanin_etcdir(), "vpn_never.txt");
     c->vpn_never_interval = 300;
     snprintf(c->log_level, sizeof(c->log_level), "%s", "info");
     c->diagnostics = 0;

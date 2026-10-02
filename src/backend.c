@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "backend.h"
 #include "log.h"
+#include "platform.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -10,16 +11,15 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
-/* Resolve an external tool via the standard Entware/usr search path.
- * Returns 0 with the absolute path in out, or -1 with the bare name
- * (PATH lookup) when not found. */
+/* Resolve an external tool via the platform search path. Returns 0 with the
+ * absolute path in out, or -1 with the bare name (PATH lookup) if not found. */
 static int tool_path(const char *name, char *out, size_t n)
 {
-    static const char *const dirs[] = { "/opt/sbin", "/opt/bin", "/usr/sbin", "/usr/bin" };
+    const char *const *dirs = susanin_tool_dirs();
     char p[160];
     unsigned i;
-    for (i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
-        snprintf(p, sizeof(p), "%s/%s", dirs[i], name);
+    for (i = 0; dirs[i]; i++) {
+        susanin_join(p, sizeof(p), dirs[i], name);
         if (access(p, X_OK) == 0) {
             snprintf(out, n, "%s", p);
             return 0;
@@ -173,14 +173,21 @@ static void set_env(const susanin_config *c)
     setenv("SUSANIN_LAN", c->lan_interfaces[0] ? c->lan_interfaces : "br0", 1);
     setenv("SUSANIN_TTL_TEST", (snprintf(v, sizeof(v), "%d", c->test_ttl), v), 1);
     setenv("SUSANIN_TTL_OK", (snprintf(v, sizeof(v), "%d", c->ok_ttl), v), 1);
+    /* Directory layout for the data-plane script (no-op on Entware: /opt). */
+    setenv("SUSANIN_BINDIR", susanin_bindir(), 1);
+    setenv("SUSANIN_ETCDIR", susanin_etcdir(), 1);
+    setenv("SUSANIN_VARDIR", susanin_vardir(), 1);
+    setenv("SUSANIN_TOOLSDIR", susanin_toolsdir(), 1);
     setenv("SUSANIN_DISK_MODE", c->disk_mode[0] ? c->disk_mode : "normal", 1);
 }
 
 static int run_script(const susanin_config *c, const char *a1, const char *a2)
 {
+    char script[256];
     char *argv[5];
+    susanin_join(script, sizeof(script), susanin_toolsdir(), "datapath.sh");
     argv[0] = "sh";
-    argv[1] = "/opt/susanin/tools/datapath.sh";
+    argv[1] = script;
     argv[2] = (char *)a1;
     argv[3] = (char *)a2;
     argv[4] = NULL;

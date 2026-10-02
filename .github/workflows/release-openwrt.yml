@@ -1,0 +1,80 @@
+name: Release OpenWRT binaries
+
+# Separate release channel for the OpenWRT port (Keenetic/Netcraze on OpenWRT).
+# The Entware/Keenetic channel (tag "v*", release.yml) is not touched by this.
+
+on:
+  push:
+    tags: ["openwrt-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: ramips/mt7621
+            arch: mipsel_24kc
+          - target: mediatek/filogic
+            arch: aarch64_cortex-a53
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends make file wget zstd
+      - name: Resolve OpenWRT release
+        id: rel
+        run: |
+          REL=$(awk '!/^[[:space:]]*#/ && NF>=3 {print $1; exit}' tools/owrt-targets.txt)
+          [ -n "$REL" ] || { echo "cannot read release from tools/owrt-targets.txt" >&2; exit 1; }
+          echo "rel=$REL" >> "$GITHUB_OUTPUT"
+          echo "building OpenWRT $REL"
+      - name: Build ${{ matrix.arch }}
+        run: sh tools/sdk-build.sh "${{ steps.rel.outputs.rel }}" "${{ matrix.target }}"
+      - name: Package ${{ matrix.arch }}
+        run: |
+          T="${{ matrix.target }}"
+          t=${T%%/*}; s=${T#*/}
+          sh tools/owrt-package.sh "build/susanin-agent.openwrt-${t}-${s}" "${{ matrix.arch }}"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: owrt-${{ matrix.arch }}
+          path: deploy-openwrt/*.tar.gz
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      - name: Compose release body
+        run: |
+          sed "s/{{TAG}}/${GITHUB_REF_NAME}/g" \
+            .github/release-openwrt-body.md > release-body.md
+          cat release-body.md
+      - name: Publish OpenWRT pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          name: "OpenWRT ${{ github.ref_name }}"
+          body_path: release-body.md
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS

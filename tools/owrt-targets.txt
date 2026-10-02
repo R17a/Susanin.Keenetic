@@ -1,0 +1,16 @@
+# OpenWRT build matrix: <release> <target>/<subtarget> <arch-label>
+#
+# Scope: Keenetic and its Russian counterpart Netcraze only.
+# Those devices use MediaTek SoCs:
+#   MT7620 / MT7621 / MT7628   -> mipsel_24kc          (ramips)
+#   MT7622 / MT7981 / MT7986   -> aarch64_cortex-a53   (ramips mt7622 / mediatek filogic)
+#
+# Binaries are static musl, so one build per architecture covers every device of
+# that architecture: the mt7621 build runs on all mipsel_24kc routers, the
+# filogic build runs on all aarch64_cortex-a53 routers (including mt7622).
+#
+# arch-label is used only for the output asset name:
+#   deploy-openwrt/susanin-openwrt-<arch-label>.tar.gz
+
+24.10.8 ramips/mt7621       mipsel_24kc
+24.10.8 mediatek/filogic    aarch64_cortex-a53

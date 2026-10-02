@@ -2,6 +2,7 @@
 #include "ops.h"
 #include "backend.h"
 #include "log.h"
+#include "platform.h"
 #include "state.h"
 #include "version.h"
 
@@ -17,19 +18,23 @@
 
 const char *ops_default_conf_path(void)
 {
+    static char buf[256];
     const char *p = getenv("SUSANIN_CONF");
-    return p && *p ? p : "/opt/susanin/etc/susanin.conf";
+    if (p && *p)
+        return p;
+    susanin_join(buf, sizeof(buf), susanin_etcdir(), "susanin.conf");
+    return buf;
 }
 
 static const char *tool(const char *name)
 {
-    static char buf[4][128];
+    static char buf[4][160];
     static int used = 0;
-    const char *dirs[] = { "/opt/sbin", "/opt/bin", "/usr/sbin", "/usr/bin" };
-    char p[96];
+    const char *const *dirs = susanin_tool_dirs();
+    char p[160];
     unsigned i;
-    for (i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
-        snprintf(p, sizeof(p), "%s/%s", dirs[i], name);
+    for (i = 0; dirs[i]; i++) {
+        susanin_join(p, sizeof(p), dirs[i], name);
         if (access(p, X_OK) == 0) {
             if (used >= 4) return name;
             snprintf(buf[used], sizeof(buf[used]), "%s", p);
@@ -205,10 +210,11 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
     const char *ipt = tool("iptables");
     const char *ip = tool("ip");
     const char *ipset = tool("ipset");
-    const char *state_path = "/opt/susanin/var/susanin.state";
+    char state_path[256];
     char *a[8];
     char needle[160];
 
+    susanin_join(state_path, sizeof(state_path), susanin_vardir(), "susanin.state");
     printf("susanin-agent %s\n", SUSANIN_VERSION);
     printf("config file: %s (%s)\n", conf_path,
            access(conf_path, R_OK) == 0 ? "present" : "absent");
@@ -270,13 +276,14 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
 
 int ops_forget(const susanin_config *cfg, const char *ip)
 {
-    const char *path = "/opt/susanin/var/susanin.state";
+    char path[256];
     susanin_state st;
     int udp, removed = 0;
     if (!ip || !ip[0]) {
         fprintf(stderr, "usage: susanin-agent forget <ip>\n");
         return 2;
     }
+    susanin_join(path, sizeof(path), susanin_vardir(), "susanin.state");
     state_init(&st);
     state_load(path, &st);
     for (udp = 0; udp < 2; udp++) {

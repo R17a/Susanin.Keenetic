@@ -5,6 +5,7 @@
 #include "engine.h"
 #include "log.h"
 #include "ops.h"
+#include "platform.h"
 #include "version.h"
 
 #include <stdio.h>
@@ -14,8 +15,12 @@
 
 static const char *cfg_path(void)
 {
+    static char buf[256];
     const char *p = getenv("SUSANIN_CONF");
-    return p && *p ? p : "/opt/susanin/etc/susanin.conf";
+    if (p && *p)
+        return p;
+    susanin_join(buf, sizeof(buf), susanin_etcdir(), "susanin.conf");
+    return buf;
 }
 
 static void usage(void)
@@ -62,10 +67,11 @@ static int cmd_ct_scan(void)
 
 static int cmd_datapath(int argc, char **argv)
 {
-    const char *script = "/opt/susanin/tools/datapath.sh";
+    char script[256];
     char *newargv[16];
     int n = 0, i;
 
+    susanin_join(script, sizeof(script), susanin_toolsdir(), "datapath.sh");
     if (argc < 3) {
         fprintf(stderr, "usage: susanin-agent datapath {up|down|status|flush|add <ip> <tcp|udp> <test|ok>|del <ip> <tcp|udp>}\n");
         return 2;
