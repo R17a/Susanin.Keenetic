@@ -314,15 +314,19 @@ quic_block_clean() {
     done
 }
 
-# MSS/PMTU clamping: всегда снимаем прошлые TCPMSS-правила, затем ставим по
-# настройке. По умолчанию только к НАШИМ помеченным (VPN) потокам (идёт от LAN),
-# mss_clamp_lan=1 — ко всему LAN-forward.
+# MSS/PMTU clamping. Свои правила держим в ОТДЕЛЬНОЙ цепочке SUSANIN_MSS и
+# НИКОГДА не трогаем чужие TCPMSS-правила в FORWARD (например, штатный MSS-clamp
+# Keenetic для PPPoE): их удаление ведёт к PMTU-блэкхолу — крупные пакеты не
+# проходят, страницы грузятся частично/не открываются.
+# По умолчанию (MSS_CLAMP=0) мы вообще ничего не добавляем и ничего не удаляем.
+# mss_clamp_lan=1 — применять ко всему LAN-forward, иначе только к нашим
+# помеченным (VPN) потокам.
+MSS_CHAIN=SUSANIN_MSS
+
 mss_clamp_clean() {
-    "ipt" -t mangle -S FORWARD 2>/dev/null | grep -E -- '-j TCPMSS' | \
-        while read -r line; do
-            spec=$(printf '%s' "$line" | sed 's/^-A FORWARD //')
-            "ipt" -t mangle -D FORWARD $spec >/dev/null 2>&1 || true
-        done || true
+    "ipt" -t mangle -D FORWARD -j "$MSS_CHAIN" >/dev/null 2>&1 || true
+    "ipt" -t mangle -F "$MSS_CHAIN" >/dev/null 2>&1 || true
+    "ipt" -t mangle -X "$MSS_CHAIN" >/dev/null 2>&1 || true
 }
 
 mss_clamp_rules() {
@@ -336,20 +340,28 @@ mss_clamp_rules() {
         esac
         _tgt="--set-mss $MSS_CLAMP"; _desc="$MSS_CLAMP"
     fi
+    "ipt" -t mangle -N "$MSS_CHAIN" 2>/dev/null || true
+    "ipt" -t mangle -F "$MSS_CHAIN" 2>/dev/null || true
     if [ "$MSS_CLAMP_LAN" = "1" ]; then
         for i in $LAN; do
-            if ! "ipt" -t mangle -A FORWARD -i "$i" -p tcp --tcp-flags SYN,RST SYN \
+            if ! "ipt" -t mangle -A "$MSS_CHAIN" -i "$i" -p tcp --tcp-flags SYN,RST SYN \
                     -j TCPMSS $_tgt 2>/dev/null; then
-                say "mss_clamp: цель TCPMSS недоступна (модуль?) — пропускаю"; return 0
+                say "mss_clamp: цель TCPMSS недоступна (модуль?) — пропускаю"
+                mss_clamp_clean; return 0
             fi
         done
     else
         for m in "$MARK_OK" "$MARK_TEST"; do
-            if ! "ipt" -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN \
+            if ! "ipt" -t mangle -A "$MSS_CHAIN" -p tcp --tcp-flags SYN,RST SYN \
                     -m mark --mark "$m/$MARK_MASK" -j TCPMSS $_tgt 2>/dev/null; then
-                say "mss_clamp: цель TCPMSS недоступна (модуль?) — пропускаю"; return 0
+                say "mss_clamp: цель TCPMSS недоступна (модуль?) — пропускаю"
+                mss_clamp_clean; return 0
             fi
         done
+    fi
+    if ! "ipt" -t mangle -A FORWARD -j "$MSS_CHAIN" 2>/dev/null; then
+        say "mss_clamp: не удалось встроить цепочку $MSS_CHAIN — пропускаю"
+        mss_clamp_clean; return 0
     fi
     say "mss_clamp=$_desc (lan=$MSS_CLAMP_LAN)"
 }
@@ -436,12 +448,11 @@ command_status() {
     elif [ "${q:-0}" -gt 0 ] 2>/dev/null; then
         echo "quic_block: off, но найдены остаточные правила ($q) — перезапустите susanin.sh"
     fi
-    mssq=$("ipt" -t mangle -S FORWARD 2>/dev/null | grep -c -- '-j TCPMSS' || true)
-    case "$MSS_CLAMP" in
-        ''|0) [ "${mssq:-0}" -gt 0 ] 2>/dev/null \
-                  && echo "mss_clamp: off, но есть остаточные правила ($mssq)";;
-        *) echo "mss_clamp: on ($MSS_CLAMP, lan=$MSS_CLAMP_LAN, rules=$mssq)";;
-    esac
+    if "ipt" -t mangle -L "$MSS_CHAIN" >/dev/null 2>&1; then
+        echo "mss_clamp: on ($MSS_CLAMP, lan=$MSS_CLAMP_LAN, chain=$MSS_CHAIN)"
+    elif [ -n "$MSS_CLAMP" ] && [ "$MSS_CLAMP" != "0" ]; then
+        echo "mss_clamp: задан ($MSS_CLAMP), но цепочки $MSS_CHAIN нет"
+    fi
 }
 
 command_egress() {
