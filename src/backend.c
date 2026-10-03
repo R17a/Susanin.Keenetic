@@ -541,6 +541,18 @@ int backend_set_del(const susanin_config *c, const char *set, const char *val)
     return run_argv(argv);
 }
 
+int backend_set_test(const susanin_config *c, const char *set, const char *val)
+{
+    char *argv[5];
+    (void)c;
+    argv[0] = (char *)tool_ipset();
+    argv[1] = "test";
+    argv[2] = (char *)set;
+    argv[3] = (char *)val;
+    argv[4] = NULL;
+    return run_argv(argv);          /* 0 = присутствует */
+}
+
 int backend_net_add(const susanin_config *c, const char *cidr, int ttl)
 {
     char *argv[8];

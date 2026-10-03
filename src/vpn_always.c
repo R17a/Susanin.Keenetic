@@ -829,6 +829,9 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
             doms_reconcile(v, names, wilds, nf);
         v->seen_mtime = st.st_mtime;
         v->seen_size = st.st_size;
+        /* Файл изменился: снимаем устаревшие пины СРАЗУ (dirty обходит
+         * гистерезис), а не через несколько интервалов. */
+        v->dirty = 1;
     }
 
     /* Восстановить пины/backoff из кэша (мгновенный «прогрев» после рестарта). */
@@ -1061,8 +1064,13 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
        нового пина, чтобы не дёргать живые соединения каждый интервал. */
     for (i = 0; i < ndes; i++) {
         int known = tracked_has(v, desired[i]);
-        backend_ipset_add(cfg, 0, 1, desired[i], 0);
-        backend_ipset_add(cfg, 1, 1, desired[i], 0);
+        if (!known || cfg->pin_reassert) {
+            /* pin_reassert=1 (по умолчанию): передобавляем пины каждый проход,
+             * само-восстанавливая внешне потерянные (resync/flush/GC/TTL).
+             * 0 — добавляем только новые. */
+            backend_ipset_add(cfg, 0, 1, desired[i], 0);
+            backend_ipset_add(cfg, 1, 1, desired[i], 0);
+        }
         if (!known) {
             tracked_add(v, desired[i]);
             /* Адрес только что переведён в VPN: рвём уже открытые прямые потоки,
@@ -1076,7 +1084,8 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
     }
     for (i = 0; i < ndesn; i++) {
         int known = trackednet_has(v, desired_net[i]);
-        backend_net_add(cfg, desired_net[i], 0);
+        if (!known || cfg->pin_reassert)
+            backend_net_add(cfg, desired_net[i], 0);
         if (!known) {
             trackednet_add(v, desired_net[i]);
             slogf(SL_DEBUG, "vpn_always: pin net %s", desired_net[i]);

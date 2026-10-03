@@ -43,6 +43,8 @@ int backend_net_del(const susanin_config *c, const char *cidr);
 int backend_set_add(const susanin_config *c, const char *set, const char *val,
                     int ttl);
 int backend_set_del(const susanin_config *c, const char *set, const char *val);
+/* 0 = значение присутствует в наборе, !=0 — нет/ошибка. */
+int backend_set_test(const susanin_config *c, const char *set, const char *val);
 int backend_ct_delete(const ct_flow *f);
 
 #endif

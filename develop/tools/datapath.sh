@@ -61,6 +61,9 @@ CHAIN=SUSANIN
 SETS="susanin_ok_tcp susanin_ok_udp susanin_test_tcp susanin_test_udp"
 NETSET=susanin_ok_net
 NEVERSET=susanin_never
+# Мягкое «прямо» (DIRECT_PREF, D1): RETURN как never, но с TTL и управляется
+# агентом (авто-возврат). Отдельный набор, чтобы не трогать жёсткий never.
+DIRECTSET=susanin_direct
 
 say() { echo "[susanin] $*"; }
 load_mod() {
@@ -123,6 +126,7 @@ ensure_sets() {
     done
     set_exists "$NETSET" || "$IPSET" create "$NETSET" hash:net timeout 0
     set_exists "$NEVERSET" || "$IPSET" create "$NEVERSET" hash:net timeout 0
+    set_exists "$DIRECTSET" || "$IPSET" create "$DIRECTSET" hash:net timeout 0
     say "ipsets ready"
 }
 
@@ -149,14 +153,19 @@ rule_mark() {
             mangle "$CHAIN" -i "$i" -m mark --mark "$KERNEL_MARK/$KERNEL_MARK" -j ACCEPT
         fi
         mangle "$CHAIN" -i "$i" -m set --match-set susanin_never dst -j RETURN
-        # Служебные/прикладные UDP, которые ВСЕГДА идут напрямую (не в VPN и не
-        # в udp-relay): 500/4500 — IPsec (IKE/NAT-T); 8567 — UDP-мессенджер
-        # Битрикс24 (мобильный клиент). Иначе IPsec за роутером и мобильный
-        # Битрикс уходят через Xray и ломаются. RETURN стоит ДО правил наборов,
-        # поэтому действует даже если адрес уже выучен в susanin_ok_udp.
-        for _p in 500 4500 8567; do
-            mangle "$CHAIN" -i "$i" -p udp --dport "$_p" -j RETURN
-            mangle "$CHAIN" -i "$i" -p udp --sport "$_p" -j RETURN
+        # Мягкое «прямо» (D1): адрес, который пробовали в VPN, но там хуже —
+        # принудительно прямо, с TTL (сам вернётся в обучение).
+        mangle "$CHAIN" -i "$i" -m set --match-set "$DIRECTSET" dst -j RETURN
+        # Порты, которые ВСЕГДА идут напрямую (не в VPN и не в udp-relay):
+        #   53/853 — DNS / DNS-over-TLS (иначе ломается резолв);
+        #   500/4500 — IPsec (IKE/NAT-T); 8567 — UDP-мессенджер Битрикс24.
+        # RETURN стоит ДО правил наборов, поэтому действует, даже если адрес уже
+        # выучен в susanin_ok_*/ok_net.
+        for _p in 53 853 500 4500 8567; do
+            for _t in tcp udp; do
+                mangle "$CHAIN" -i "$i" -p "$_t" --dport "$_p" -j RETURN
+                mangle "$CHAIN" -i "$i" -p "$_t" --sport "$_p" -j RETURN
+            done
         done
         for p in tcp udp; do
             mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
@@ -389,6 +398,7 @@ command_down() {
     for s in $SETS; do set_exists "$s" && "$IPSET" destroy "$s" || true; done
     set_exists "$NETSET" && "$IPSET" destroy "$NETSET" || true
     set_exists "$NEVERSET" && "$IPSET" destroy "$NEVERSET" || true
+    set_exists "$DIRECTSET" && "$IPSET" destroy "$DIRECTSET" || true
     iprule_fw_clean "$MARK_OK" "$PRI_OK"
     iprule_fw_clean "$MARK_TEST" "$PRI_TEST"
     "$IPCMD" rule del fwmark "$TPROXY_MARK" priority "$((PRI_OK + 2))" lookup "$TABLE" >/dev/null 2>&1 || true
@@ -424,6 +434,11 @@ command_status() {
         echo "$NEVERSET = $("$IPSET" list "$NEVERSET" 2>/dev/null | grep -cE '^[0-9]+\.' || true)"
     else
         echo "$NEVERSET = (absent)"
+    fi
+    if set_exists "$DIRECTSET"; then
+        echo "$DIRECTSET = $("$IPSET" list "$DIRECTSET" 2>/dev/null | grep -cE '^[0-9]+\.' || true)"
+    else
+        echo "$DIRECTSET = (absent)"
     fi
     "$IPCMD" rule show | grep -E "lookup $TABLE" || echo "no ip rule for table $TABLE"
     if [ "${TPROXY_PORT:-0}" -gt 0 ] 2>/dev/null; then

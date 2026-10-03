@@ -226,10 +226,11 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
     printf("egress pool: n=%d failback=%d debounce=%ds race=%d\n",
            cfg->n_egress, cfg->egress_failback, cfg->egress_failback_debounce,
            cfg->egress_race);
-    printf("features: dns_sniff=%d offload=%d(%s) pin_reassert=%d xray_watchdog=%d\n",
+    printf("features: dns_sniff=%d offload=%d(%s) pin_reassert=%d xray_watchdog=%d auto_direct=%d media=%d\n",
            cfg->dns_sniff, cfg->kernel_offload,
            cfg->kernel_egress[0] ? cfg->kernel_egress : "-",
-           cfg->pin_reassert, cfg->xray_watchdog);
+           cfg->pin_reassert, cfg->xray_watchdog, cfg->auto_direct,
+           cfg->media_enabled);
     if (cfg->n_profiles > 0) {
         int k;
         printf("profiles (failover=%d):\n", cfg->profile_failover);

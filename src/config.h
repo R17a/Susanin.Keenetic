@@ -122,6 +122,22 @@ typedef struct {
     /* N3: race-пробинг egress — параллельно замерить кандидатов. */
     int egress_race;
     char egress_race_list[CFG_PATH_MAX]; /* кандидаты через запятую; пусто = egress_list */
+    /* D1: мягкое «прямо» (DIRECT_PREF). Если адрес ушёл в VPN и там деградирует,
+     * временно принудительно направляем его прямо (набор susanin_direct, TTL),
+     * а если и прямой путь деградирует — вернём в обучение/VPN. */
+    int auto_direct;
+    int direct_pref_ttl;    /* TTL «мягкого прямо», сек */
+    /* M1: класс media (IPTV/видео). Детект по форме потока (крупный устойчивый
+     * ответ), агрегация префикса в susanin_ok_net -> последующие потоки идут в
+     * VPN с первого пакета (userspace, без FASTNAT-залипаний). По умолчанию 0. */
+    int media_enabled;
+    char media_ports[128];  /* порты через запятую, напр. 80,443,554,1935,8080 */
+    int media_min_bytes;    /* минимум принятых байт */
+    int media_ratio;        /* rb >= ratio*ob */
+    int media_min_rate;     /* минимум байт/с (устойчиво) */
+    int media_min_age;      /* минимальный возраст потока, сек */
+    int media_ttl;          /* TTL media-префикса, сек */
+    int media_prefix_max;   /* макс. длина префикса агрегации (напр. 24) */
     /* Профили маршрутизации (P1): статический список -> свой туннель.
      * Задаются повторяющимися ключами profileN_name/_egress/_list/_table/_mark
      * (N = 1..CFG_MAX_PROFILES). Нет ни одного profileN_name — профилей нет,

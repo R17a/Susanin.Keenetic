@@ -134,6 +134,12 @@ stop_daemon() {
         done
     fi
     rm -f "$DAEMON_PID"
+    # Снимаем правила датаплейна: иначе «stop» фактически не выключает Susanin —
+    # правила остаются и продолжают заворачивать трафик (stop-тесты врут, fail-open
+    # не наступает). Агент поднимет правила заново при start/restart.
+    if [ -f "$TOOLS/datapath.sh" ]; then
+        sh "$TOOLS/datapath.sh" down >/dev/null 2>&1 || true
+    fi
     sleep 1
     echo "[susanin] stopped"
 }

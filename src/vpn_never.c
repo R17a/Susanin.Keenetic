@@ -572,8 +572,13 @@ int vn_refresh(vpn_never *v, const susanin_config *cfg)
         }
     }
     for (i = 0; i < nd; i++) {
-        if (tracked_has(v, des[i]) && !v->dirty)
+        if (tracked_has(v, des[i]) && !v->dirty) {
+            /* pin_reassert=1: периодически передобавляем «прямые» пины, чтобы
+             * восстановить внешне потерянные (resync/flush/GC/IPset rebuild). */
+            if (cfg->pin_reassert)
+                backend_set_add(cfg, VN_SET, des[i], 0);
             continue;
+        }
         backend_set_add(cfg, VN_SET, des[i], 0);
         if (!strchr(des[i], '/')) {
             /* Сбросить старые VPN-потоки и убрать из ok/test-кэша: адрес должен

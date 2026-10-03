@@ -425,6 +425,19 @@ if command -v ip >/dev/null 2>&1; then
     else
         echo "IPv6 default: нет (глобального IPv6-интернета нет — это норма)"
     fi
+
+    # MTU/MSS: на PPPoE (MTU 1492) без зажатия MSS крупные пакеты не проходят →
+    # сайты грузятся частично/не открываются. Проверяем WAN MTU и наличие clamp.
+    _wan=$(ip route show default 2>/dev/null | awk '/default/{print $5; exit}')
+    if [ -n "$_wan" ] && [ -r "/sys/class/net/$_wan/mtu" ]; then
+        _mtu=$(cat "/sys/class/net/$_wan/mtu" 2>/dev/null)
+        _mss=0; iptables -t mangle -L SUSANIN_MSS >/dev/null 2>&1 && _mss=1
+        _kclamp=$(iptables -t mangle -S FORWARD 2>/dev/null | grep -c -- '-j TCPMSS' || true)
+        echo "WAN MTU ($_wan): ${_mtu:-?} ; MSS-clamp: susanin=$_mss, внешних TCPMSS=${_kclamp:-0}"
+        if [ "${_mtu:-1500}" -lt 1500 ] 2>/dev/null && [ "$_mss" = "0" ] && [ "${_kclamp:-0}" -eq 0 ]; then
+            rec "WAN MTU=$_mtu (<1500), а MSS-clamp нет: вероятен PMTU-блэкхол (крупные пакеты теряются, сайты грузятся частично). Включите mss_clamp=pmtu (или 1400) и mss_clamp_lan=1 в susanin.conf, либо «MSS clamping» в Keenetic."
+        fi
+    fi
 fi
 
 echo "IPTV/CDN (сайт за Cloudflare/Fastly и «то грузится, то нет»):"

@@ -21,7 +21,9 @@ static int is_udp(const ct_flow *f) { return f->l4proto == 17; }
  * Иначе автообучение уводит IPsec/Битрикс в VPN, и они ломаются. */
 static int service_port(unsigned p)
 {
-    return p == 500 || p == 4500 || p == 8567;
+    /* 53/853 — DNS/DoT (никогда в VPN: иначе ломается резолв);
+     * 500/4500 — IPsec (IKE/NAT-T); 8567 — UDP-мессенджер Битрикс24. */
+    return p == 53 || p == 853 || p == 500 || p == 4500 || p == 8567;
 }
 
 static int port_excluded(const susanin_config *cfg, unsigned port)
@@ -274,9 +276,64 @@ static void cdn_aggregate(classifier_ctx *ctx, const ct_flow *f)
         return;
     if (!cdn_match(cfg, f->dst, cidr, sizeof(cidr)))
         return;
+    /* Не тянем префикс, если сам адрес — из vpn_never (иначе соседи по /24,
+     * которые тоже «прямые», уедут в VPN). vpn_never имеет приоритет. */
+    if (backend_set_test(cfg, "susanin_never", f->dst) == 0) {
+        slogf(SL_DEBUG, "CDN: не агрегирую %s — адрес в vpn_never", f->dst);
+        return;
+    }
     backend_net_add(cfg, cidr, cfg->cdn_prefix_ttl);
     slogf(SL_INFO, "CDN: %s -> ok (reason=CONFIRMED %s), ttl=%ds",
           cidr, f->dst, cfg->cdn_prefix_ttl);
+}
+
+/* M1: media-класс (IPTV/видео). Детект по форме потока и агрегация префикса в
+ * susanin_ok_net (VPN): достаточно один раз увидеть крупный асимметричный поток,
+ * чтобы последующие шли в VPN с первого пакета (userspace, без FASTNAT). */
+static int media_port(const susanin_config *cfg, unsigned p)
+{
+    char buf[128], *save = NULL, *tok;
+    if (!cfg->media_ports[0])
+        return 0;
+    snprintf(buf, sizeof(buf), "%s", cfg->media_ports);
+    for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        while (*tok == ' ' || *tok == '\t') tok++;
+        if ((unsigned)strtoul(tok, NULL, 10) == p)
+            return 1;
+    }
+    return 0;
+}
+
+static void media_aggregate(classifier_ctx *ctx, const ct_flow *f)
+{
+    const susanin_config *cfg = ctx->cfg;
+    struct in_addr a, b;
+    char ab[INET_ADDRSTRLEN];
+    char cidr[64];
+    uint32_t ah, mask;
+    int pre;
+    if (!cfg->media_enabled)
+        return;
+    if (!media_port(cfg, f->dport))
+        return;
+    if (f->rb < (unsigned long)cfg->media_min_bytes)
+        return;
+    if (f->ob > 0 && f->rb < (unsigned long)cfg->media_ratio * f->ob)
+        return;
+    if (inet_pton(AF_INET, f->dst, &a) != 1)
+        return;
+    pre = cfg->media_prefix_max > 0 ? cfg->media_prefix_max : 24;
+    if (pre > 32)
+        pre = 32;
+    ah = ntohl(a.s_addr);
+    mask = pre == 0 ? 0 : (0xffffffffu << (32 - pre));
+    b.s_addr = htonl(ah & mask);
+    if (!inet_ntop(AF_INET, &b, ab, sizeof(ab)))
+        return;
+    snprintf(cidr, sizeof(cidr), "%s/%d", ab, pre);
+    backend_net_add(cfg, cidr, cfg->media_ttl);
+    slogf(SL_INFO, "MEDIA: %s -> vpn (rb=%lu, ob=%lu)", cidr,
+          (unsigned long)f->rb, (unsigned long)f->ob);
 }
 
 static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
@@ -291,6 +348,9 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
               f->dst, f->dport);
         return;
     }
+    /* D1: снимаем «мягкое прямо» (DIRECT_PREF), иначе RETURN в цепочке не даст
+     * адресу уйти в VPN, когда прямой путь снова деградировал. */
+    backend_set_del(cfg, "susanin_direct", f->dst);
     if (!promo_ok(cfg, now))
         return;
     state_add(st_test(ctx->st, udp), f->dst, now, cfg->test_ttl, 0);
@@ -334,6 +394,13 @@ void clr_fast(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                  * Обычные FAST-SYN/FAST-CLOSE это не ловят: SYN-ACK уже был
                  * (rp=1), поэтому срабатывает только этот сигнал. */
                 promote_test(ctx, f, now, "FAST", "DPI-RST");
+            else if (f->dport == 443 && f->ob >= lmin_bytes(cfg) && f->rb < 128 &&
+                     f->rp <= 1 && strcmp(f->tcp_state, "ESTABLISHED") == 0)
+                /* Post-handshake «тишина» по SNI: рукопожатие прошло (rp>=1),
+                 * ClientHello отправлен (ob растёт), данных нет (rb<128), но
+                 * соединение ещё ESTABLISHED (ТСПУ держит тишину). Ловим на FAST,
+                 * не дожидаясь SOFT. */
+                promote_test(ctx, f, now, "FAST", "DPI-STALL");
         } else if (f->l4proto == 17) {
             if (f->dport == 443 && f->op >= (cfg->learn_strict ? 8UL : 6UL) && f->rp == 0)
                 promote_test(ctx, f, now, "FAST", "QUIC");
@@ -352,6 +419,11 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         if (f->ctmark != 0 || ours(f, cfg)) continue;
         if (!from_lan(cfg, f->src)) continue;
         if (is_private_dst(f->dst, NULL)) continue;
+
+        /* M1: media (IPTV/видео) — детект по форме потока, агрегация в VPN. */
+        if ((f->l4proto == 6 && strcmp(f->tcp_state, "ESTABLISHED") == 0) ||
+            f->l4proto == 17)
+            media_aggregate(ctx, f);
 
         if (f->l4proto == 6 && strcmp(f->tcp_state, "ESTABLISHED") == 0) {
             if (f->op >= lmin_op(cfg) && f->ob >= lmin_bytes(cfg) &&
@@ -495,6 +567,13 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 state_remove(st_watch(ctx->st, udp), f->dst);
                 state_add(st_cool(ctx->st, udp), f->dst, now, cfg->cooldown_ok_ttl, 0);
                 backend_ipset_del(cfg, udp, 1, f->dst);
+                /* D1: адрес в VPN (ok) деградирует — пробуем «прямо» (мягкое
+                 * «прямо» с TTL). Если и прямой путь плох, обучение вернёт VPN. */
+                if (cfg->auto_direct && cfg->direct_pref_ttl > 0) {
+                    backend_set_add(cfg, "susanin_direct", f->dst, cfg->direct_pref_ttl);
+                    slogf(SL_INFO, "D1: %s -> soft-direct (%ds)", f->dst,
+                          cfg->direct_pref_ttl);
+                }
                 slogf(SL_DEBUG, "AUTO-SUSANIN: OK-CHURN %s:%u", f->dst, f->dport);
                 oc_cnt++;
                 snprintf(oc_name, sizeof(oc_name), "%s:%u", f->dst, f->dport);

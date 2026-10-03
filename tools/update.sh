@@ -164,7 +164,7 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
               cooldown_ok_ttl=30 watch_ttl=8 watch_retry_below=4 health_probe=1.1.1.1,8.8.8.8 \
               udp_relay=0 udp_relay_port=1081 socks_addr=127.0.0.1 socks_port=1080 \
               log_level=info xray_loglevel=warning \
-              learn_exclude_ports=22,23,53,135,137,138,139,445,500,554,1433,1723,3306,3389,4500,5432,5900,6379,7547,8567,9100,11211,27017 \
+              learn_exclude_ports=22,23,53,135,137,138,139,445,500,554,853,1433,1723,3306,3389,4500,5432,5900,6379,7547,8567,9100,11211,27017 \
               vpn_always_file=/opt/susanin/etc/vpn_always.txt vpn_always_dns= \
               vpn_always_interval=300 \
               vpn_never_file=/opt/susanin/etc/vpn_never.txt vpn_never_interval=300 \
@@ -180,6 +180,9 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
               kernel_offload=0 kernel_egress= kernel_offload_max=24 \
               dns_sniff=0 dns_sniff_ttl=300 dns_sniff_iface= pin_reassert=1 \
               mss_clamp=0 mss_clamp_lan=0 profile_failover=1 \
+              auto_direct=1 direct_pref_ttl=3600 \
+              media_enabled=0 media_ports=80,443,554,1935,8080,8443 media_min_bytes=1048576 \
+              media_ratio=8 media_min_rate=150000 media_min_age=12 media_ttl=21600 media_prefix_max=24 \
               health_mode=icmp health_tcp_port=443; do
         k=${kv%%=*}; d=${kv#*=}
         grep -q "^${k}=" "$PREFIX/etc/susanin.conf" 2>/dev/null \

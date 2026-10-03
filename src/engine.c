@@ -254,6 +254,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     time_t last[4] = { 0, 0, 0, 0 };
     time_t last_save = 0;
     time_t last_recon = 0;
+    time_t last_dpfast = 0;
     time_t next_dp_try = 0;
     time_t last_force = 0;
     time_t last_never = 0;
@@ -586,39 +587,67 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             trim_ok(cfg, &st);
         }
 
+        /* Быстрый контроль датаплейна: NDM может снести правила в любой момент,
+         * поэтому проверяем чаще общего reconcile — меньше окно fail-open. */
+        if (dp_ok && now - last_dpfast >= 5) {
+            last_dpfast = now;
+            if (!backend_ready(cfg)) {
+                slogf(SL_WARN, "data plane missing (fast check), re-provisioning");
+                if (backend_provision(cfg) == 0) {
+                    backend_mark_reprov("rules missing (fast re-provision)");
+                    if (tunnel_up) {
+                        resync_sets(cfg, &st);
+                        sweep_direct(cfg, &st, L.v, L.n);
+                        va_mark_dirty(va);
+                        vn_mark_dirty(nv);
+                        last_force = 0;
+                    }
+                } else {
+                    dp_ok = 0;
+                    dp_fails = 1;
+                    next_dp_try = now + 60;
+                }
+                last_recon = now;   /* не дублировать в общем reconcile */
+            }
+        }
+
         if (now - last_recon >= (cfg->dp_check_interval > 0 ? cfg->dp_check_interval : 15)) {
             int tproxy = (strcmp(cfg->egress_type, "tproxy") == 0);
             int tp_ok = !tproxy || backend_local_listen(cfg->tproxy_port);
             last_recon = now;
             if (tproxy && tp_ok)
                 xray_tries = 0;     /* Xray жив — сбрасываем счётчик watchdog */
+            /* Watchdog Xray — НЕЗАВИСИМО от состояния датаплейна: если tproxy и
+             * порт не слушается, поднимаем Xray с backoff. Раньше это работало
+             * только при dp_ok=1, поэтому после падения Xray (dp_ok=0) агент
+             * оставался в fail-open навсегда. */
+            if (tproxy && !tp_ok && cfg->xray_watchdog && now >= next_xray_try) {
+                int w, back;
+                xray_tries++;
+                back = 15 << (xray_tries < 5 ? xray_tries : 4);
+                if (back > 900)
+                    back = 900;
+                next_xray_try = now + back;
+                slogf(SL_WARN, "tproxy: Xray :%d не слушает — поднимаю (try %d)",
+                      cfg->tproxy_port, xray_tries);
+                restart_xray_process();
+                for (w = 0; w < 5 && !backend_local_listen(cfg->tproxy_port); w++)
+                    sleep(1);
+                tp_ok = backend_local_listen(cfg->tproxy_port);
+                if (tp_ok) {
+                    slogf(SL_INFO, "tproxy: Xray поднят watchdog'ом");
+                    xray_tries = 0;
+                    next_xray_try = 0;
+                }
+            }
             if (dp_ok && tproxy && !tp_ok) {
-                /* Xray умер: пробуем поднять его сами (watchdog) с backoff, а не
-                 * только снимать правила. Порядок: teardown → restart → ждём порт. */
+                /* Xray умер — снимаем правила (fail-open DIRECT); watchdog выше
+                 * уже пытается поднять Xray. */
+                slogf(SL_ERROR, "tproxy: Xray :%d пропал — снимаю правила, fail-open DIRECT",
+                      cfg->tproxy_port);
                 backend_teardown(cfg);
                 dp_ok = 0;
                 next_dp_try = now + 15;
-                if (cfg->xray_watchdog && now >= next_xray_try) {
-                    int w, back;
-                    xray_tries++;
-                    back = 15 << (xray_tries < 5 ? xray_tries : 4);
-                    if (back > 900)
-                        back = 900;
-                    next_xray_try = now + back;
-                    slogf(SL_WARN, "tproxy: Xray :%d пропал — поднимаю (try %d)",
-                          cfg->tproxy_port, xray_tries);
-                    restart_xray_process();
-                    for (w = 0; w < 5 && !backend_local_listen(cfg->tproxy_port); w++)
-                        sleep(1);
-                    if (backend_local_listen(cfg->tproxy_port)) {
-                        slogf(SL_INFO, "tproxy: Xray поднят watchdog'ом");
-                        xray_tries = 0;
-                        next_xray_try = 0;
-                    }
-                } else {
-                    slogf(SL_ERROR, "tproxy: Xray :%d пропал — снимаю правила, fail-open DIRECT",
-                          cfg->tproxy_port);
-                }
             } else if (dp_ok && !backend_ready(cfg)) {
                 /* Was active and disappeared (e.g. NDM/firewall rebuild). */
                 slogf(SL_WARN, "data plane missing (NDM rebuild?), re-provisioning");

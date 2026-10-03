@@ -140,7 +140,7 @@ void config_set_defaults(susanin_config *c)
     c->soft_state_interval = 12 * 3600;   /* soft: сохранять состояние раз в 12 ч */
     /* Порты, которые не участвуют в автообучении (типовой скан-шум). */
     snprintf(c->learn_exclude_ports, sizeof(c->learn_exclude_ports), "%s",
-             "22,23,53,135,137,138,139,445,500,554,1433,1723,3306,3389,4500,5432,5900,6379,7547,8567,9100,11211,27017");
+             "22,23,53,135,137,138,139,445,500,554,853,1433,1723,3306,3389,4500,5432,5900,6379,7547,8567,9100,11211,27017");
     snprintf(c->discover_exclude, sizeof(c->discover_exclude), "%s",
              "wdtt0,wdttraw0,tun0,tap0");
     snprintf(c->lan_server_interfaces, sizeof(c->lan_server_interfaces), "%s", "");
@@ -180,6 +180,16 @@ void config_set_defaults(susanin_config *c)
     c->kernel_offload = 0;
     c->kernel_offload_max = 24;
     c->egress_race = 0;
+    c->auto_direct = 1;
+    c->direct_pref_ttl = 3600;
+    c->media_enabled = 0;
+    snprintf(c->media_ports, sizeof(c->media_ports), "%s", "80,443,554,1935,8080,8443");
+    c->media_min_bytes = 1048576;
+    c->media_ratio = 8;
+    c->media_min_rate = 150000;
+    c->media_min_age = 12;
+    c->media_ttl = 21600;
+    c->media_prefix_max = 24;
     c->profile_failover = 1;
     c->n_profiles = 0;
     parse_egress(c);
@@ -406,6 +416,26 @@ int config_load(const char *path, susanin_config *c)
             c->egress_race = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "egress_race_list"))
             set_str(c->egress_race_list, sizeof(c->egress_race_list), val);
+        else if (!strcmp(key, "auto_direct"))
+            c->auto_direct = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "direct_pref_ttl"))
+            c->direct_pref_ttl = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "media_enabled"))
+            c->media_enabled = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "media_ports"))
+            set_str(c->media_ports, sizeof(c->media_ports), val);
+        else if (!strcmp(key, "media_min_bytes"))
+            c->media_min_bytes = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "media_ratio"))
+            c->media_ratio = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "media_min_rate"))
+            c->media_min_rate = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "media_min_age"))
+            c->media_min_age = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "media_ttl"))
+            c->media_ttl = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "media_prefix_max"))
+            c->media_prefix_max = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "profile_failover"))
             c->profile_failover = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "egress_type"))
@@ -640,6 +670,26 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "egress_race=%d\n", c->egress_race);
     fprintf(fp, "# N3: кандидаты race через запятую; пусто = egress_interface.\n");
     fprintf(fp, "egress_race_list=%s\n", c->egress_race_list);
+    fprintf(fp, "# D1: авто-возврат «в VPN хуже -> прямо» (мягкое прямо): 0 | 1.\n");
+    fprintf(fp, "auto_direct=%d\n", c->auto_direct);
+    fprintf(fp, "# D1: TTL мягкого «прямо», сек.\n");
+    fprintf(fp, "direct_pref_ttl=%d\n", out_dur(c->direct_pref_ttl, U_SEC));
+    fprintf(fp, "# M1: класс media (IPTV/видео) — детект по форме потока: 0 | 1.\n");
+    fprintf(fp, "media_enabled=%d\n", c->media_enabled);
+    fprintf(fp, "# M1: порты media через запятую.\n");
+    fprintf(fp, "media_ports=%s\n", c->media_ports);
+    fprintf(fp, "# M1: минимум принятых байт для media.\n");
+    fprintf(fp, "media_min_bytes=%d\n", c->media_min_bytes);
+    fprintf(fp, "# M1: rb >= ratio*ob.\n");
+    fprintf(fp, "media_ratio=%d\n", c->media_ratio);
+    fprintf(fp, "# M1: минимум Б/с (устойчиво).\n");
+    fprintf(fp, "media_min_rate=%d\n", c->media_min_rate);
+    fprintf(fp, "# M1: минимальный возраст потока, сек.\n");
+    fprintf(fp, "media_min_age=%d\n", out_dur(c->media_min_age, U_SEC));
+    fprintf(fp, "# M1: TTL media-префикса, сек.\n");
+    fprintf(fp, "media_ttl=%d\n", out_dur(c->media_ttl, U_SEC));
+    fprintf(fp, "# M1: макс. длина префикса агрегации (напр. 24).\n");
+    fprintf(fp, "media_prefix_max=%d\n", c->media_prefix_max);
     fprintf(fp, "# P2: движок поддерживает default в table профиля на живом egress: 0 | 1.\n");
     fprintf(fp, "profile_failover=%d\n", c->profile_failover);
     fprintf(fp, "# L1: мин. пакетов к адресу для обучения.\n");
@@ -847,6 +897,16 @@ void config_print(const susanin_config *c)
     printf("kernel_offload_max=%d\n", c->kernel_offload_max);
     printf("egress_race=%d\n", c->egress_race);
     printf("egress_race_list=%s\n", c->egress_race_list);
+    printf("auto_direct=%d\n", c->auto_direct);
+    printf("direct_pref_ttl=%d\n", out_dur(c->direct_pref_ttl, U_SEC));
+    printf("media_enabled=%d\n", c->media_enabled);
+    printf("media_ports=%s\n", c->media_ports);
+    printf("media_min_bytes=%d\n", c->media_min_bytes);
+    printf("media_ratio=%d\n", c->media_ratio);
+    printf("media_min_rate=%d\n", c->media_min_rate);
+    printf("media_min_age=%d\n", out_dur(c->media_min_age, U_SEC));
+    printf("media_ttl=%d\n", out_dur(c->media_ttl, U_SEC));
+    printf("media_prefix_max=%d\n", c->media_prefix_max);
     printf("profile_failover=%d\n", c->profile_failover);
     printf("learn_min_op=%d\n", c->learn_min_op);
     printf("learn_min_bytes=%d\n", c->learn_min_bytes);

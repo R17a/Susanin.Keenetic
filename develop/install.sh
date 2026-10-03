@@ -445,7 +445,7 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     ensure_key "$PREFIX/etc/susanin.conf" ok_evict_misses 3
     ensure_key "$PREFIX/etc/susanin.conf" promo_per_min 30
     ensure_key "$PREFIX/etc/susanin.conf" soft_state_interval 12
-    ensure_key "$PREFIX/etc/susanin.conf" learn_exclude_ports "22,23,53,135,137,138,139,445,500,554,1433,1723,3306,3389,4500,5432,5900,6379,7547,8567,9100,11211,27017"
+    ensure_key "$PREFIX/etc/susanin.conf" learn_exclude_ports "22,23,53,135,137,138,139,445,500,554,853,1433,1723,3306,3389,4500,5432,5900,6379,7547,8567,9100,11211,27017"
     ensure_key "$PREFIX/etc/susanin.conf" vpn_always_file /opt/susanin/etc/vpn_always.txt
     ensure_key "$PREFIX/etc/susanin.conf" vpn_always_dns ""
     ensure_key "$PREFIX/etc/susanin.conf" vpn_always_interval 300
@@ -512,6 +512,16 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     ensure_key "$PREFIX/etc/susanin.conf" dns_sniff_ttl 300
     ensure_key "$PREFIX/etc/susanin.conf" dns_sniff_iface ""
     ensure_key "$PREFIX/etc/susanin.conf" pin_reassert 1
+    ensure_key "$PREFIX/etc/susanin.conf" auto_direct 1
+    ensure_key "$PREFIX/etc/susanin.conf" direct_pref_ttl 3600
+    ensure_key "$PREFIX/etc/susanin.conf" media_enabled 0
+    ensure_key "$PREFIX/etc/susanin.conf" media_ports "80,443,554,1935,8080,8443"
+    ensure_key "$PREFIX/etc/susanin.conf" media_min_bytes 1048576
+    ensure_key "$PREFIX/etc/susanin.conf" media_ratio 8
+    ensure_key "$PREFIX/etc/susanin.conf" media_min_rate 150000
+    ensure_key "$PREFIX/etc/susanin.conf" media_min_age 12
+    ensure_key "$PREFIX/etc/susanin.conf" media_ttl 21600
+    ensure_key "$PREFIX/etc/susanin.conf" media_prefix_max 24
     ensure_key "$PREFIX/etc/susanin.conf" mss_clamp 0
     ensure_key "$PREFIX/etc/susanin.conf" mss_clamp_lan 0
     ensure_key "$PREFIX/etc/susanin.conf" profile_failover 1
