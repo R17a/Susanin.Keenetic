@@ -204,11 +204,10 @@ Susanin.Keenetic может выносить помеченный трафик �
 - **UDP:** релей в самом демоне (`TPROXY` приём + SOCKS5 `UDP ASSOCIATE` к
   локальному Xray `socks`, `udp:true`).
 
-Требуется бинарь Xray и конфиг клиента:
+Требуется бинарь Xray и конфиг клиента (Xray в архив не входит):
 ```sh
-# бинарь (для mipsel — 1.8.24 softfloat):
-cp xray/xray.mipsel /opt/sbin/xray && chmod +x /opt/sbin/xray
-# конфиг: из шаблона, подставить SERVER/UUID/SNI/PBK/SID
+sh bootstrap.sh --with-xray --yes    # Xray 1.8.24 -> /opt/sbin/xray
+# вручную: develop/xray/xray.<arch> -> /opt/sbin/xray, chmod +x, sha256 по xray/SHA256SUMS
 cp /opt/susanin/etc/xray-tproxy.json.example /opt/susanin/etc/xray-tproxy.json
 ```
 Включение/выключение боевого режима (ключи `egress_type=tproxy`, `udp_relay=1`
@@ -356,7 +355,9 @@ curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.
 ```
 
 Архитектура определяется автоматически по данным Entware
-(`/opt/etc/entware_release`, запасной вариант — `uname -m`). Дополнительные флаги:
+(`/opt/etc/entware_release`, затем фид из `/opt/etc/opkg.conf`, затем
+`opkg print-architecture`, затем `uname -m` + endianness ELF-заголовка).
+Дополнительные флаги:
 `--arch mipsel|mips|aarch64|armv7|x86_64` (задать вручную),
 `--version latest|vX.Y.Z`, `--egress <if>`, `--lan <if,if>`,
 `--subnets <cidr,cidr>`, `--yes` (без подтверждений), `--force`
@@ -369,6 +370,19 @@ curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.
 ```sh
 sh install.sh --yes
 ```
+
+Тестовая (**develop**) сборка и старые BusyBox (где `tar` не знает `--exclude`) —
+установщик `bootstrap.sh`: сам определит arch/ядро, скачает архив и распакует
+только бинарник под вашу архитектуру:
+
+```sh
+cd /opt/tmp
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
+```
+
+Флаги: `--channel dev|stable`, `--version`, `--file`, `--url`, `--check`,
+`--dry-run`, `--with-xray`, `--verify`, `--tmp DIR`; остальные (`--yes`, `--arch`,
+`--egress`, `--lan`, `--force`, `--deps` и т.д.) передаются в `install.sh`.
 
 Ваши `/opt/susanin/etc/susanin.conf`, `vpn_always.txt` и `vpn_never.txt` при
 установке и обновлении **не перезаписываются**, но списки могут **дополняться**
@@ -510,6 +524,14 @@ docker build -f Dockerfile.cross -t susanin-build .
 
 ```sh
 sh /opt/susanin/tools/diagnose.sh
+```
+
+Если проблема накопительная («через сутки становится хуже», «растёт память») —
+запустите суточный прогон с метриками и приложите лог:
+
+```sh
+sh /opt/susanin/tools/soak.sh &          # интервал 60 c, файл var/soak.log
+tail -f /opt/susanin/var/soak.log        # Ctrl-C -> сводка с ростом КБ/ч
 ```
 
 Что выявляет:

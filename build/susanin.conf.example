@@ -174,6 +174,8 @@ cdn_prefix_learn=1
 cdn_prefix_ttl=3600
 # Не агрегировать шире этой маски (число бит; /24 ограничивает «радиус»).
 cdn_prefix_max=24
+# Сколько РАЗНЫХ адресов подтвердить до агрегации префикса (>=1; 1 = по первому).
+aggregate_confirm=2
 
 # --- Политики IPv6 / QUIC ---
 # Блокировать IPv6 из LAN (клиенты уходят на IPv4): 0 | 1.
@@ -187,9 +189,8 @@ egress_failback=1
 # Сколько секунд Master должен держать UP до возврата (антидребезг), сек.
 egress_failback_debounce=30
 # N3: race-пробинг egress — выбрать быстрейший по замеру: 0 | 1.
+# Кандидаты — все интерфейсы из egress_interface (через запятую).
 egress_race=0
-# Кандидаты race через запятую; пусто = egress_interface.
-egress_race_list=
 
 # --- Xray: память и watchdog ---
 # GOGC Xray (меньше = агрессивнее GC).

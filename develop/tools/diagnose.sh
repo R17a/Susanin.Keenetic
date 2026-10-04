@@ -145,6 +145,13 @@ if [ "$ET" = "tproxy" ]; then
         echo "xray: НЕ запущен"
         rec "egress_type=tproxy, но Xray не запущен — трафик идёт DIRECT. Поднимите: /opt/etc/init.d/S93xray-tproxy start (при xray_watchdog=1 агент поднимет сам)."
     fi
+    QB=$(cfg quic_block)
+    if [ "$QB" = "1" ]; then
+        echo "quic_block: 1 (HTTP/3 из LAN -> TCP)"
+    else
+        echo "quic_block: ${QB:-<нет ключа>} — HTTP/3 (UDP 443) из LAN НЕ блокируется"
+        rec "egress_type=tproxy, а quic_block не равен 1: QUIC помеченных адресов уходит в UDP-релей (Xray), браузер ждёт HTTP/3 и страница может грузиться бесконечно (частый симптом «сайт висит, а ping/curl работают»). Поставьте quic_block=1 в susanin.conf и перезапустите: sh /opt/susanin/tools/susanin.sh restart"
+    fi
 fi
 if command -v free >/dev/null 2>&1; then
     echo "--- память ---"

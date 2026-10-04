@@ -58,6 +58,21 @@ static int iface_exists(const char *name)
     return access(p, F_OK) == 0;
 }
 
+/* Жив ли хотя бы один кандидат egress_interface (может быть списком). */
+static int egress_any_alive(const susanin_config *c)
+{
+    int i;
+    if (c->n_egress > 0) {
+        for (i = 0; i < c->n_egress; i++) {
+            if (c->egress_list[i][0] && iface_exists(c->egress_list[i]) &&
+                !iface_excluded(c, c->egress_list[i]))
+                return 1;
+        }
+        return 0;
+    }
+    return iface_exists(c->egress_interface) && !iface_excluded(c, c->egress_interface);
+}
+
 /* Кандидат на egress: имена nwg, wg, amnezia, ovpn. */
 static int is_egress_name(const char *n)
 {
@@ -236,10 +251,8 @@ int discover_defaults(susanin_discovery *d, const susanin_config *c)
         goto egress_addr;
     }
 
-    /* Egress: если сконфигурированный интерфейс существует — оставляем его;
-     * иначе выбираем первый подходящий UP-кандидат, приоритет — default dev. */
-    if (c->egress_interface[0] && iface_exists(c->egress_interface) &&
-        !iface_excluded(c, c->egress_interface)) {
+    /* Egress: список фейловера оставляем, если жив хотя бы один кандидат. */
+    if (c->egress_interface[0] && egress_any_alive(c)) {
         snprintf(d->egress_interface, sizeof(d->egress_interface), "%s", c->egress_interface);
     } else {
         for (i = 0; i < nup; i++) {

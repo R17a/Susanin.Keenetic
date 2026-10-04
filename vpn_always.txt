@@ -231,3 +231,37 @@ help.elevenlabs.io
 45.156.223.0/24
 194.35.227.0/24
 195.211.191.0/24
+
+# --- OpenAI/ChatGPT и Anthropic/Claude: полный набор (2026-10-04) ---
+# Дополнение к алфавитному списку выше. Уже есть выше и повторять не нужно:
+# openai.com, chatgpt.com, oaistatic.com, oaiusercontent.com, anthropic.com,
+# claude.ai/.com, clau.de, claudemcpclient.com, claudemcpcontent.com,
+# claudeusercontent.com, datadoghq.com, а также CIDR 160.79.104.0/21 —
+# он шире запрошенного 160.79.104.0/23 (адреса 104–111 против 104–105).
+# IPv6 в v1 не поддерживается (резолвим только A-записи), поэтому сети
+# 2607:6bc0::/48 и 2607:6bc0:11::/48 оставлены закомментированными.
+android.chat.openai.com
+betaprofiles.com
+browser-intake-datadoghq.com
+chat.com
+chatgpt.livekit.cloud
+chatgpt.site
+crixet.com
+host.livekit.cloud
+ios.chat.openai.com
+o33249.ingest.sentry.io
+oaistatsig.com
+openai.com.cdn.cloudflare.net
+openai.qualtrics.com
+openaiapi-site.azureedge.net
+openaiassets.blob.core.windows.net
+openaicom-api-bdcpf8c6d2e9atf6.z01.azurefd.net
+openaicom.imgix.net
+openaicomproductionae4b.blob.core.windows.net
+production-openaicom-storage.azureedge.net
+servd-anthropic-website.b-cdn.net
+sora.com
+turn.livekit.cloud
+webpubsub.azure.com
+# 2607:6bc0::/48
+# 2607:6bc0:11::/48

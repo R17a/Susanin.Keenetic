@@ -13,8 +13,10 @@ SRCS = src/main.c src/config.c src/discover.c src/conntrack.c src/state.c \
 OBJS = $(SRCS:.c=.o)
 
 TARGET = susanin-agent
+TESTBIN = tests/test_conntrack
+SAMPLES = testdata/nf_conntrack.samples
 
-.PHONY: all clean install
+.PHONY: all clean install test
 
 all: $(TARGET)
 
@@ -24,9 +26,16 @@ $(TARGET): $(OBJS)
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+# Тесты парсера conntrack (хост-компилятор; в кросс-сборку не входят).
+test: $(TESTBIN)
+	./$(TESTBIN) $(SAMPLES)
+
+$(TESTBIN): tests/test_conntrack.c src/conntrack.c src/conntrack.h
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_conntrack.c src/conntrack.c
+
 install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(CONFDIR) $(DESTDIR)$(VARDIR)
 	install -m 0755 $(TARGET) $(DESTDIR)$(BINDIR)/$(TARGET)
 
 clean:
-	rm -f $(TARGET) $(OBJS)
+	rm -f $(TARGET) $(OBJS) $(TESTBIN)

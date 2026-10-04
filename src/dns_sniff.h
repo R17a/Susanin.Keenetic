@@ -2,6 +2,7 @@
 #define SUSANIN_DNS_SNIFF_H
 
 #include "config.h"
+#include "state.h"
 
 /*
  * DNS-снифинг (P3 / N1): зеркально слушаем DNS-ответы LAN (AF_PACKET на
@@ -23,6 +24,11 @@ void dns_sniff_poll(void);                        /* забрать пакеты
 
 /* Периодически пинит IP из снифинга, если домен попал в vpn_always/vpn_never. */
 void dns_sniff_reconcile(const susanin_config *cfg);
+
+/* Персист пинов: агент отдаёт своё state (пины переживают re-provision/рестарт). */
+void dns_sniff_set_state(susanin_state *st);
+/* Сбросить флаги «запинено» (после flush ipset'ов) — применятся заново. */
+void dns_sniff_reset_pins(void);
 
 int  dns_sniff_count(void);
 /* 1 = нашли домен для IP; domain_out заполняется (может быть ""). */

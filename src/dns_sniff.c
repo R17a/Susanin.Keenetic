@@ -1,4 +1,4 @@
-﻿#define _GNU_SOURCE
+#define _GNU_SOURCE
 #include "dns_sniff.h"
 #include "backend.h"
 #include "log.h"
@@ -32,6 +32,7 @@ static dns_entry g_tab[DNS_MAX_ENTRIES];
 static int g_fd = -1;
 static int g_started = 0;
 static const susanin_config *g_cfg = NULL;
+static susanin_state *g_state = NULL;   /* для персиста пинов (может быть NULL) */
 
 static unsigned long dns_hash(const char *s)
 {
@@ -305,6 +306,22 @@ static int list_match(const char *file, const char *domain)
     return hit;
 }
 
+void dns_sniff_set_state(susanin_state *st)
+{
+    g_state = st;
+}
+
+void dns_sniff_reset_pins(void)
+{
+    int i;
+    /* Пины в ipset'ах сброшены (flush) — снимаем флаги, чтобы reconcile
+     * применил их заново. Значения из state при этом уже восстановлены. */
+    for (i = 0; i < DNS_MAX_ENTRIES; i++) {
+        g_tab[i].pinned = 0;
+        g_tab[i].pinned_never = 0;
+    }
+}
+
 void dns_sniff_reconcile(const susanin_config *cfg)
 {
     int i;
@@ -313,17 +330,45 @@ void dns_sniff_reconcile(const susanin_config *cfg)
         return;
     for (i = 0; i < DNS_MAX_ENTRIES; i++) {
         dns_entry *e = &g_tab[i];
+        int ttl;
         if (!e->domain[0] || e->expire <= now)
+            continue;
+        ttl = (int)(e->expire - now);           /* TTL = остаток DNS-ответа */
+        if (ttl <= 0)
             continue;
         if (!e->pinned && list_match(cfg->vpn_always_file, e->domain)) {
             backend_ipset_add(cfg, 0, 1, e->ip, cfg->ok_ttl);
             backend_ipset_add(cfg, 1, 1, e->ip, cfg->ok_ttl);
             e->pinned = 1;
+            if (g_state) {                      /* переживёт re-provision/рестарт */
+                state_add(st_ok(g_state, 0), e->ip, now, ttl, 0);
+                state_add(st_ok(g_state, 1), e->ip, now, ttl, 0);
+            }
             slogf(SL_INFO, "dns-sniff: %s -> %s pinned (vpn_always)", e->domain, e->ip);
         }
         if (!e->pinned_never && list_match(cfg->vpn_never_file, e->domain)) {
             backend_set_add(cfg, "susanin_never", e->ip, 0);
             e->pinned_never = 1;
+            if (g_state)
+                state_add(&g_state->never, e->ip, now, ttl, 0);
+            /* Конфликт ok <-> never: адрес мог быть уже выучен в VPN — снимаем
+             * и рвём его соединения, иначе «прямо» не заработает. */
+            if (g_state) {
+                if (state_has(st_ok(g_state, 0), e->ip, now) ||
+                    state_has(st_ok(g_state, 1), e->ip, now) ||
+                    state_has(st_test(g_state, 0), e->ip, now) ||
+                    state_has(st_test(g_state, 1), e->ip, now)) {
+                    state_remove(st_ok(g_state, 0), e->ip);
+                    state_remove(st_ok(g_state, 1), e->ip);
+                    state_remove(st_test(g_state, 0), e->ip);
+                    state_remove(st_test(g_state, 1), e->ip);
+                    backend_ipset_del(cfg, 0, 1, e->ip);
+                    backend_ipset_del(cfg, 1, 1, e->ip);
+                    backend_ct_flush_ip(e->ip);
+                    slogf(SL_INFO, "dns-sniff: %s -> %s снят из VPN (конфликт с vpn_never)",
+                          e->domain, e->ip);
+                }
+            }
             slogf(SL_INFO, "dns-sniff: %s -> %s (vpn_never)", e->domain, e->ip);
         }
     }

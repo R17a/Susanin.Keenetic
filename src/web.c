@@ -412,7 +412,7 @@ static int token_ok(const susanin_config *cfg, const char *req, const char *quer
 
 static void json_ok(int fd, const char *extra)
 {
-    char b[256];
+    char b[1024];
     int n = snprintf(b, sizeof(b), "{\"ok\":true%s%s}", extra ? "," : "", extra ? extra : "");
     if (n < 0)
         n = 0;
@@ -592,11 +592,18 @@ static int profile_field_ok(const char *k, const char *v)
     return 0;
 }
 
-/* Ключи, которые web РАЗРЕШЕНО создавать в susanin.conf, если их там нет:
- * только профили (profileN_*). Прочие ключи должны быть в файле. */
+/* Ключи, которые web РАЗРЕШЕНО создавать в susanin.conf, если их там нет.
+ * Раньше — только profileN_*, из-за чего переключатели/поля, отсутствующие в
+ * старом конфиге, молча не сохранялись (панель показывала прежнее значение).
+ * Теперь можно создать любой ключ с корректным именем, кроме web_token и
+ * web_listen (у них особая валидация). */
 static int key_creatable(const char *k)
 {
-    return (strncmp(k, "profile", 7) == 0 && k[7] >= '1' && k[7] <= '4' && k[8] == '_');
+    if (!config_key_name_ok(k))
+        return 0;
+    if (!strcmp(k, "web_token") || !strcmp(k, "web_listen"))
+        return 0;
+    return 1;
 }
 
 static int config_value_ok(const char *k, const char *v)
@@ -778,25 +785,43 @@ static void handle_action(int fd, const susanin_config *cfg, const char *target,
     }
     if (!strcmp(target, "/api/config")) {
         const char *p = body;
-        int applied = 0;
+        int applied = 0, skipped = 0;
         char bad[64] = "";
+        char skipjson[512];
+        size_t sk = 0;
+        skipjson[0] = '\0';
         while (p && *p) {
             const char *amp = strchr(p, '&');
             size_t seg = amp ? (size_t)(amp - p) : strlen(p);
             char k[64], v[512];
             if (seg && pair_get(p, seg, k, sizeof(k), v, sizeof(v)) && k[0]) {
                 if (config_value_ok(k, v) &&
-                    config_file_set(ops_default_conf_path(), k, v, key_creatable(k)) == 0)
+                    config_file_set(ops_default_conf_path(), k, v, key_creatable(k)) == 0) {
                     applied++;
-                else if (!bad[0])
-                    snprintf(bad, sizeof(bad), "%s", k);
+                } else {
+                    /* Панель должна знать, что ключ не сохранён: иначе «Сохранено»
+                     * показывается, а значение остаётся прежним. */
+                    if (!bad[0])
+                        snprintf(bad, sizeof(bad), "%s", k);
+                    if (sk + strlen(k) + 8 < sizeof(skipjson)) {
+                        sk += (size_t)snprintf(skipjson + sk, sizeof(skipjson) - sk,
+                                               "%s\"%s\"", skipped ? "," : "", k);
+                        skipped++;
+                    }
+                }
             }
             p = amp ? amp + 1 : NULL;
         }
         if (applied > 0) {
             char e2[128];
+            char extra[600];
             signal_agent(SIGHUP, e2, sizeof(e2));
-            json_ok(fd, "\"action\":\"config\"");
+            if (skipped)
+                snprintf(extra, sizeof(extra),
+                         "\"action\":\"config\",\"skipped\":[%s]", skipjson);
+            else
+                snprintf(extra, sizeof(extra), "\"action\":\"config\"");
+            json_ok(fd, extra);
         } else {
             char e[128];
             snprintf(e, sizeof(e), "no updatable keys (%s)", bad[0] ? bad : "none");

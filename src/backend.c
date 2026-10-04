@@ -149,13 +149,15 @@ static void set_name(char *buf, size_t n, int proto_udp, int phase_ok)
              proto_udp ? "udp" : "tcp");
 }
 
-/* Активный egress (меняется движком при фейловере; по умолчанию — первый). */
+/* Активный egress: один интерфейс (в конфиге возможен список фейловера). */
 static char g_active_egress[64];
 
 static const char *active_egress(const susanin_config *c)
 {
     if (g_active_egress[0])
         return g_active_egress;
+    if (c->n_egress > 0 && c->egress_list[0][0])
+        return c->egress_list[0];
     if (c->egress_interface[0])
         return c->egress_interface;
     return "nwg0";
@@ -384,13 +386,35 @@ int backend_preflight(const susanin_config *c, char *err, size_t errsz)
         return -1;
     }
     if (c->egress_interface[0]) {
-        snprintf(p, sizeof(p), "/sys/class/net/%s", c->egress_interface);
-        if (access(p, F_OK) != 0) {
+        /* Список кандидатов (фейловер): достаточно одного живого. */
+        int i, alive = 0, miss = 0;
+        char missing[200];
+        missing[0] = '\0';
+        for (i = 0; i < c->n_egress; i++) {
+            size_t l;
+            if (!c->egress_list[i][0])
+                continue;
+            snprintf(p, sizeof(p), "/sys/class/net/%s", c->egress_list[i]);
+            if (access(p, F_OK) == 0) {
+                alive = 1;
+                continue;
+            }
+            miss++;
+            l = strlen(missing);
+            snprintf(missing + l, sizeof(missing) - l, "%s%s",
+                     l ? ", " : "", c->egress_list[i]);
+        }
+        if (!alive) {
             snprintf(err, errsz,
-                     "egress interface '%s' not found (check egress_interface in susanin.conf)",
+                     "egress interface '%s' not found: none of the candidates exists "
+                     "(check egress_interface in susanin.conf)",
                      c->egress_interface);
             return -1;
         }
+        if (miss > 0)
+            slogf(SL_WARN,
+                  "preflight: egress %s отсутствует (кандидатов %d) — ждём подъёма туннеля",
+                  missing, c->n_egress);
     }
     return 0;
 }

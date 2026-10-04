@@ -120,37 +120,107 @@ if [ -n "$need" ]; then
     fi
 fi
 
-if [ -z "$ARCH" ]; then
-    # Архитектуру берём из Entware (авторитетен для userland/ABI): ядро (uname -m)
-    # ненадёжно — не различает endianness MIPS и путается при 64-битном ядре с
-    # 32-битным userland. uname -m оставлен только запасным вариантом.
+# --- определение платформы ---------------------------------------------------
+# Архитектуру берём из Entware (авторитетен для userland/ABI): ядро (uname -m)
+# ненадёжно — не различает endianness MIPS и путается при 64-битном ядре с
+# 32-битным userland.
+# Порядок источников: entware_release -> opkg.conf (фид) -> opkg print-architecture
+# -> uname -m + endianness ELF-заголовка.
+ARCH_SRC=""
+
+elf_endian() { # little|big|пусто — байт 5 ELF-заголовка (EI_DATA: 1=LSB, 2=MSB)
+    _f="$1"
+    [ -f "$_f" ] || return 1
+    _b=""
+    if command -v od >/dev/null 2>&1; then
+        _b=$(dd if="$_f" bs=1 skip=5 count=1 2>/dev/null | od -An -tu1 2>/dev/null | tr -d ' \t\n' || true)
+    fi
+    if [ -z "$_b" ] && command -v hexdump >/dev/null 2>&1; then
+        _b=$(hexdump -s 5 -n 1 -e '1/1 "%u"' "$_f" 2>/dev/null | tr -d ' \t\n' || true)
+    fi
+    case "$_b" in
+        1) printf 'little' ;;
+        2) printf 'big' ;;
+        *) return 1 ;;
+    esac
+}
+
+probe_endian() { # endianness по userland-бинарям (Entware важнее системных)
+    for _f in /opt/bin/opkg /opt/bin/opkg-cl /opt/bin/busybox /bin/busybox /bin/sh; do
+        _e=$(elf_endian "$_f" 2>/dev/null || true)
+        if [ -n "$_e" ]; then printf '%s' "$_e"; return 0; fi
+    done
+    return 1
+}
+
+entware_arch() { # сырое имя архитектуры Entware (напр. mipselsf-k3.4)
     _a=""
     if [ -r /opt/etc/entware_release ]; then
-        _a=$(awk -F= '$1=="arch"{gsub(/["[:space:]]/,"",$2); print $2; exit}' /opt/etc/entware_release 2>/dev/null)
+        _a=$(awk -F= '$1=="arch"{gsub(/["[:space:]]/,"",$2); print $2; exit}' /opt/etc/entware_release 2>/dev/null || true)
+    fi
+    if [ -z "$_a" ] && [ -r /opt/etc/opkg.conf ]; then
+        # src/gz entware https://bin.entware.net/mipselsf-k3.4 -> mipselsf-k3.4
+        _a=$(awk '/^[[:space:]]*src/ {print $NF}' /opt/etc/opkg.conf 2>/dev/null \
+             | sed 's|/*$||' | awk -F/ '{print $NF}' | grep -v '^$' | head -n1 || true)
     fi
     if [ -z "$_a" ] && command -v opkg >/dev/null 2>&1; then
-        _a=$(opkg print-architecture 2>/dev/null | awk '$1=="arch" && $2!="all"{print $2; exit}')
+        _a=$(opkg print-architecture 2>/dev/null | awk '$1=="arch" && $2!="all"{print $2; exit}' || true)
     fi
-    _a=$(printf '%s' "$_a" | sed 's/-k[0-9.][0-9.]*$//')
+    printf '%s' "$_a"
+}
+
+arch_norm() { # mipselsf-k3.4 -> mipsel, armv7sf-k2.6 -> armv7, aarch64-3.10 -> aarch64
+    _a=$(printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/-k[0-9][0-9.]*$//; s/_[0-9][0-9.]*$//')
     case "$_a" in
-        mipsel*|mipselsf*) ARCH=mipsel ;;
-        mips64el*|mips64*) ARCH=mips64el ;;
-        mips*|mipssf*)     ARCH=mips ;;
-        aarch64*|arm64*)   ARCH=aarch64 ;;
-        armv7*|armv7l*|armhf*) ARCH=armv7 ;;
-        x86_64*|amd64*|x86-64*)    ARCH=x86_64 ;;
+        mipsel*|mipselsf*|mipsel_kn*) printf 'mipsel' ;;
+        mips64el*|mips64*)            printf 'mips64el' ;;
+        mips*|mipssf*)                printf 'mips' ;;
+        aarch64*|arm64*|armv8*)       printf 'aarch64' ;;
+        armv7*|armhf*)                printf 'armv7' ;;
+        x86_64*|x86-64*|amd64*)       printf 'x86_64' ;;
+        *) : ;;
     esac
+}
+
+detect_arch() { # печатает нормализованную архитектуру или пусто
+    _ent=$(entware_arch)
+    _n=$(arch_norm "$_ent")
+    case "$_n" in
+        mipsel|mips|aarch64|armv7|x86_64|mips64el)
+            ARCH_SRC="Entware ($_ent)"
+            printf '%s' "$_n"; return 0 ;;
+    esac
+    _m=$(uname -m 2>/dev/null | tr 'A-Z' 'a-z' || true)
+    case "$_m" in
+        aarch64|arm64)      ARCH_SRC="uname -m ($_m)"; printf 'aarch64'; return 0 ;;
+        armv7l|armv7|armhf) ARCH_SRC="uname -m ($_m)"; printf 'armv7'; return 0 ;;
+        x86_64|amd64)       ARCH_SRC="uname -m ($_m)"; printf 'x86_64'; return 0 ;;
+        mips|mipsel|mips64)
+            _e=$(probe_endian || true)
+            case "$_e" in
+                little) ARCH_SRC="uname -m ($_m) + ELF-endianness ($_e)"; printf 'mipsel'; return 0 ;;
+                big)    ARCH_SRC="uname -m ($_m) + ELF-endianness ($_e)"; printf 'mips'; return 0 ;;
+            esac
+            # Endianness определить не удалось: на Keenetic+Entware это почти всегда mipsel.
+            ARCH_SRC="предположение для MIPS (endianness не определён)"
+            printf 'mipsel'; return 0 ;;
+    esac
+    return 1
+}
+
+if [ -z "$ARCH" ]; then
+    ARCH=$(detect_arch || true)
     if [ -z "$ARCH" ]; then
         _m=$(uname -m 2>/dev/null || echo unknown)
-        case "$_m" in
-            mips|mipsel) ARCH=mipsel ;;
-            aarch64|arm64) ARCH=aarch64 ;;
-            armv7l|armv7|armhf) ARCH=armv7 ;;
-            x86_64|amd64) ARCH=x86_64 ;;
-            *) die "cannot detect arch (uname -m=$_m); pass --arch" ;;
-        esac
+        die "cannot detect arch (uname -m=$_m); pass --arch mipsel|mips|aarch64|armv7|x86_64"
     fi
+else
+    ARCH_SRC="--arch"
 fi
+KREL=$(uname -r 2>/dev/null || true)
+KMACH=$(uname -m 2>/dev/null || true)
+BBVER=$( (busybox 2>&1 || true) | sed -n '1s/.*BusyBox v\([0-9][^ ,)]*\).*/\1/p' )
+say "platform: arch=$ARCH ($ARCH_SRC), kernel=${KREL:-?} ($KMACH), busybox=${BBVER:-?}"
 
 DIR0=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 if [ -f "$DIR0/susanin-agent" ] || [ -f "$DIR0/bin/susanin-agent" ] \
@@ -193,17 +263,37 @@ find_file() { # find_file <name> -> path
 
 if [ -f "$DIR/susanin-agent" ]; then
     BINFILE=susanin-agent
+elif [ -f "$DIR/bin/susanin-agent.$ARCH" ]; then
+    # Один каталог может содержать бинари под несколько архитектур: берём свою.
+    BINFILE="bin/susanin-agent.$ARCH"
+elif [ -f "$DIR/susanin-agent.$ARCH" ]; then
+    BINFILE="susanin-agent.$ARCH"
 elif [ -f "$DIR/bin/susanin-agent" ]; then
     BINFILE=bin/susanin-agent
-elif [ -f "$DIR/susanin-agent.$ARCH" ]; then
-    # Один каталог может содержать бинари под несколько архитектур: берём свою.
-    BINFILE="susanin-agent.$ARCH"
-elif [ -f "$DIR/bin/susanin-agent.$ARCH" ]; then
-    BINFILE="bin/susanin-agent.$ARCH"
 else
-    BINFILE=$(ls "$DIR"/susanin-agent.* "$DIR"/bin/susanin-agent.* 2>/dev/null | head -1)
+    # Бинарника под нашу архитектуру нет. Ставить «первый попавшийся» нельзя:
+    # так на mips64el/неизвестной арх. можно было получить чужой бинарник
+    # (напр. aarch64). Разрешаем только случай «в пакете ровно один бинарник»,
+    # и в этом случае предупреждаем.
+    _cand=""
+    _n=0
+    for _b in "$DIR"/susanin-agent.*; do
+        [ -f "$_b" ] || continue
+        _n=$((_n + 1)); _cand="$_cand susanin-agent.${_b##*susanin-agent.}"
+    done
+    for _b in "$DIR"/bin/susanin-agent.*; do
+        [ -f "$_b" ] || continue
+        _n=$((_n + 1)); _cand="$_cand bin/susanin-agent.${_b##*susanin-agent.}"
+    done
+    if [ "$_n" -eq 1 ]; then
+        BINFILE=$(printf '%s' "$_cand" | sed 's/^ *//')
+        say "ВНИМАНИЕ: бинарника под arch=$ARCH в пакете нет; единственный бинарник — $BINFILE, ставлю его"
+    elif [ "$_n" -gt 1 ]; then
+        die "бинарника под arch=$ARCH в пакете нет; есть:$_cand
+     укажите архитектуру вручную: --arch mipsel|mips|aarch64|armv7|x86_64"
+    fi
 fi
-[ -n "${BINFILE:-}" ] && [ -f "$DIR/$BINFILE" ] || die "susanin-agent binary not found in $DIR"
+[ -n "${BINFILE:-}" ] && [ -f "$DIR/$BINFILE" ] || die "susanin-agent binary not found in $DIR (arch=$ARCH)"
 say "binary: $BINFILE"
 
 ifaces() { awk -F: '{print $1}' /proc/net/dev | tr -d ' ' | grep -v '^$'; }
@@ -463,6 +553,7 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     ensure_key "$PREFIX/etc/susanin.conf" cdn_prefix_learn 1
     ensure_key "$PREFIX/etc/susanin.conf" cdn_prefix_ttl 3600
     ensure_key "$PREFIX/etc/susanin.conf" cdn_prefix_max 24
+    ensure_key "$PREFIX/etc/susanin.conf" aggregate_confirm 2
     ensure_key "$PREFIX/etc/susanin.conf" ipv6_block 1
     ensure_key "$PREFIX/etc/susanin.conf" quic_block 1
     ensure_key "$PREFIX/etc/susanin.conf" health_mode icmp
@@ -501,7 +592,6 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     ensure_key "$PREFIX/etc/susanin.conf" egress_failback 1
     ensure_key "$PREFIX/etc/susanin.conf" egress_failback_debounce 30
     ensure_key "$PREFIX/etc/susanin.conf" egress_race 0
-    ensure_key "$PREFIX/etc/susanin.conf" egress_race_list ""
     ensure_key "$PREFIX/etc/susanin.conf" xray_gogc 50
     ensure_key "$PREFIX/etc/susanin.conf" xray_gomemlimit 64MiB
     ensure_key "$PREFIX/etc/susanin.conf" xray_watchdog 1

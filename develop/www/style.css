@@ -224,6 +224,9 @@ tr:last-child td { border-bottom: 0; }
 }
 .switch input:checked + .track { background: rgba(79,156,249,.35); }
 .switch input:checked + .track .thumb { transform: translateX(16px); background: var(--acc); }
+/* Ключа нет в конфиге — переключатель недоступен: показываем это явно. */
+.switch input:disabled + .track { opacity: .45; cursor: not-allowed; }
+.switch input:disabled + .track .thumb { background: var(--mut); }
 
 .cfg-save { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
 

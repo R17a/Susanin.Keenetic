@@ -57,9 +57,10 @@ static void copy_str(char *dst, size_t n, const char *src)
     dst[i] = '\0';
 }
 
-/* Разбор списков egress_interface / egress_address (через запятую).
- * Значения выравниваются по индексу; допускается один адрес на все интерфейсы. */
-static void parse_egress(susanin_config *c)
+/* egress_interface/egress_address — списки через запятую (фейловер).
+ * Значения выравниваются по индексу; один адрес допустим на все интерфейсы.
+ * Не static: нужен и из ops_setup после смены ключа. */
+void config_parse_egress(susanin_config *c)
 {
     char buf[CFG_PATH_MAX], abuf[CFG_PATH_MAX];
     char *save = NULL, *asave = NULL, *tok, *atok;
@@ -156,6 +157,7 @@ void config_set_defaults(susanin_config *c)
     c->cdn_ranges_interval = 86400;
     c->cdn_prefix_learn = 1;
     c->cdn_prefix_ttl = 3600;
+    c->aggregate_confirm = 2;
     c->cdn_prefix_max = 24;
     c->ipv6_block = 1;
     c->quic_block = 1;
@@ -192,7 +194,7 @@ void config_set_defaults(susanin_config *c)
     c->media_prefix_max = 24;
     c->profile_failover = 1;
     c->n_profiles = 0;
-    parse_egress(c);
+    config_parse_egress(c);
 }
 
 static void set_str(char *dst, size_t n, const char *v)
@@ -384,6 +386,8 @@ int config_load(const char *path, susanin_config *c)
             c->cdn_prefix_learn = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "cdn_prefix_ttl"))
             c->cdn_prefix_ttl = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "aggregate_confirm"))
+            c->aggregate_confirm = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "cdn_prefix_max"))
             c->cdn_prefix_max = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "ipv6_block"))
@@ -414,8 +418,6 @@ int config_load(const char *path, susanin_config *c)
             c->kernel_offload_max = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "egress_race"))
             c->egress_race = (int)strtol(val, NULL, 0);
-        else if (!strcmp(key, "egress_race_list"))
-            set_str(c->egress_race_list, sizeof(c->egress_race_list), val);
         else if (!strcmp(key, "auto_direct"))
             c->auto_direct = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "direct_pref_ttl"))
@@ -550,7 +552,7 @@ int config_load(const char *path, susanin_config *c)
         }
         c->n_profiles = n;
     }
-    parse_egress(c);
+    config_parse_egress(c);
     return 0;
 }
 
@@ -667,9 +669,8 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "# N2: макс. длина префикса offload-маршрута (бит).\n");
     fprintf(fp, "kernel_offload_max=%d\n", c->kernel_offload_max);
     fprintf(fp, "# N3: race-пробинг egress (выбор быстрейшего): 0 | 1.\n");
+    fprintf(fp, "# Кандидаты — все интерфейсы из egress_interface.\n");
     fprintf(fp, "egress_race=%d\n", c->egress_race);
-    fprintf(fp, "# N3: кандидаты race через запятую; пусто = egress_interface.\n");
-    fprintf(fp, "egress_race_list=%s\n", c->egress_race_list);
     fprintf(fp, "# D1: авто-возврат «в VPN хуже -> прямо» (мягкое прямо): 0 | 1.\n");
     fprintf(fp, "auto_direct=%d\n", c->auto_direct);
     fprintf(fp, "# D1: TTL мягкого «прямо», сек.\n");
@@ -712,6 +713,9 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "cdn_prefix_ttl=%d\n", out_dur(c->cdn_prefix_ttl, U_SEC));
     fprintf(fp, "# Не агрегировать шире этой маски (число бит).\n");
     fprintf(fp, "cdn_prefix_max=%d\n", c->cdn_prefix_max);
+    fprintf(fp, "# Сколько РАЗНЫХ адресов подтвердить до агрегации префикса (>=1;\n");
+    fprintf(fp, "# 1 = агрегировать по первому подтверждению).\n");
+    fprintf(fp, "aggregate_confirm=%d\n", c->aggregate_confirm);
     fprintf(fp, "# Блокировать IPv6 из LAN (клиенты уходят на IPv4): 0 | 1.\n");
     fprintf(fp, "ipv6_block=%d\n", c->ipv6_block);
     fprintf(fp, "# Блокировать QUIC (UDP/443) из LAN: 0 | 1.\n");
@@ -762,7 +766,8 @@ int config_save(const char *path, const susanin_config *c)
     return 0;
 }
 
-static int cfg_key_charset_ok(const char *k)
+/* Имя ключа конфига: только [a-z0-9_]. Нужно и web-панели (что можно создать). */
+int config_key_name_ok(const char *k)
 {
     if (!k || !*k)
         return 0;
@@ -796,7 +801,7 @@ int config_file_set(const char *path, const char *key, const char *val, int allo
 
     if (!path || !key || !val)
         return -1;
-    if (!cfg_key_charset_ok(key) || !cfg_val_charset_ok(val))
+    if (!config_key_name_ok(key) || !cfg_val_charset_ok(val))
         return -1;
 
     in = fopen(path, "r");
@@ -896,7 +901,6 @@ void config_print(const susanin_config *c)
     printf("kernel_egress=%s\n", c->kernel_egress);
     printf("kernel_offload_max=%d\n", c->kernel_offload_max);
     printf("egress_race=%d\n", c->egress_race);
-    printf("egress_race_list=%s\n", c->egress_race_list);
     printf("auto_direct=%d\n", c->auto_direct);
     printf("direct_pref_ttl=%d\n", out_dur(c->direct_pref_ttl, U_SEC));
     printf("media_enabled=%d\n", c->media_enabled);
@@ -918,6 +922,7 @@ void config_print(const susanin_config *c)
     printf("cdn_prefix_learn=%d\n", c->cdn_prefix_learn);
     printf("cdn_prefix_ttl=%d\n", out_dur(c->cdn_prefix_ttl, U_SEC));
     printf("cdn_prefix_max=%d\n", c->cdn_prefix_max);
+    printf("aggregate_confirm=%d\n", c->aggregate_confirm);
     printf("ipv6_block=%d\n", c->ipv6_block);
     printf("quic_block=%d\n", c->quic_block);
     printf("mss_clamp=%s\n", c->mss_clamp);

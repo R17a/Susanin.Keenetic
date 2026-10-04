@@ -14,8 +14,11 @@
 
 ## Что нужно
 
-- Бинарь Xray на роутере: `/opt/sbin/xray` (в комплекте есть `xray/xray.mipsel`
-  и `xray/xray.aarch64`, версия 1.8.24).
+- Бинарь Xray на роутере: `/opt/sbin/xray`. В архив он **не входит** (каждый
+  ~29 МБ, нужен только для этого режима): поставить его можно установщиком —
+  `sh bootstrap.sh --with-xray --yes`, либо скачать вручную `xray/xray.mipsel`
+  или `xray/xray.aarch64` (версия 1.8.24) из папки `develop/xray/` репозитория
+  и сверить с `xray/SHA256SUMS`.
 - Конфиг клиента: `/opt/susanin/etc/xray-tproxy.json`
   (образец — `xray-tproxy.json.example`).
 - Рабочий Xray-сервер VLESS+REALITY (на VPS). На роутере под него ничего
@@ -56,10 +59,17 @@ echo | openssl s_client -connect <IP_сервера>:443 -servername example.org
 
 ## Настройка
 
-1. Положить бинарь:
+1. Поставить бинарь (в архиве его нет — Xray нужен только для этого режима):
    ```sh
-   cp xray/xray.mipsel /opt/sbin/xray && chmod +x /opt/sbin/xray   # mips/mipsel
-   # или: cp xray/xray.aarch64 /opt/sbin/xray && chmod +x /opt/sbin/xray
+   sh bootstrap.sh --with-xray --yes    # скачает Xray под вашу архитектуру
+   ```
+   Вручную — скачать из репозитория и проверить сумму:
+   ```sh
+   wget -O /opt/sbin/xray \
+     https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/develop/xray/xray.mipsel
+   # aarch64: .../develop/xray/xray.aarch64
+   chmod +x /opt/sbin/xray
+   sha256sum /opt/sbin/xray             # сверить с xray/SHA256SUMS
    ```
 2. Положить конфиг и подставить свои данные:
    ```sh
@@ -122,6 +132,9 @@ sh /opt/susanin/tools/xray-egress.sh disable    # выключить, верну
   могут «положить» разрешение имён; для проверки используйте
   `xray-egress.sh run <IP>` (адрес метится на 60 секунд).
 - **IPv6.** Схема работает по IPv4; часть трафика через IPv6 может идти мимо.
+- **HTTP/3 (QUIC).** В tproxy помеченный QUIC уходит в UDP-релей, и браузер может
+  ждать его бесконечно (страница «висит»). Держите `quic_block=1` — его ставит
+  `xray-egress.sh enable`. Подробнее — [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 - **Нагрузка.** Шифрование Xray идёт на процессоре роутера. При большом списке
   адресов возможна перегрузка — держите под рукой `xray-egress.sh disable`.
 - **Не запускайте XKeen вместе с Susanin.Keenetic** — это два перехватчика одного

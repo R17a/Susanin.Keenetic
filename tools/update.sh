@@ -1,6 +1,7 @@
 #!/bin/sh
 # Susanin.Keenetic update: replace binary/tools, keep config and state.
-# Never touches /opt/susanin/etc/vpn_always.txt (user list is preserved).
+# Списки vpn_always.txt / vpn_never.txt НЕ перезаписываются: существующие строки
+# сохраняются, новые строки из пакета ДОПОЛНЯЮТСЯ (идемпотентно).
 #   sh update.sh [--arch mipsel] [--version latest|vX.Y.Z] [--prefix /opt/susanin]
 set -eu
 
@@ -43,6 +44,18 @@ merge_list() { # merge_list <user_file> <package_file> <label>
         say "$_label: добавлено новых строк: $_added"
     fi
     return 0
+}
+
+# Файл списка в пакете: релизный архив «плоский», dev-архив — с папками
+# (etc/), поэтому ищем в нескольких местах.
+pkg_file() { # pkg_file <имя> -> путь или ничего
+    for _c in "$DIR/$1" "$DIR/etc/$1" "$DIR/../$1" "$DIR/../etc/$1"; do
+        if [ -f "$_c" ]; then
+            printf '%s\n' "$_c"
+            return 0
+        fi
+    done
+    return 1
 }
 
 while [ $# -gt 0 ]; do
@@ -145,9 +158,18 @@ done
 chmod +x "$PREFIX/tools/"*.sh 2>/dev/null || true
 
 # Дополнить существующие списки новыми строками из пакета (идемпотентно).
-if [ -f "$DIR/vpn_never.txt" ]; then
-    merge_list "$PREFIX/etc/vpn_never.txt" "$DIR/vpn_never.txt" "vpn_never"
-fi
+# Существующие строки не трогаем: пользовательские правки сохраняются.
+# Если файла списка нет вовсе — ставим его из пакета.
+for _l in vpn_always vpn_never; do
+    if _pf=$(pkg_file "$_l.txt"); then
+        if [ ! -f "$PREFIX/etc/$_l.txt" ]; then
+            cp "$_pf" "$PREFIX/etc/$_l.txt"
+            say "$_l list installed: $PREFIX/etc/$_l.txt"
+        else
+            merge_list "$PREFIX/etc/$_l.txt" "$_pf" "$_l"
+        fi
+    fi
+done
 
 # Дописать отсутствующие дефолтные ключи (старый конфиг мог их не содержать).
 # Новые ключи добавляются со значениями по умолчанию; существующие не трогаем.
@@ -173,9 +195,9 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
               cdn_ranges_file=/opt/susanin/etc/cdn_ranges.txt \
               cdn_ranges_url=https://www.cloudflare.com/ips-v4 \
               cdn_ranges_interval=86400 cdn_prefix_learn=1 cdn_prefix_ttl=3600 \
-              cdn_prefix_max=24 ipv6_block=1 \
+              cdn_prefix_max=24 aggregate_confirm=2 ipv6_block=1 \
               quic_block=1 \
-              egress_failback=1 egress_failback_debounce=30 egress_race=0 egress_race_list= \
+              egress_failback=1 egress_failback_debounce=30 egress_race=0 \
               xray_gogc=50 xray_gomemlimit=64MiB xray_watchdog=1 \
               kernel_offload=0 kernel_egress= kernel_offload_max=24 \
               dns_sniff=0 dns_sniff_ttl=300 dns_sniff_iface= pin_reassert=1 \

@@ -79,6 +79,7 @@ typedef struct {
     int cdn_prefix_learn;    /* 1 = при CONFIRMED агрегировать префикс CDN в ok_net */
     int cdn_prefix_ttl;      /* TTL агрегированного префикса, сек */
     int cdn_prefix_max;      /* максимальная длина префикса для агрегации (напр. 24) */
+    int aggregate_confirm;   /* сколько РАЗНЫХ адресов подтвердить до агрегации (>=1) */
     /* C3: политика IPv6 — 1 = блокировать IPv6 из LAN, чтобы весь трафик шёл
      * по IPv4 (иначе IPv6-трафик идёт мимо Susanin и может душиться). */
     int ipv6_block;
@@ -119,9 +120,9 @@ typedef struct {
     int kernel_offload;
     char kernel_egress[64];
     int kernel_offload_max; /* макс. длина префикса для offload-маршрута */
-    /* N3: race-пробинг egress — параллельно замерить кандидатов. */
+    /* N3: race-пробинг egress — параллельно замерить кандидатов
+     * (кандидаты — все интерфейсы из egress_interface). */
     int egress_race;
-    char egress_race_list[CFG_PATH_MAX]; /* кандидаты через запятую; пусто = egress_list */
     /* D1: мягкое «прямо» (DIRECT_PREF). Если адрес ушёл в VPN и там деградирует,
      * временно принудительно направляем его прямо (набор susanin_direct, TTL),
      * а если и прямой путь деградирует — вернём в обучение/VPN. */
@@ -155,6 +156,9 @@ typedef struct {
 
 void config_set_defaults(susanin_config *c);
 int config_load(const char *path, susanin_config *c);
+void config_parse_egress(susanin_config *c); /* пересобрать egress_list[] */
+/* Имя ключа конфига корректно ([a-z0-9_]) — используется web-панелью. */
+int config_key_name_ok(const char *key);
 int config_save(const char *path, const susanin_config *c);
 void config_print(const susanin_config *c);
 

@@ -17,6 +17,7 @@ void state_init(susanin_state *s)
     set_init(&s->watch_tcp); set_init(&s->cooldown_tcp);
     set_init(&s->test_udp); set_init(&s->ok_udp);
     set_init(&s->watch_udp); set_init(&s->cooldown_udp);
+    set_init(&s->net); set_init(&s->direct); set_init(&s->never);
 }
 
 static void set_free(state_set *st)
@@ -31,6 +32,7 @@ void state_free(susanin_state *s)
     set_free(&s->watch_tcp); set_free(&s->cooldown_tcp);
     set_free(&s->test_udp); set_free(&s->ok_udp);
     set_free(&s->watch_udp); set_free(&s->cooldown_udp);
+    set_free(&s->net); set_free(&s->direct); set_free(&s->never);
 }
 
 void state_expire(state_set *st, time_t now)
@@ -144,6 +146,10 @@ int state_save(const char *path, const susanin_state *s)
     set_save(fp, "ok udp", &s->ok_udp);
     set_save(fp, "cool tcp", &s->cooldown_tcp);
     set_save(fp, "cool udp", &s->cooldown_udp);
+    /* Префиксы ok_net и «мягко-прямо» (формат тот же: phase proto addr expire). */
+    set_save(fp, "net tcp", &s->net);
+    set_save(fp, "direct tcp", &s->direct);
+    set_save(fp, "never tcp", &s->never);
     fclose(fp);
     rename(tmp, path);
     return 0;
@@ -174,6 +180,12 @@ int state_load(const char *path, susanin_state *s)
             set = !strcmp(proto, "tcp") ? &s->ok_tcp : &s->ok_udp;
         else if (!strcmp(phase, "cool"))
             set = !strcmp(proto, "tcp") ? &s->cooldown_tcp : &s->cooldown_udp;
+        else if (!strcmp(phase, "net"))
+            set = &s->net;
+        else if (!strcmp(phase, "direct"))
+            set = &s->direct;
+        else if (!strcmp(phase, "never"))
+            set = &s->never;
         if (set)
             state_add(set, addr, now, ttl, 0);
     }

@@ -2,6 +2,7 @@
 #include "classifier.h"
 #include "backend.h"
 #include "cdn.h"
+#include "health.h"
 #include "profiles.h"
 #include "vpn_never.h"
 #include "log.h"
@@ -43,8 +44,7 @@ static int port_excluded(const susanin_config *cfg, unsigned port)
 }
 
 static int ip_in_cidr(const char *ip, const char *cidr)
-{
-    char c[64];
+{    char c[64];
     char *slash;
     struct in_addr a, n;
     uint32_t mask, ah, nh;
@@ -95,6 +95,14 @@ static int ours(const ct_flow *f, const susanin_config *cfg)
     return f->ctmark && ((f->ctmark & cfg->mark_mask) == cfg->mark_test ||
                          (f->ctmark & cfg->mark_mask) == cfg->mark_ok);
 }
+
+/* Экспорт чистых фильтров для sweep_direct() (engine.c). */
+int clf_service_port(unsigned port) { return service_port(port); }
+int clf_port_excluded(const susanin_config *cfg, unsigned port)
+{
+    return port_excluded(cfg, port);
+}
+int clf_is_private_dst(const char *dst) { return is_private_dst(dst, NULL); }
 
 /* rate cache (two-sample deltas) */
 #define RCAP 2048
@@ -187,7 +195,7 @@ static int rate_delta(const ct_flow *f, time_t now, int *orig_active, int *repl_
 /* Гистерезис снятия из ok: считаем подряд идущие «сбои» по адресу, чтобы не
  * дёргать один и тот же адрес (OK-CHURN) из-за одного наблюдения. */
 #define OFCAP 256
-struct ofslot { char ip[64]; int udp; int miss; int seen; };
+struct ofslot { char ip[64]; int udp; int miss; int seen; time_t at; };
 static struct ofslot of[OFCAP];
 static int of_n;
 
@@ -210,15 +218,25 @@ static struct ofslot *of_touch(const char *ip, int udp)
     struct ofslot *s = of_find(ip, udp);
     if (s) {
         s->miss++;
+        s->at = time(NULL);
         return s;
     }
-    if (of_n >= OFCAP)
-        of_n = 0;
-    s = &of[of_n++];
+    if (of_n >= OFCAP) {
+        /* Вытесняем одну самую старую запись, а не всю таблицу: иначе при
+         * переполнении терялась история наблюдений по всем адресам. */
+        int k, old = 0;
+        for (k = 1; k < of_n; k++)
+            if (of[k].at < of[old].at)
+                old = k;
+        s = &of[old];
+    } else {
+        s = &of[of_n++];
+    }
     snprintf(s->ip, sizeof(s->ip), "%s", ip);
     s->udp = udp;
     s->miss = 1;
     s->seen = 1;
+    s->at = time(NULL);
     return s;
 }
 
@@ -247,6 +265,23 @@ static int promo_ok(const susanin_config *cfg, time_t now)
     return 1;
 }
 
+/* Бюджет прямых проб: проба блокирует цикл, поэтому не более N в минуту. */
+#define DIRECT_PROBE_MS  1200
+#define DIRECT_PROBE_MAX 10
+static int direct_probe_allow(time_t now)
+{
+    static time_t win = 0;
+    static int cnt = 0;
+    if (!win || now - win >= 60) {
+        win = now;
+        cnt = 0;
+    }
+    if (cnt >= DIRECT_PROBE_MAX)
+        return 0;
+    cnt++;
+    return 1;
+}
+
 /* L1–L6: пороги обучения (learn_strict увеличивает требования). */
 static unsigned long lmin_op(const susanin_config *c)
 {
@@ -254,8 +289,7 @@ static unsigned long lmin_op(const susanin_config *c)
     return (unsigned long)(c->learn_strict ? v * 2 : v);
 }
 
-static unsigned long lmin_bytes(const susanin_config *c)
-{
+static unsigned long lmin_bytes(const susanin_config *c){
     int v = c->learn_min_bytes > 0 ? c->learn_min_bytes : 1;
     return (unsigned long)(c->learn_strict ? v * 2 : v);
 }
@@ -264,6 +298,39 @@ static unsigned long cmin_bytes(const susanin_config *c)
 {
     int v = c->confirm_min_bytes > 0 ? c->confirm_min_bytes : 1;
     return (unsigned long)(c->learn_strict ? v * 2 : v);
+}
+
+/* Подтверждения агрегации: префикс уходит в ok_net только после N РАЗНЫХ
+ * адресов (aggregate_confirm). Таблица фиксированного размера — память не растёт. */
+#define AG_CONF 64
+typedef struct { char cidr[64]; char last[64]; int n; time_t at; } agslot;
+static agslot ag[AG_CONF];
+
+static int ag_confirm(const susanin_config *cfg, const char *cidr, const char *addr)
+{
+    int want = cfg->aggregate_confirm > 1 ? cfg->aggregate_confirm : 1;
+    int i, free_i = -1, oldest = 0;
+    time_t now = time(NULL);
+    for (i = 0; i < AG_CONF; i++) {
+        if (ag[i].cidr[0] && !strcmp(ag[i].cidr, cidr)) {
+            if (strcmp(ag[i].last, addr) != 0) {   /* новый адрес префикса */
+                ag[i].n++;
+                snprintf(ag[i].last, sizeof(ag[i].last), "%s", addr);
+            }
+            ag[i].at = now;
+            return ag[i].n >= want;
+        }
+        if (!ag[i].cidr[0] && free_i < 0)
+            free_i = i;
+        if (ag[i].at < ag[oldest].at)
+            oldest = i;
+    }
+    i = free_i >= 0 ? free_i : oldest;   /* нет свободных — вытесняем самую старую */
+    snprintf(ag[i].cidr, sizeof(ag[i].cidr), "%s", cidr);
+    snprintf(ag[i].last, sizeof(ag[i].last), "%s", addr);
+    ag[i].n = 1;
+    ag[i].at = now;
+    return want <= 1;
 }
 
 /* C1/C4: при подтверждении адреса из CDN-диапазона закрепить ближайший префикс
@@ -282,7 +349,14 @@ static void cdn_aggregate(classifier_ctx *ctx, const ct_flow *f)
         slogf(SL_DEBUG, "CDN: не агрегирую %s — адрес в vpn_never", f->dst);
         return;
     }
+    if (!ag_confirm(cfg, cidr, f->dst)) {
+        slogf(SL_DEBUG, "CDN: %s копит подтверждения (нужно %d разных адресов)",
+              cidr, cfg->aggregate_confirm);
+        return;
+    }
     backend_net_add(cfg, cidr, cfg->cdn_prefix_ttl);
+    /* В state — чтобы префикс не терялся при re-provision/fail-open. */
+    state_add(&ctx->st->net, cidr, time(NULL), cfg->cdn_prefix_ttl, 0);
     slogf(SL_INFO, "CDN: %s -> ok (reason=CONFIRMED %s), ttl=%ds",
           cidr, f->dst, cfg->cdn_prefix_ttl);
 }
@@ -331,7 +405,12 @@ static void media_aggregate(classifier_ctx *ctx, const ct_flow *f)
     if (!inet_ntop(AF_INET, &b, ab, sizeof(ab)))
         return;
     snprintf(cidr, sizeof(cidr), "%s/%d", ab, pre);
+    if (!ag_confirm(cfg, cidr, f->dst)) {
+        slogf(SL_DEBUG, "MEDIA: %s копит подтверждения", cidr);
+        return;
+    }
     backend_net_add(cfg, cidr, cfg->media_ttl);
+    state_add(&ctx->st->net, cidr, time(NULL), cfg->media_ttl, 0);
     slogf(SL_INFO, "MEDIA: %s -> vpn (rb=%lu, ob=%lu)", cidr,
           (unsigned long)f->rb, (unsigned long)f->ob);
 }
@@ -348,9 +427,20 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
               f->dst, f->dport);
         return;
     }
+    /* Прямая проба: при сбое на уровне соединения проверяем, что прямой путь
+     * отвечает, и не заворачиваем. При «тишине» после рукопожатия connect
+     * ничего не докажет, поэтому там пробу не делаем. Бюджет — N проб/мин. */
+    if (f->l4proto == 6 && f->dport > 0 && !strstr(reason, "STALL") &&
+        direct_probe_allow(now) &&
+        health_probe_tcp_direct(f->dst, f->dport, DIRECT_PROBE_MS)) {
+        slogf(SL_INFO, "AUTO-SUSANIN: %s skip %s:%u (прямой путь отвечает)",
+              stage, f->dst, f->dport);
+        return;
+    }
     /* D1: снимаем «мягкое прямо» (DIRECT_PREF), иначе RETURN в цепочке не даст
      * адресу уйти в VPN, когда прямой путь снова деградировал. */
     backend_set_del(cfg, "susanin_direct", f->dst);
+    state_remove(&ctx->st->direct, f->dst);
     if (!promo_ok(cfg, now))
         return;
     state_add(st_test(ctx->st, udp), f->dst, now, cfg->test_ttl, 0);
@@ -571,6 +661,7 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                  * «прямо» с TTL). Если и прямой путь плох, обучение вернёт VPN. */
                 if (cfg->auto_direct && cfg->direct_pref_ttl > 0) {
                     backend_set_add(cfg, "susanin_direct", f->dst, cfg->direct_pref_ttl);
+                    state_add(&ctx->st->direct, f->dst, now, cfg->direct_pref_ttl, 0);
                     slogf(SL_INFO, "D1: %s -> soft-direct (%ds)", f->dst,
                           cfg->direct_pref_ttl);
                 }

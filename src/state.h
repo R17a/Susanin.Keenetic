@@ -17,6 +17,10 @@ typedef struct {
 typedef struct {
     state_set test_tcp, ok_tcp, watch_tcp, cooldown_tcp;
     state_set test_udp, ok_udp, watch_udp, cooldown_udp;
+    /* Не привязаны к протоколу: префиксы susanin_ok_net, «мягко-прямо»
+     * susanin_direct и пины dns_sniff в susanin_never. Без персиста теряются
+     * при re-provision/fail-open. */
+    state_set net, direct, never;
 } susanin_state;
 
 void state_init(susanin_state *s);

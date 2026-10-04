@@ -91,6 +91,11 @@ ensure_tproxy_cfg() {
         || echo 'socks_addr=127.0.0.1' >> "$CONF"
     grep -q '^socks_port=' "$CONF" 2>/dev/null \
         || echo 'socks_port=1080' >> "$CONF"
+    # HTTP/3 (QUIC) в tproxy уходит в UDP-релей — клиенты должны идти по TCP.
+    grep -q '^quic_block=' "$CONF" 2>/dev/null \
+        && sed -i 's|^quic_block=.*|quic_block=1|' "$CONF" \
+        || echo 'quic_block=1' >> "$CONF"
+    say "quic_block=1 (HTTP/3 из LAN -> TCP; иначе браузеры «висят» в tproxy)"
     et=tproxy
 }
 

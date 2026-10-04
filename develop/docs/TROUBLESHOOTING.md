@@ -7,6 +7,41 @@ sh /opt/susanin/tools/report.sh     # отчёт: /opt/susanin/var/report.txt
 ```
 `diagnose.sh` в конце сам печатает подсказки, что поправить.
 
+## Установка падает на распаковке (`tar: unrecognized option: exclude`)
+
+В старых BusyBox у `tar` нет `--exclude`. Ставьте установщиком:
+
+```sh
+cd /opt/tmp
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
+# только показать платформу (arch, ядро, BusyBox): sh susanin-install.sh --check
+```
+
+Он распаковывает только бинарник под свою архитектуру (без полной распаковки на
+~85 МБ); полную можно разрешить лишь явным `--allow-full-unpack`. Если `tar` не
+умеет и список файлов — поставьте GNU tar: `opkg update && opkg install tar`.
+
+Вручную: `tar -xzf susanin-dev.tar.gz && cd susanin-keenetic-0.4.0-dev && sh install.sh --yes`
+(чужие `bin/susanin-agent.*` можно удалить — нужный `install.sh` выбирает сам).
+Xray в архиве нет: `sh bootstrap.sh --with-xray --yes`. Архив в RAM — `--tmp /tmp`.
+
+## Сайт «грузится бесконечно» (tproxy + HTTP/3)
+
+Спиннер на конкретной странице, хотя `ping`/`curl` работают и сайт может вообще
+идти напрямую (`ipset test susanin_never <IP>` → «is in set») — тогда `vpn_never`
+не поможет. Причина: браузер идёт по HTTP/3 (QUIC, UDP 443), а в tproxy помеченный
+UDP уходит в UDP-релей (Xray) и ответа нет.
+
+```sh
+sed -i 's/^quic_block=.*/quic_block=1/' /opt/susanin/etc/susanin.conf
+grep -q '^quic_block=' /opt/susanin/etc/susanin.conf || echo 'quic_block=1' >> /opt/susanin/etc/susanin.conf
+sh /opt/susanin/tools/susanin.sh restart
+iptables -t mangle -S PREROUTING | grep -- '--dport 443 -j DROP'   # ждём 2 правила
+```
+
+`xray-egress.sh enable` ставит `quic_block=1` сам, `diagnose.sh` предупреждает,
+если он не 1.
+
 ## Сайт не открывается
 
 1. **Проверьте VPN.** `sh /opt/susanin/tools/susanin.sh status` — демон должен
@@ -233,6 +268,13 @@ fail-open DIRECT`.
 ```sh
 sh /opt/susanin/tools/report.sh
 # файл: /opt/susanin/var/report.txt
+```
+
+Если речь о деградации со временем (память, размеры наборов, рост conntrack,
+ошибки в логе) — приложите ещё `var/soak.log`:
+
+```sh
+sh /opt/susanin/tools/soak.sh &   # метрики раз в 60 c; Ctrl-C даёт сводку
 ```
 
 ## IPTV / сайт за Cloudflare: «то грузится, то нет»

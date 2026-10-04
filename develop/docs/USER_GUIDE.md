@@ -25,6 +25,12 @@ sh /opt/susanin/tools/susanin.sh status
 обновлении **не перезаписываются**, но списки **могут дополняться** новыми
 записями из сборки (merge; существующие строки не удаляются).
 
+Для **develop-сборки** и старых BusyBox (где `tar` не знает `--exclude`):
+
+```sh
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
+```
+
 ## Управление
 
 | Действие | Команда |

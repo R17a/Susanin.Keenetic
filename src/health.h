@@ -15,4 +15,12 @@ int health_probe(const susanin_config *c, const char *src, int *ok, int *total);
 int health_probe_dev(const susanin_config *c, const char *dev, const char *src,
                      int *ok, int *total);
 
+/* Прямая TCP-проба dst:port мимо наших правил (по main, без метки):
+ * 1 = соединение установилось. */
+int health_probe_tcp_direct(const char *dst, unsigned port, int timeout_ms);
+
+/* Проба апстрима Xray через локальный SOCKS5 (режим tproxy): 1 = ok. */
+int health_probe_via_socks(const susanin_config *c, const char *dst, int port,
+                           int timeout_ms);
+
 #endif

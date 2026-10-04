@@ -57,6 +57,44 @@ KERNEL_MARK=0x00800000
 MSS_CLAMP=${SUSANIN_MSS_CLAMP:-0}
 MSS_CLAMP_LAN=${SUSANIN_MSS_CLAMP_LAN:-0}
 
+# Ручной запуск (не из демона): значения берём из конфига; из демона всё
+# приходит через окружение (backend.c) — поведение не меняется.
+CONF_FILE=${SUSANIN_CONF:-/opt/susanin/etc/susanin.conf}
+cfg_val() { # cfg_val <ключ> [значение по умолчанию]
+    _v=""
+    if [ -r "$CONF_FILE" ]; then
+        _v=$(awk -F= -v k="$1" '$1==k {sub(/^[^=]*=/,""); print; exit}' "$CONF_FILE" 2>/dev/null || true)
+    fi
+    if [ -n "$_v" ]; then printf '%s' "$_v"; else printf '%s' "${2:-}"; fi
+}
+[ -n "${SUSANIN_EGRESS:-}" ]         || EGRESS=$(cfg_val egress_interface "$EGRESS")
+# egress_interface может быть списком (фейловер) — дальше нужен один интерфейс.
+EGRESS=$(printf '%s' "$EGRESS" | sed 's/,.*//' | tr -d ' \t')
+[ -n "${SUSANIN_TABLE:-}" ]          || TABLE=$(cfg_val routing_table "$TABLE")
+[ -n "${SUSANIN_LAN:-}" ]            || LAN=$(cfg_val lan_interfaces "br0 br1")
+LAN=$(printf '%s' "$LAN" | tr ',' ' ')
+[ -n "${SUSANIN_MARK_OK:-}" ]        || MARK_OK=$(cfg_val mark_ok "$MARK_OK")
+[ -n "${SUSANIN_MARK_TEST:-}" ]      || MARK_TEST=$(cfg_val mark_test "$MARK_TEST")
+[ -n "${SUSANIN_MARK_MASK:-}" ]      || MARK_MASK=$(cfg_val mark_mask "$MARK_MASK")
+[ -n "${SUSANIN_DISK_MODE:-}" ]      || DISK_MODE=$(cfg_val disk_mode "$DISK_MODE")
+[ -n "${SUSANIN_IPV6_BLOCK:-}" ]     || IPV6_BLOCK=$(cfg_val ipv6_block "$IPV6_BLOCK")
+[ -n "${SUSANIN_QUIC_BLOCK:-}" ]     || QUIC_BLOCK=$(cfg_val quic_block "$QUIC_BLOCK")
+[ -n "${SUSANIN_KERNEL_OFFLOAD:-}" ] || KERNEL_OFFLOAD=$(cfg_val kernel_offload "$KERNEL_OFFLOAD")
+[ -n "${SUSANIN_KERNEL_EGRESS:-}" ]  || KERNEL_EGRESS=$(cfg_val kernel_egress "$KERNEL_EGRESS")
+[ -n "${SUSANIN_MSS_CLAMP:-}" ]      || MSS_CLAMP=$(cfg_val mss_clamp "$MSS_CLAMP")
+[ -n "${SUSANIN_MSS_CLAMP_LAN:-}" ]  || MSS_CLAMP_LAN=$(cfg_val mss_clamp_lan "$MSS_CLAMP_LAN")
+# Порты демон выставляет только когда режим включён — повторяем ту же логику.
+if [ -z "${SUSANIN_TPROXY_PORT:-}" ]; then
+    if [ "$(cfg_val egress_type interface)" = "tproxy" ]; then
+        TPROXY_PORT=$(cfg_val tproxy_port "$TPROXY_PORT")
+    fi
+fi
+if [ -z "${SUSANIN_UDP_RELAY_PORT:-}" ]; then
+    if [ "$(cfg_val udp_relay 0)" = "1" ]; then
+        UDP_RELAY_PORT=$(cfg_val udp_relay_port "$UDP_RELAY_PORT")
+    fi
+fi
+
 CHAIN=SUSANIN
 SETS="susanin_ok_tcp susanin_ok_udp susanin_test_tcp susanin_test_udp"
 NETSET=susanin_ok_net
@@ -449,9 +487,13 @@ command_status() {
         u=$("ipt" -t mangle -S PREROUTING 2>/dev/null | grep -c "TPROXY --on-port $UDP_RELAY_PORT" || true)
         echo "udp-relay: port=$UDP_RELAY_PORT rules=$u"
     fi
-    if [ "$IPV6_BLOCK" = "1" ] && [ -n "$IP6T" ]; then
-        v6=$("$IP6T" -w -t filter -S FORWARD 2>/dev/null | grep -c -- '-j REJECT' || true)
-        echo "ipv6_block: on (FORWARD REJECT rules=$v6)"
+    if [ "$IPV6_BLOCK" = "1" ]; then
+        if [ -n "$IP6T" ]; then
+            v6=$("$IP6T" -w -t filter -S FORWARD 2>/dev/null | grep -c -- '-j REJECT' || true)
+            echo "ipv6_block: on (FORWARD REJECT rules=$v6)"
+        else
+            echo "ipv6_block: задан (=1), но ip6tables не найден — IPv6 из LAN не блокируется"
+        fi
     fi
     if [ "$KERNEL_OFFLOAD" = "1" ] && [ -n "$KERNEL_EGRESS" ]; then
         ko=$("$IPCMD" rule show 2>/dev/null | grep -c "lookup $KERNEL_TABLE" || true)
@@ -459,12 +501,18 @@ command_status() {
     fi
     q=$("ipt" -t mangle -S PREROUTING 2>/dev/null | grep -c -- '-p udp .* --dport 443 -j DROP' || true)
     if [ "$QUIC_BLOCK" = "1" ]; then
-        echo "quic_block: on (mangle PREROUTING DROP rules=$q)"
+        echo "quic_block: on (mangle PREROUTING DROP rules=$q; HTTP/3 из LAN идёт по TCP)"
     elif [ "${q:-0}" -gt 0 ] 2>/dev/null; then
-        echo "quic_block: off, но найдены остаточные правила ($q) — перезапустите susanin.sh"
+        echo "quic_block: 0 в конфиге, но остались правила ($q) — снимутся при следующем up/down"
+    else
+        echo "quic_block: off (QUIC/HTTP/3 из LAN разрешён; в tproxy-режиме браузеры могут «висеть»)"
     fi
     if "ipt" -t mangle -L "$MSS_CHAIN" >/dev/null 2>&1; then
-        echo "mss_clamp: on ($MSS_CLAMP, lan=$MSS_CLAMP_LAN, chain=$MSS_CHAIN)"
+        if [ -n "$MSS_CLAMP" ] && [ "$MSS_CLAMP" != "0" ]; then
+            echo "mss_clamp: on ($MSS_CLAMP, lan=$MSS_CLAMP_LAN, chain=$MSS_CHAIN)"
+        else
+            echo "mss_clamp: off, цепочка $MSS_CHAIN есть (своих правил нет)"
+        fi
     elif [ -n "$MSS_CLAMP" ] && [ "$MSS_CLAMP" != "0" ]; then
         echo "mss_clamp: задан ($MSS_CLAMP), но цепочки $MSS_CHAIN нет"
     fi

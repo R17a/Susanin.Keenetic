@@ -1,8 +1,9 @@
 # Susanin.Keenetic — установка Develop-сборки
 
-Это **Develop-сборка**: ставится вручную из архива. Автоматическая установка
-одной строкой и `susanin.sh update` относятся к публичным Release-сборкам и
-здесь не используются.
+Это **Develop-сборка**: ставится из ветки `develop` — универсальным установщиком
+`bootstrap.sh` (одна строка, он сам скачает архив) либо вручную из скачанного
+архива. Публикация в GitHub Releases и `susanin.sh update` относятся к
+Release-сборкам и для dev-сборки не используются.
 
 Порядок настройки новых возможностей (XRay, веб-панель, профили, qWDTT) —
 в [TESTBUILD.md](TESTBUILD.md).
@@ -14,11 +15,17 @@
   opkg update && opkg install ca-certificates ipset iptables conntrack
   ```
 
-## Установка из архива
+## Установка
 
-1. Создать папку и скачать туда архив из папки **develop** репозитория
-   (ссылка — в [TESTBUILD.md](TESTBUILD.md), раздел «Установка»).
-2. Распаковать и запустить установщик:
+1. **Установщик** (работает и там, где `tar` не знает `--exclude`):
+   ```sh
+   cd /opt/tmp
+   wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
+   ```
+   Флаги: `--check` (показать arch/ядро/BusyBox), `--file`, `--channel stable`,
+   `--with-xray`, `--verify`, `--tmp`. Подробности: `sh bootstrap.sh --help`.
+
+2. **Вручную из архива**:
    ```sh
    mkdir -p /opt/tmp/sus-dist && cd /opt/tmp/sus-dist
    wget -O susanin-dev.tar.gz <ССЫЛКА_НА_АРХИВ>
@@ -26,12 +33,9 @@
    cd susanin-keenetic-0.4.0-dev
    sh install.sh --yes
    ```
-   Установщик сам:
-   - выберет бинарь под вашу архитектуру (в папке есть `susanin-agent.mips`,
-     `susanin-agent.mipsel`, `susanin-agent.aarch64`, `susanin-agent.armv7`,
-     `susanin-agent.x86_64`);
-   - найдёт LAN и VPN-интерфейс;
-   - разложит файлы в `/opt/susanin` и запустит демон.
+   `install.sh` выберет бинарник под вашу архитектуру (или остановится с ошибкой),
+   найдёт LAN/VPN и разложит файлы в `/opt/susanin`. Xray в архиве нет — только для
+   `tproxy`: `sh bootstrap.sh --with-xray --yes`.
 
 `susanin.conf`, `vpn_always.txt`, `vpn_never.txt` при обновлении **не
 перезаписываются** (нужно перезаписать — `sh install.sh --force`).
@@ -45,7 +49,7 @@
 | `etc/xray-tproxy.json.example` | `/opt/susanin/etc/xray-tproxy.json.example` |
 | `www/` | `/opt/susanin/www/` |
 | `init/S93xray-tproxy`, `init/S94susanin`, `init/S95susanin-web` | `/opt/etc/init.d/` |
-| `xray/xray.mipsel`, `xray/xray.aarch64` | (по желанию) `/opt/sbin/xray` |
+| `xray/README.txt`, `xray/SHA256SUMS` | (справка; сами бинарники Xray в архив не входят — их скачивает `--with-xray` и кладёт в `/opt/sbin/xray`) |
 | `docs/` | (документация; на роутер не копируется) |
 
 ## Проверка после установки

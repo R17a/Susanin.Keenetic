@@ -40,6 +40,8 @@
   function f(key, label, desc, type, extra) {
     var o = { key: key, label: label, desc: desc || '', type: type || 'text' };
     if (extra) for (var k in extra) o[k] = extra[k];
+    /* bool — всегда 0/1: такой ключ безопасно создать, если его нет в конфиге. */
+    if (o.type === 'bool') o.creatable = true;
     return o;
   }
 
@@ -66,7 +68,6 @@
           f('egress_failback', 'Возврат на приоритетный VPN', 'первый в egress_interface — основной; после его восстановления трафик возвращается на него', 'bool'),
           f('egress_failback_debounce', 'Пауза до возврата', 'сек; сколько основной должен держаться, прежде чем вернуться', 'text', { kind: 'duration' }),
           f('egress_race', 'Автовыбор быстрейшего VPN', 'замерять отклик и держать трафик на самом быстром', 'bool'),
-          f('egress_race_list', 'Кандидаты race', 'интерфейсы через запятую; пусто = egress_interface', 'text'),
           f('auto_direct', 'Мягкое «прямо» (авто-возврат)', 'если адрес в VPN деградирует — временно напрямую, потом обратно', 'bool'),
           f('direct_pref_ttl', 'TTL мягкого «прямо»', 'сек', 'text', { kind: 'duration' })
         ]}
@@ -172,7 +173,8 @@
           f('cdn_ranges_interval', 'Период обновления', 'секунд; 0 = не обновлять', 'number', { kind: 'int' }),
           f('cdn_prefix_learn', 'Агрегация по префиксу', '', 'bool'),
           f('cdn_prefix_ttl', 'TTL агрегированного префикса', 'секунд', 'number', { kind: 'int' }),
-          f('cdn_prefix_max', 'Не агрегировать шире', 'бит маски (/24 по умолчанию)', 'number', { kind: 'int' })
+          f('cdn_prefix_max', 'Не агрегировать шире', 'бит маски (/24 по умолчанию)', 'number', { kind: 'int' }),
+          f('aggregate_confirm', 'Подтверждений до агрегации', 'сколько разных адресов префикса увидеть (1 = по первому)', 'number', { kind: 'int' })
         ]}
       ]
     },
@@ -436,7 +438,7 @@
         placeholderOpt.selected = true;
         placeholderOpt.disabled = true;
         sel.appendChild(placeholderOpt);
-        sel.disabled = true;
+        /* Ключа нет — оставляем выбор доступным: при сохранении он будет создан. */
       }
       (fld.options || []).forEach(function (opt) {
         var o = document.createElement('option');
@@ -458,11 +460,12 @@
       inp.type = fld.type === 'password' ? 'password' : (fld.type === 'number' ? 'number' : 'text');
       inp.dataset.key = fld.key;
       if (val) inp.value = val;
-      else inp.placeholder = present ? '(пусто)' : (fld.creatable ? 'будет создано при сохранении' : '(' + missingLabel() + ')');
-      if (!present && !fld.creatable) inp.disabled = true; /* creatable — можно задать и создать */
+      else inp.placeholder = present ? '(пусто)' : 'нет в файле — впишите значение, ключ будет создан';
+      /* Поле без ключа в файле оставляем доступным: сервер создаст ключ, если
+       * значение не пустое (пустые строки в конфиг не дописываем). */
       if (fld.kind || fld.noZero) attachValidation(inp, fld);
       wrap.appendChild(inp);
-      if (!present && !fld.creatable) wrap.appendChild(missingTag());
+      if (!present) wrap.appendChild(missingTag());
     }
 
     return wrap;
@@ -494,9 +497,12 @@
           return;
         }
         if (fld.type === 'readonly') return;
-        if (el.disabled) return; /* нет в файле и не creatable — нечего сохранять */
+        if (el.disabled) return;
         if (el.classList && el.classList.contains('invalid')) { invalidField = fld; return; }
-        push(fld.key, el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value);
+        var v = el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value;
+        /* Ключа нет в файле — создаём только с непустым значением. */
+        if (fileValue(fld.key) === undefined && v === '') return;
+        push(fld.key, v);
       });
     });
 
@@ -524,7 +530,12 @@
           if (newToken) localStorage.setItem('susanin_token', newToken);
           else if (clearToken) localStorage.removeItem('susanin_token');
         } catch (e) {}
-        toast('Сохранено, конфиг перечитан агентом (SIGHUP)', true);
+        if (r.skipped && r.skipped.length) {
+          /* Часть ключей сервер не принял — не показываем «Сохранено» молча. */
+          toast('Сохранено, но не приняты ключи: ' + r.skipped.join(', '), false);
+        } else {
+          toast('Сохранено, конфиг перечитан агентом (SIGHUP)', true);
+        }
         return loadConfig();
       }
       toast('Ошибка сохранения: ' + ((r && r.error) || 'неизвестно'), false);

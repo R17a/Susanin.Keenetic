@@ -12,31 +12,42 @@ XRay-egress (VLESS/REALITY), веб-панель, профили маршрут�
 
 ## Установка
 
-Сборка лежит в ветке **develop** (папка `develop/`):
-`https://github.com/R17a/Susanin.Keenetic/tree/develop/develop`.
+Сборка — в ветке **develop** (папка `develop/`).
 
-1. Создать папку на роутере и скачать туда архив:
-   ```sh
-   mkdir -p /opt/tmp/sus-dist && cd /opt/tmp/sus-dist
-   wget -O susanin-dev.tar.gz \
-     https://github.com/R17a/Susanin.Keenetic/raw/develop/develop/susanin-keenetic-0.4.0-dev.tar.gz
-   ```
-   (короткая ссылка на файл: `…/raw/develop/develop/susanin-keenetic-0.4.0-dev.tar.gz`)
-2. Распаковать и установить:
-   ```sh
-   tar -xzf susanin-dev.tar.gz
-   cd susanin-keenetic-0.4.0-dev
-   sh install.sh --yes
-   ```
-3. Проверить:
-   ```sh
-   sh /opt/susanin/tools/susanin.sh status
-   /opt/susanin/bin/susanin-agent version      # покажет точную версию сборки
-   ```
+Установщик (работает и на старых BusyBox, где `tar` не знает `--exclude`):
+```sh
+cd /opt/tmp
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
+```
 
-Конфиг, `vpn_always.txt` и `vpn_never.txt` при обновлении **не перезаписываются**,
-но списки могут **дополняться** новыми записями из сборки (merge; существующие
-строки не удаляются).
+Варианты (если сохранить файл):
+```sh
+cd /opt/tmp && rm -f susanin-install.sh && \
+wget -O susanin-install.sh https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh
+sh susanin-install.sh --check      # arch/ядро/BusyBox, без установки
+sh susanin-install.sh --yes
+sh susanin-install.sh --channel stable --yes    # последний релиз
+sh susanin-install.sh --file /opt/tmp/susanin-keenetic-0.4.0-dev.tar.gz --yes
+```
+
+Вручную из архива:
+```sh
+mkdir -p /opt/tmp/sus-dist && cd /opt/tmp/sus-dist
+wget -O susanin-dev.tar.gz \
+  https://github.com/R17a/Susanin.Keenetic/raw/develop/develop/susanin-keenetic-0.4.0-dev.tar.gz
+tar -xzf susanin-dev.tar.gz
+cd susanin-keenetic-0.4.0-dev
+sh install.sh --yes
+```
+Бинарник под свою архитектуру `install.sh` выбирает сам; Xray в архив не входит
+(нужен только для `tproxy`): `sh bootstrap.sh --with-xray --yes`.
+
+Проверить:
+```sh
+sh /opt/susanin/tools/susanin.sh status
+/opt/susanin/bin/susanin-agent version
+```
+
 В архиве нет ваших серверов: в шаблоне Xray только `SERVER/UUID/SNI/PBK/SID`.
 
 ## XRay (VLESS/REALITY)
@@ -45,10 +56,17 @@ XRay подключается как egress: Susanin.Keenetic помечает �
 Xray через `REDIRECT`, UDP — через релей в демоне. TUN не нужен.
 
 **Настройка**
-1. Положить бинарь Xray:
+1. Поставить бинарь Xray (в архиве его нет — он нужен только для этого режима):
    ```sh
-   cp xray/xray.mipsel /opt/sbin/xray && chmod +x /opt/sbin/xray   # mips/mipsel
-   # или: cp xray/xray.aarch64 /opt/sbin/xray && chmod +x /opt/sbin/xray
+   sh bootstrap.sh --with-xray --yes    # скачает Xray под вашу архитектуру в /opt/sbin/xray
+   ```
+   Вручную:
+   ```sh
+   wget -O /opt/sbin/xray \
+     https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/develop/xray/xray.mipsel
+   # aarch64: .../develop/xray/xray.aarch64
+   chmod +x /opt/sbin/xray
+   sha256sum /opt/sbin/xray             # сверить с develop/xray/SHA256SUMS
    ```
 2. Положить конфиг клиента и подставить свои данные:
    ```sh
@@ -60,6 +78,10 @@ Xray через `REDIRECT`, UDP — через релей в демоне. TUN �
    sh /opt/susanin/tools/xray-egress.sh enable
    ```
    Ключи (`egress_type=tproxy`, `udp_relay=1` и др.) прописываются сами.
+   `enable` также ставит `quic_block=1`: без этого браузеры могут «висеть» —
+   в tproxy-режиме HTTP/3 (QUIC) уходит в UDP-релей и ответа не приходит
+   (см. [TROUBLESHOOTING.md](TROUBLESHOOTING.md), «Сайт «грузится бесконечно»
+   (tproxy + HTTP/3 / QUIC)»).
    Логи Xray — отдельным ключом `xray_loglevel` (по умолчанию `warning`):
    `enable`/`run` применяют его и перезапускают Xray. Не ставьте `info` — иначе
    Xray пишет строку на каждое соединение (`from … accepted …`).
@@ -157,6 +179,25 @@ sh /opt/susanin/tools/profiles.sh up
 sh /opt/susanin/tools/profiles.sh status
 ```
 Адрес обрабатывается **первым совпавшим** профилем.
+
+## Тесты и суточный прогон (для тех, кто собирает из исходников)
+
+```sh
+make test          # тест парсера conntrack по testdata/nf_conntrack.samples
+```
+
+Тест собирается хост-компилятором и в кросс-сборку/архив не входит: можно
+дописывать свои строки в `testdata/nf_conntrack.samples` (формат —
+`<строка из /proc/net/nf_conntrack> | rc l4 state src sport dst dport op ob rp rb mark fastnat`),
+тест подхватит их и сверит поля.
+
+Если проблема накопительная (память, размеры наборов, рост conntrack) — снимите
+метрики за сутки:
+
+```sh
+sh /opt/susanin/tools/soak.sh &        # раз в 60 c -> /opt/susanin/var/soak.log
+tail -f /opt/susanin/var/soak.log      # Ctrl-C печатает сводку с ростом КБ/ч
+```
 
 ## Если что-то не так
 

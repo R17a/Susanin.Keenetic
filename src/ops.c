@@ -161,6 +161,8 @@ int ops_setup(const susanin_config *base, const char *conf_path, int argc, char 
         else if (!strcmp(argv[i], "--table") && i + 1 < argc)
             cfg.routing_table = atoi(argv[++i]);
     }
+    /* --egress мог изменить ключ: пересобираем egress_list[]. */
+    config_parse_egress(&cfg);
 
     if (config_save(conf_path, &cfg) != 0) {
         fprintf(stderr, "cannot write config %s\n", conf_path);
