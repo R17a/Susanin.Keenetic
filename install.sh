@@ -100,6 +100,12 @@ for t in ipset conntrack iptables; do
     command -v "$t" >/dev/null 2>&1 || need="$need $t"
 done
 [ -f /opt/etc/ssl/certs/ca-certificates.crt ] || need="$need ca-certificates"
+# wget-ssl: у BusyBox-wget нет HTTPS, а установщик качает архив по https.
+if ! command -v curl >/dev/null 2>&1; then
+    if ! wget --help 2>&1 | grep -q -- '--no-check-certificate'; then
+        need="$need wget-ssl"
+    fi
+fi
 need=$(printf '%s' "$need" | sed 's/^ *//')
 if [ -n "$need" ]; then
     say "не хватает пакетов:$need"
@@ -233,7 +239,7 @@ else
     elif command -v wget >/dev/null 2>&1; then
         fetch() { wget -qO "$2" "$1"; }
     else
-        die "need curl or wget (Entware: opkg update && opkg install ca-certificates; optionally 'opkg install curl')"
+        die "need curl or wget-ssl (Entware: opkg update && opkg install ca-certificates wget-ssl; либо 'opkg install curl')"
     fi
     if [ "$VERSION" = latest ]; then
         BASE="https://github.com/$REPO/releases/latest/download"
@@ -247,7 +253,7 @@ else
     say "downloading $BASE/$ASSET"
     fetch "$BASE/$ASSET" "$TMP/pkg.tar.gz" \
         || die "download failed (check --arch/--version or release assets): $BASE/$ASSET
-     hint: opkg update && opkg install ca-certificates"
+     hint: opkg update && opkg install ca-certificates wget-ssl"
     tar -xzf "$TMP/pkg.tar.gz" -C "$TMP" || die "bad archive $ASSET"
     DIR=$TMP
 fi

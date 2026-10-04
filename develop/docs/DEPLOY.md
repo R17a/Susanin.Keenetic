@@ -10,9 +10,9 @@ Release-сборкам и для dev-сборки не используются.
 
 ## Что нужно
 - Keenetic с Entware (`/opt` на флешке/USB).
-- Пакеты Entware: `ca-certificates ipset iptables conntrack`.
+- Пакеты Entware: `ca-certificates ipset iptables conntrack wget-ssl` (`wget-ssl` — чтобы работал https).
   ```sh
-  opkg update && opkg install ca-certificates ipset iptables conntrack
+  opkg update && opkg install ca-certificates ipset iptables conntrack wget-ssl
   ```
 
 ## Установка

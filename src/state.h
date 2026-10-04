@@ -28,6 +28,8 @@ void state_free(susanin_state *s);
 void state_expire(state_set *st, time_t now);
 int state_has(const state_set *st, const char *addr, time_t now);
 int state_add(state_set *st, const char *addr, time_t now, int ttl, int refresh);
+/* Создать запись или продлить существующую (см. пояснение в state.c). */
+int state_touch(state_set *st, const char *addr, time_t now, int ttl);
 int state_remove(state_set *st, const char *addr);
 time_t state_at(const state_set *st, const char *addr, time_t now);
 

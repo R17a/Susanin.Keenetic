@@ -116,7 +116,10 @@ usage() {
   --prefix DIR, --disk-mode normal|soft
 
 Дополнительные пакеты Entware (если ставите впервые):
-  opkg update && opkg install ca-certificates ipset iptables conntrack
+  opkg update && opkg install ca-certificates ipset iptables conntrack wget-ssl
+
+`wget-ssl` нужен, потому что у BusyBox-wget нет HTTPS (архив качается по https).
+Если wget-ssl не ставить — поставьте curl: opkg install curl
 EOF
 }
 
@@ -324,7 +327,7 @@ print_platform() {
     if [ -n "$ARCH_RAW" ]; then say "Entware     : $ARCH_RAW"; fi
     if [ -n "$ENDIAN" ]; then say "ELF endian  : $ENDIAN"; fi
     if [ -z "$FETCHER" ]; then
-        say "загрузка    : нет ни curl, ни wget (opkg install wget)"
+        say "загрузка    : нет ни curl, ни wget-ssl (opkg install wget-ssl или curl)"
     else
         say "загрузка    : $FETCHER"
     fi
@@ -345,7 +348,7 @@ print_platform() {
 fetch() { # fetch <url> <файл>
     _u="$1"; _o="$2"; _n=0
     if [ -z "$FETCHER" ]; then
-        die "нужен curl или wget (Entware: opkg update && opkg install ca-certificates wget)"
+        die "нужен curl или wget-ssl (Entware: opkg update && opkg install ca-certificates wget-ssl)"
     fi
     while [ "$_n" -lt 3 ]; do
         _n=$((_n + 1))
@@ -386,7 +389,7 @@ download_archive() {
         say "скачиваю: $_base/$_asset"
         fetch "$_base/$_asset" "$WORK/pkg.tar.gz" \
             || die "не удалось скачать $_asset из $_base
-     подсказка: opkg update && opkg install ca-certificates
+     подсказка: opkg update && opkg install ca-certificates wget-ssl
      или укажите версию: --version vX.Y.Z"
         return 0
     fi
@@ -395,7 +398,7 @@ download_archive() {
     _base="https://raw.githubusercontent.com/$REPO/$BRANCH/develop"
     say "скачиваю: $_base/$DEV_FILE"
     fetch "$_base/$DEV_FILE" "$WORK/pkg.tar.gz" || die "не удалось скачать $_base/$DEV_FILE
-     подсказка: opkg update && opkg install ca-certificates
+     подсказка: opkg update && opkg install ca-certificates wget-ssl
      проверьте ветку (--branch) и имя файла (--dev-file)
      или укажите свой адрес архива: --url <адрес>"
 }

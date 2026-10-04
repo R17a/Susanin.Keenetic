@@ -19,8 +19,15 @@ void vn_free(vpn_never *v);
 void vn_mark_dirty(vpn_never *v);
 int vn_changed(vpn_never *v, const susanin_config *cfg);
 int vn_refresh(vpn_never *v, const susanin_config *cfg);
+/* То же, но сообщает, изменился ли набор (добавлены/удалены адреса): нужно, чтобы
+ * не гонять тяжёлую чистку state на каждом проходе цикла (200 мс). */
+int vn_refresh2(vpn_never *v, const susanin_config *cfg, int *changed);
 
 /* 1, если адрес недавно был в susanin_never (его не учим в VPN). */
 int vn_is_recently_never(const char *ip, time_t now);
+
+/* 1, если адрес СЕЙЧАС в susanin_never (точное совпадение или вхождение в CIDR
+ * из списка). Дешёвая проверка в памяти — для классификатора и sweep_direct. */
+int vn_has(const char *ip);
 
 #endif

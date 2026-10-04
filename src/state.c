@@ -80,8 +80,7 @@ static int set_reserve(state_set *st, int need)
     return 0;
 }
 
-int state_add(state_set *st, const char *addr, time_t now, int ttl, int refresh)
-{
+int state_add(state_set *st, const char *addr, time_t now, int ttl, int refresh){
     int i;
     state_entry *e;
     time_t expire;
@@ -95,7 +94,10 @@ int state_add(state_set *st, const char *addr, time_t now, int ttl, int refresh)
     } else {
         for (i = 0; i < st->n; i++) {
             if (st->v[i].expire > now && strcmp(st->v[i].addr, addr) == 0) {
-                st->v[i].expire = expire;
+                /* refresh: срок только продлеваем — «освежение» не должно
+                 * укорачивать уже выученную запись. */
+                if (expire > st->v[i].expire)
+                    st->v[i].expire = expire;
                 return 0;
             }
         }
@@ -107,6 +109,16 @@ int state_add(state_set *st, const char *addr, time_t now, int ttl, int refresh)
     snprintf(e->addr, sizeof(e->addr), "%s", addr);
     e->expire = expire;
     return 0;
+}
+
+/* Добавить запись или продлить существующую. Отдельный хелпер нужен потому, что
+ * state_add(refresh=1) существующую запись только продлевает, а отсутствующую НЕ
+ * создаёт (возвращает -1) — на этом уже дважды ломались пины и префиксы. */
+int state_touch(state_set *st, const char *addr, time_t now, int ttl)
+{
+    if (state_has(st, addr, now))
+        return state_add(st, addr, now, ttl, 1);
+    return state_add(st, addr, now, ttl, 0);
 }
 
 int state_remove(state_set *st, const char *addr)

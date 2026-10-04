@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -33,6 +34,15 @@ static int g_fd = -1;
 static int g_started = 0;
 static const susanin_config *g_cfg = NULL;
 static susanin_state *g_state = NULL;   /* для персиста пинов (может быть NULL) */
+
+/* Кэш содержимого списка (vpn_always/vpn_never): файл перечитывается только при
+ * смене mtime/размера, а не на каждую запись DNS-таблицы раз в 10 секунд. */
+typedef struct {
+    char path[256];
+    long long mtime, size;
+    char *data;              /* домены через '\n' */
+} lcache;
+static lcache lc[2];
 
 static unsigned long dns_hash(const char *s)
 {
@@ -212,10 +222,19 @@ int dns_sniff_start(const susanin_config *cfg)
 
 void dns_sniff_stop(void)
 {
+    int i;
     if (g_fd >= 0)
         close(g_fd);
     g_fd = -1;
     g_started = 0;
+    for (i = 0; i < 2; i++) {          /* кэш списков — освобождаем */
+        if (lc[i].data) {
+            free(lc[i].data);
+            lc[i].data = NULL;
+        }
+        lc[i].path[0] = '\0';
+        lc[i].mtime = lc[i].size = 0;
+    }
 }
 
 void dns_sniff_poll(void)
@@ -275,18 +294,38 @@ static int zone_match(const char *domain, const char *zone_in)
     return 0;
 }
 
-static int list_match(const char *file, const char *domain)
+static const char *list_cache(int slot, const char *file)
 {
+    lcache *c;
+    struct stat sb;
     FILE *fp;
     char line[320];
-    int hit = 0;
-    if (!file || !file[0])
-        return 0;
+    char *buf;
+    size_t cap = 2048, len = 0;
+
+    if (slot < 0 || slot > 1 || !file || !file[0])
+        return NULL;
+    c = &lc[slot];
+    if (c->data && !strcmp(c->path, file) && stat(file, &sb) == 0 &&
+        c->mtime == (long long)sb.st_mtime && c->size == (long long)sb.st_size)
+        return c->data;
+    if (c->data) {
+        free(c->data);
+        c->data = NULL;
+    }
+    c->path[0] = '\0';
     fp = fopen(file, "r");
     if (!fp)
-        return 0;
+        return NULL;
+    buf = malloc(cap);
+    if (!buf) {
+        fclose(fp);
+        return NULL;
+    }
+    buf[0] = '\0';
     while (fgets(line, sizeof(line), fp)) {
         char *p = line + strlen(line);
+        size_t l;
         while (p > line && (p[-1] == ' ' || p[-1] == '\t' ||
                             p[-1] == '\r' || p[-1] == '\n'))
             *--p = '\0';
@@ -297,13 +336,58 @@ static int list_match(const char *file, const char *domain)
             continue;
         if (strchr(p, '/') || strchr(p, ':'))
             continue;               /* CIDR/IPv6 — не домен */
-        if (zone_match(domain, p)) {
-            hit = 1;
-            break;
+        l = strlen(p);
+        if (len + l + 2 > cap) {
+            char *nb;
+            cap = (len + l + 2) * 2;
+            nb = realloc(buf, cap);
+            if (!nb)
+                break;
+            buf = nb;
         }
+        memcpy(buf + len, p, l);
+        len += l;
+        buf[len++] = '\n';
+        buf[len] = '\0';
     }
     fclose(fp);
-    return hit;
+    c->data = buf;
+    snprintf(c->path, sizeof(c->path), "%s", file);
+    if (stat(file, &sb) == 0) {
+        c->mtime = (long long)sb.st_mtime;
+        c->size = (long long)sb.st_size;
+    } else {
+        c->mtime = 0;
+        c->size = 0;
+    }
+    return c->data;
+}
+
+static int list_match(int slot, const char *file, const char *domain)
+{
+    const char *data, *p;
+    char line[320];
+
+    if (!file || !file[0])
+        return 0;
+    data = list_cache(slot, file);
+    if (!data)
+        return 0;
+    p = data;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        size_t l = nl ? (size_t)(nl - p) : strlen(p);
+        if (l >= sizeof(line))
+            l = sizeof(line) - 1;
+        memcpy(line, p, l);
+        line[l] = '\0';
+        if (line[0] && zone_match(domain, line))
+            return 1;
+        if (!nl)
+            break;
+        p = nl + 1;
+    }
+    return 0;
 }
 
 void dns_sniff_set_state(susanin_state *st)
@@ -330,27 +414,26 @@ void dns_sniff_reconcile(const susanin_config *cfg)
         return;
     for (i = 0; i < DNS_MAX_ENTRIES; i++) {
         dns_entry *e = &g_tab[i];
-        int ttl;
         if (!e->domain[0] || e->expire <= now)
             continue;
-        ttl = (int)(e->expire - now);           /* TTL = остаток DNS-ответа */
-        if (ttl <= 0)
-            continue;
-        if (!e->pinned && list_match(cfg->vpn_always_file, e->domain)) {
+        if (!e->pinned && list_match(0, cfg->vpn_always_file, e->domain)) {
             backend_ipset_add(cfg, 0, 1, e->ip, cfg->ok_ttl);
             backend_ipset_add(cfg, 1, 1, e->ip, cfg->ok_ttl);
             e->pinned = 1;
             if (g_state) {                      /* переживёт re-provision/рестарт */
-                state_add(st_ok(g_state, 0), e->ip, now, ttl, 0);
-                state_add(st_ok(g_state, 1), e->ip, now, ttl, 0);
+                /* Тот же срок, что и в ipset (ok_ttl), и только продление:
+                 * state_touch создаёт запись или продлевает существующую. */
+                state_touch(st_ok(g_state, 0), e->ip, now, cfg->ok_ttl);
+                state_touch(st_ok(g_state, 1), e->ip, now, cfg->ok_ttl);
             }
             slogf(SL_INFO, "dns-sniff: %s -> %s pinned (vpn_always)", e->domain, e->ip);
         }
-        if (!e->pinned_never && list_match(cfg->vpn_never_file, e->domain)) {
+        if (!e->pinned_never && list_match(1, cfg->vpn_never_file, e->domain)) {
             backend_set_add(cfg, "susanin_never", e->ip, 0);
             e->pinned_never = 1;
             if (g_state)
-                state_add(&g_state->never, e->ip, now, ttl, 0);
+                /* В ipset запись бессрочная (ttl 0) — в state так же. */
+                state_touch(&g_state->never, e->ip, now, 0);
             /* Конфликт ok <-> never: адрес мог быть уже выучен в VPN — снимаем
              * и рвём его соединения, иначе «прямо» не заработает. */
             if (g_state) {

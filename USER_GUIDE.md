@@ -11,7 +11,7 @@
 
 ```sh
 # 1. Нужные пакеты Entware
-opkg update && opkg install ca-certificates ipset iptables conntrack
+opkg update && opkg install ca-certificates ipset iptables conntrack wget-ssl
 
 # 2. Установка (одной строкой)
 wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh

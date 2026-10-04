@@ -126,8 +126,12 @@ static void sweep_direct(const susanin_config *cfg, susanin_state *st,
         int udp;
         if (f->ctmark != 0) continue;
         if (!from_lan(cfg, f->src)) continue;
-        /* Адреса из vpn_never должны ходить напрямую — их не трогаем. */
-        if (vn_is_recently_never(f->dst, now)) continue;
+        /* Адреса из vpn_never должны ходить напрямую — их не трогаем: и те, что
+         * сейчас в списке (vn_has), и пины DNS-снифинга (st.never), и недавно
+         * снятые. */
+        if (vn_has(f->dst) || state_has(&st->never, f->dst, now) ||
+            vn_is_recently_never(f->dst, now))
+            continue;
         if (f->l4proto != 6 && f->l4proto != 17) continue;
         /* Те же фильтры, что в clr_fast: служебные порты (53/853/500/4500/8567)
          * и приватные адреса не рвём. */
@@ -143,6 +147,43 @@ static void sweep_direct(const susanin_config *cfg, susanin_state *st,
             done++;
         }
     }
+}
+
+/* vpn_never: убрать адреса из state (ok/test/cool/direct), чтобы state не
+ * расходился с ipset'ами после vn_refresh(). Иначе sweep_direct рвёт прямые
+ * потоки к never-адресам, а resync_sets возвращает их в ok-ipset. */
+static void never_state_clean(const susanin_config *cfg, susanin_state *st, time_t now)
+{
+    int udp, k, i;
+    for (udp = 0; udp < 2; udp++) {
+        state_set *sets[3];
+        sets[0] = st_ok(st, udp);
+        sets[1] = st_test(st, udp);
+        sets[2] = st_cool(st, udp);
+        for (k = 0; k < 3; k++) {
+            state_set *s = sets[k];
+            for (i = s->n - 1; i >= 0; i--) {
+                const char *ip = s->v[i].addr;
+                if (!vn_has(ip) && !state_has(&st->never, ip, now))
+                    continue;
+                if (k == 0)
+                    backend_ipset_del(cfg, udp, 1, ip);   /* ok */
+                else if (k == 1)
+                    backend_ipset_del(cfg, udp, 0, ip);   /* test */
+                state_remove(s, ip);
+                slogf(SL_DEBUG, "vpn_never: %s убран из кэша (%s)", ip,
+                      udp ? "udp" : "tcp");
+            }
+        }
+    }
+    for (i = st->direct.n - 1; i >= 0; i--) {
+        const char *ip = st->direct.v[i].addr;
+        if (!vn_has(ip))
+            continue;
+        backend_set_del(cfg, "susanin_direct", ip);
+        state_remove(&st->direct, ip);
+    }
+    (void)now;
 }
 
 /* Bounded GC (upstream v0.12 idea): keep per-proto ok-cache within a limit by
@@ -173,7 +214,18 @@ static void trim_ok(const susanin_config *cfg, susanin_state *st)
 static int eg_ok[CFG_MAX_EGRESS][EG_WIN];
 static int eg_tot[CFG_MAX_EGRESS][EG_WIN];
 static int eg_wi[CFG_MAX_EGRESS];
-static int eg_lead[CFG_MAX_EGRESS];   /* сколько тиков кандидат «лучший» (race) */
+static int eg_lead[CFG_MAX_EGRESS];   /* сколько ПРОБ кандидат «лучший» (race) */
+static unsigned eg_gen;               /* сколько сэмплов применено (см. eg_apply) */
+
+/* Сброс окна проб (перечитывание конфига: пороги/адреса могли измениться). */
+static void eg_reset(void)
+{
+    memset(eg_ok, 0, sizeof(eg_ok));
+    memset(eg_tot, 0, sizeof(eg_tot));
+    memset(eg_wi, 0, sizeof(eg_wi));
+    memset(eg_lead, 0, sizeof(eg_lead));
+    eg_gen = 0;
+}
 
 static int eg_ratio(int i)   /* доля успехов за окно, % */
 {
@@ -208,6 +260,7 @@ static void eg_apply(const susanin_config *cfg, int i, int ok, int total, int la
     eg_ok[i][eg_wi[i]] = ok;
     eg_tot[i][eg_wi[i]] = total > 0 ? total : 1;
     eg_wi[i] = (eg_wi[i] + 1) % EG_WIN;
+    eg_gen++;                      /* новая проба — «тик» для race/failback */
     if (lat_ms)
         lat_ms[i] = lat;
     if (eg_ratio(i) >= EG_MIN_RATIO) {
@@ -238,6 +291,22 @@ static size_t pj_len = 0;
 
 static int probe_job_busy(void) { return pj_pid > 0; }
 
+/* Завершить процесс проб (выход из движка или перечитывание конфига). */
+static void probe_job_stop(void)
+{
+    if (pj_pid > 0) {
+        int st;
+        kill(pj_pid, SIGKILL);
+        waitpid(pj_pid, &st, 0);
+        pj_pid = 0;
+    }
+    if (pj_fd >= 0) {
+        close(pj_fd);
+        pj_fd = -1;
+    }
+    pj_len = 0;
+}
+
 static void probe_job_start(const susanin_config *cfg, int n)
 {
     int fd[2];
@@ -256,6 +325,43 @@ static void probe_job_start(const susanin_config *cfg, int n)
         /* Ребёнок: только пробы и строки результата, без общей памяти. */
         int i;
         close(fd[0]);
+        if (strcmp(cfg->egress_type, "tproxy") == 0) {
+            /* tproxy: путь один (Xray + его outbound), поэтому проверяем апстрим
+             * через локальный SOCKS. До 3 адресов из health_probe: успех — если
+             * ответил хотя бы один (один адрес мог резаться маршрутом Xray).
+             * Результат пишем для всех кандидатов — так он попадает в общий
+             * fail-open/failover-механизм. */
+            char buf[512], *save = NULL, *tok;
+            int ok = 0, total = 0, lat = 0, naddr = 0;
+            int port = cfg->health_tcp_port > 0 ? cfg->health_tcp_port : 443;
+            struct timespec t0, t1;
+            snprintf(buf, sizeof(buf), "%s", cfg->health_probe);
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            for (tok = strtok_r(buf, ",", &save); tok && naddr < 3;
+                 tok = strtok_r(NULL, ",", &save)) {
+                while (*tok == ' ')
+                    tok++;
+                if (!*tok)
+                    continue;
+                naddr++;
+                total++;
+                if (health_probe_via_socks(cfg, tok, port, 1500)) {
+                    ok = 1;
+                    break;
+                }
+            }
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            lat = (int)((t1.tv_sec - t0.tv_sec) * 1000 +
+                        (t1.tv_nsec - t0.tv_nsec) / 1000000);
+            for (i = 0; i < n && i < CFG_MAX_EGRESS; i++) {
+                char line[128];
+                snprintf(line, sizeof(line), "%d %d %d %d\n", i, ok,
+                         total > 0 ? total : 1, ok ? lat : 0);
+                if (write(fd[1], line, strlen(line)) < 0)
+                    break;
+            }
+            _exit(0);
+        }
         for (i = 0; i < n && i < CFG_MAX_EGRESS; i++) {
             char np[256], line[128];
             int ok = 0, total = 0, lat = -1;
@@ -329,37 +435,6 @@ static void probe_job_poll(const susanin_config *cfg, int *up, int *miss,
             pj_pid = 0;
         }
     }
-}
-
-/* tproxy: прямые пробы роутера в TPROXY не попадают, поэтому проверяем
- * апстрим Xray через локальный SOCKS5. Результат — на всех кандидатов
- * (в tproxy путь один: Xray + его outbound). */
-static void tproxy_probe_once(const susanin_config *cfg, int *up, int *miss,
-                              time_t *up_since, int *lat_ms, time_t now)
-{
-    char buf[512], *save = NULL, *tok;
-    const char *pick = NULL;
-    int ok, lat, i, n = cfg->n_egress > 0 ? cfg->n_egress : 1;
-    int port = cfg->health_tcp_port > 0 ? cfg->health_tcp_port : 443;
-    struct timespec t0, t1;
-
-    snprintf(buf, sizeof(buf), "%s", cfg->health_probe);
-    for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
-        while (*tok == ' ')
-            tok++;
-        if (*tok) {
-            pick = tok;
-            break;
-        }
-    }
-    if (!pick)
-        pick = "1.1.1.1";
-    clock_gettime(CLOCK_MONOTONIC, &t0);
-    ok = health_probe_via_socks(cfg, pick, port, 3000);
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    lat = (int)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000);
-    for (i = 0; i < n && i < CFG_MAX_EGRESS; i++)
-        eg_apply(cfg, i, ok, 1, ok ? lat : 0, up, miss, up_since, lat_ms, now);
 }
 
 /* Watchdog Xray: поднять упавший процесс (tproxy). Пробуем init-скрипт
@@ -553,8 +628,12 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         force_pending = va_refresh(va, cfg);
     }
     if (nv) {
+        int nchanged = 0;
         last_never = time(NULL);
-        never_pending = vn_refresh(nv, cfg);
+        never_pending = vn_refresh2(nv, cfg, &nchanged);
+        /* Тяжёлую чистку state делаем только при реальном изменении набора. */
+        if (nchanged)
+            never_state_clean(cfg, &st, last_never);
     }
 
     while (!g_stop) {
@@ -569,6 +648,9 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             if (conf_path && config_load(conf_path, &nc) == 0) {
                 *cfg = nc;
                 slogf(SL_INFO, "config reloaded: %s", conf_path);
+                /* Пробы и их окно — заново: адреса/пороги могли измениться. */
+                probe_job_stop();
+                eg_reset();
                 {
                     char perr[256];
                     if (backend_preflight(cfg, perr, sizeof(perr)) != 0)
@@ -621,8 +703,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 need_scan = 1;
             if (dp_ok && tunnel_up && now - last_sweep >= 60)
                 need_scan = 1;
-            if (strcmp(cfg->egress_type, "tproxy") != 0 &&
-                now - last[3] >= cfg->health_interval)
+            if (now - last[3] >= cfg->health_interval)
                 need_scan = 1;
             if (need_scan) {
                 L.n = 0;
@@ -649,12 +730,11 @@ int engine_run(susanin_config *cfg, const char *conf_path)
          * проверяем апстрим Xray (SOCKS5), иначе — egress-интерфейсы. */
         probe_job_poll(cfg, eg_up, eg_miss, eg_up_since, eg_lat, now);
         {
-            int tp = (strcmp(cfg->egress_type, "tproxy") == 0);
             if (now - last[3] >= cfg->health_interval) {
                 last[3] = now;
-                if (tp)
-                    tproxy_probe_once(cfg, eg_up, eg_miss, eg_up_since, eg_lat, now);
-                else if (!probe_job_busy())
+                /* Пробы — всегда в отдельном процессе (в tproxy там SOCKS-проба
+                 * апстрима Xray): главный цикл не блокируется. */
+                if (!probe_job_busy())
                     probe_job_start(cfg, cfg->n_egress);
             }
             {
@@ -678,10 +758,12 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 if (!eg_up[ei]) {
                     need_switch = 1;          /* активный мёртв — переключаемся */
                 } else if (pref < ei) {
-                    /* Активный жив, но ожил более приоритетный (Master). */
+                    /* Активный жив, но ожил более приоритетный (Master). При
+                     * включённом автовыборе (race) возврат не делаем: иначе два
+                     * механизма «пинают» трафик друг другом. */
                     int deb = cfg->egress_failback_debounce > 0
                                   ? cfg->egress_failback_debounce : 0;
-                    if (cfg->egress_failback &&
+                    if (!cfg->egress_race && cfg->egress_failback &&
                         (deb == 0 || now - eg_up_since[pref] >= deb)) {
                         need_switch = 1;
                         failback = 1;
@@ -690,6 +772,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 if (need_switch) {
                     int was = ei;
                     ei = pref;
+                    memset(eg_lead, 0, sizeof(eg_lead));   /* счёт лидерства — заново */
                     slogf(SL_WARN, "egress %s -> %s (%s)", cfg->egress_list[was],
                           cfg->egress_list[ei], failback ? "failback" : "failover");
                     backend_set_egress(cfg, cfg->egress_list[ei]);
@@ -712,9 +795,11 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 }
             }
 
-            /* N3: race — на быстрейший живой egress, но только если он стабильно
-             * лучше (3 тика подряд) и по доле успехов; один ct_flush на тик. */
+            /* N3: race — на быстрейший живой egress. Счёт лидерства идёт по
+             * ПРОБАМ (eg_gen растёт в eg_apply), а не по итерациям цикла (200 мс),
+             * иначе «3 тика» = 0,6 с. Переключаемся только при заметной выгоде. */
             if (cfg->egress_race) {
+                static unsigned race_seen;
                 int best = -1;
                 for (i = 0; i < cfg->n_egress; i++) {
                     if (!eg_up[i] || eg_ratio(i) < EG_MIN_RATIO)
@@ -723,11 +808,18 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                         (eg_lat[best] == 0 || eg_lat[i] < eg_lat[best])))
                         best = i;
                 }
-                for (i = 0; i < cfg->n_egress; i++)
-                    eg_lead[i] = (i == best) ? eg_lead[i] + 1 : 0;
-                if (best >= 0 && best != ei && eg_lead[best] >= 3) {
-                    slogf(SL_WARN, "race: %s -> %s (fastest %dms)",
-                          cfg->egress_list[ei], cfg->egress_list[best], eg_lat[best]);
+                if (eg_gen != race_seen) {   /* пришла новая проба */
+                    race_seen = eg_gen;
+                    for (i = 0; i < cfg->n_egress; i++)
+                        eg_lead[i] = (i == best) ? eg_lead[i] + 1 : 0;
+                }
+                if (best >= 0 && best != ei && eg_lead[best] >= 3 &&
+                    eg_lat[best] > 0 && eg_lat[ei] > 0 &&
+                    eg_lat[best] * 100 <= eg_lat[ei] * 75 &&
+                    eg_lat[ei] - eg_lat[best] >= 20) {
+                    slogf(SL_WARN, "race: %s -> %s (fastest %dms, было %dms)",
+                          cfg->egress_list[ei], cfg->egress_list[best],
+                          eg_lat[best], eg_lat[ei]);
                     ei = best;
                     eg_lead[best] = 0;
                     backend_set_egress(cfg, cfg->egress_list[ei]);
@@ -779,6 +871,16 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             }
             state_expire(&st.net, now);
             state_expire(&st.direct, now);
+            /* Пины DNS-снифинга в «никогда»: чистим по TTL и держим лимит,
+             * иначе набор растёт без ограничения. */
+            state_expire(&st.never, now);
+            while (st.never.n > 4096) {
+                char ip[64];
+                snprintf(ip, sizeof(ip), "%s", st.never.v[0].addr);
+                backend_set_del(cfg, "susanin_never", ip);
+                state_remove(&st.never, ip);
+                slogf(SL_DEBUG, "never: вытесняю пину %s (лимит 4096)", ip);
+            }
         }
 
         /* Быстрый контроль датаплейна: NDM может снести правила в любой момент,
@@ -905,8 +1007,13 @@ int engine_run(susanin_config *cfg, const char *conf_path)
              now - last_never >= (time_t)cfg->vpn_never_interval ||
              vn_changed(nv, cfg))) {
             time_t prev = last_never;
+            int nchanged = 0;
             last_never = now;
-            never_pending = vn_refresh(nv, cfg);
+            never_pending = vn_refresh2(nv, cfg, &nchanged);
+            /* Чистим state только когда набор реально изменился: иначе обход всех
+             * записей с inet_pton случался бы каждые 200 мс. */
+            if (nchanged)
+                never_state_clean(cfg, &st, now);
             if (never_pending)
                 last_never = prev;
         }
@@ -914,6 +1021,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         usleep(200000);
     }
 
+    probe_job_stop();
     udp_relay_stop();
     dns_sniff_stop();
     state_save(state_path, &st);

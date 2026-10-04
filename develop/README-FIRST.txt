@@ -14,8 +14,8 @@ Susanin.Keenetic — Develop-сборка 0.4.0-dev (не Release)
   XRAY.md            — про XRay подробно
 
 Перед установкой на роутере нужен Entware с пакетами
-ca-certificates ipset iptables conntrack:
-  opkg update && opkg install ca-certificates ipset iptables conntrack
+ca-certificates ipset iptables conntrack wget-ssl:
+  opkg update && opkg install ca-certificates ipset iptables conntrack wget-ssl
 
 Установка — установщик (работает и на старых BusyBox, где tar не знает --exclude):
   cd /opt/tmp

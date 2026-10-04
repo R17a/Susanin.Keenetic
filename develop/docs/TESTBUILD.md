@@ -16,6 +16,7 @@ XRay-egress (VLESS/REALITY), веб-панель, профили маршрут�
 
 Установщик (работает и на старых BusyBox, где `tar` не знает `--exclude`):
 ```sh
+opkg update && opkg install ca-certificates wget-ssl   # у BusyBox-wget нет https
 cd /opt/tmp
 wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
 ```

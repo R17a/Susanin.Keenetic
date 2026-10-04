@@ -333,16 +333,16 @@ ndmc -c "show running-config" | grep -i "ip policy"
 
 ## Установка / обновление / удаление
 
-Сначала поставьте нужные пакеты Entware: сертификаты — чтобы `wget` скачал
-релиз по HTTPS, и зависимости — `ipset`, `iptables`, `conntrack`:
+Сначала поставьте нужные пакеты Entware: сертификаты и `wget-ssl` — чтобы `wget`
+скачал релиз по HTTPS (у BusyBox-wget HTTPS нет), и зависимости — `ipset`,
+`iptables`, `conntrack`:
 
 ```sh
-opkg update && opkg install ca-certificates ipset iptables conntrack
+opkg update && opkg install ca-certificates ipset iptables conntrack wget-ssl
 ```
 
 Установка **одной строкой**: скачается архив под вашу архитектуру,
-автоматически определятся LAN и VPN, затем спросит подтверждение. На Entware
-`curl` обычно нет — используйте `wget`:
+автоматически определятся LAN и VPN, затем спросит подтверждение:
 
 ```sh
 wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh

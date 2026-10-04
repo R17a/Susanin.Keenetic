@@ -88,13 +88,67 @@ struct vpn_never {
     long long epoch;        /* номер интервала (now/interval) для hysteresis */
 };
 
+/* --- «адрес сейчас в susanin_never» -------------------------------------- */
+/* В агенте один экземпляр vpn_never; классификатору и движку нужен дешёвый
+ * ответ в памяти (без форков ipset) для решений «не учить/не рвать». */
+static vpn_never *g_vn = NULL;
+
+static int ipv4_in_cidr(const char *ip, const char *cidr)
+{
+    char buf[64], *slash;
+    struct in_addr a, n;
+    unsigned long mask, ha, hn;
+    int bits;
+
+    if (!ip || !cidr || !cidr[0])
+        return 0;
+    snprintf(buf, sizeof(buf), "%s", cidr);
+    slash = strchr(buf, '/');
+    if (!slash)
+        return 0;
+    *slash = '\0';
+    bits = atoi(slash + 1);
+    if (bits < 0 || bits > 32)
+        return 0;
+    if (inet_pton(AF_INET, ip, &a) != 1 || inet_pton(AF_INET, buf, &n) != 1)
+        return 0;
+    mask = bits == 0 ? 0UL : (0xffffffffUL << (32 - bits));
+    ha = (unsigned long)ntohl(a.s_addr);
+    hn = (unsigned long)ntohl(n.s_addr);
+    return (ha & mask) == (hn & mask);
+}
+
+int vn_has(const char *ip)
+{
+    int i;
+    if (!g_vn || !ip || !ip[0])
+        return 0;
+    for (i = 0; i < g_vn->ntrack; i++) {
+        const char *t = g_vn->track[i];
+        if (!t[0] || !strcmp(t, "0.0.0.0"))
+            continue;
+        if (strchr(t, '/')) {
+            if (ipv4_in_cidr(ip, t))
+                return 1;
+        } else if (!strcmp(t, ip)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 vpn_never *vn_new(void)
 {
-    return calloc(1, sizeof(vpn_never));
+    vpn_never *v = calloc(1, sizeof(vpn_never));
+    if (v)
+        g_vn = v;
+    return v;
 }
 
 void vn_free(vpn_never *v)
 {
+    if (v == g_vn)
+        g_vn = NULL;
     free(v);
 }
 
@@ -389,7 +443,7 @@ static int zone_in_always(const susanin_config *cfg, const char *name, int wild)
     return found;
 }
 
-int vn_refresh(vpn_never *v, const susanin_config *cfg)
+int vn_refresh2(vpn_never *v, const susanin_config *cfg, int *changed)
 {
     char names[VN_MAXDOM][256];
     int wilds[VN_MAXDOM] = { 0 };
@@ -403,6 +457,11 @@ int vn_refresh(vpn_never *v, const susanin_config *cfg)
     char exa[3][64] = { "", "", "" };
     long long t0 = now_ms();
     int interval = cfg->vpn_never_interval > 0 ? cfg->vpn_never_interval : 300;
+
+    /* Флаг «набор изменился» обнуляем сразу: при раннем выходе (нет файла и т.п.)
+     * вызывающий не должен получить значение от предыдущего вызова. */
+    if (changed)
+        *changed = 0;
 
     if (!v || !cfg->vpn_never_file[0])
         return 0;
@@ -599,5 +658,12 @@ int vn_refresh(vpn_never *v, const susanin_config *cfg)
         slogf(SL_INFO, "vpn_never: +%d/-%d entries, %d domain(s), now %d direct",
               added, removed, v->nd, v->ntrack);
 
+    if (changed)
+        *changed = (added || removed) ? 1 : 0;
     return pending;
+}
+
+int vn_refresh(vpn_never *v, const susanin_config *cfg)
+{
+    return vn_refresh2(v, cfg, NULL);
 }

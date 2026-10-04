@@ -44,7 +44,8 @@ static int port_excluded(const susanin_config *cfg, unsigned port)
 }
 
 static int ip_in_cidr(const char *ip, const char *cidr)
-{    char c[64];
+{
+    char c[64];
     char *slash;
     struct in_addr a, n;
     uint32_t mask, ah, nh;
@@ -141,8 +142,17 @@ static rslot *rc_find(const char *key)
 static rslot *rc_store(const char *key, const ct_flow *f, time_t now)
 {
     rslot *s;
-    if (rc_n >= RCAP) rc_n = 0;
-    s = &rc[rc_n++];
+    if (rc_n >= RCAP) {
+        /* Кэш полон: вытесняем одну самую старую запись, а не обнуляем весь
+         * кэш (иначе под нагрузкой rate-детект «слепнет» целиком). */
+        int i, oldest = 0;
+        for (i = 1; i < rc_n; i++)
+            if (rc[i].t < rc[oldest].t)
+                oldest = i;
+        s = &rc[oldest];
+    } else {
+        s = &rc[rc_n++];
+    }
     snprintf(s->key, sizeof(s->key), "%s", key);
     s->op = f->op; s->rp = f->rp; s->ob = f->ob; s->rb = f->rb;
     s->t = now; s->seen = 1;
@@ -265,10 +275,49 @@ static int promo_ok(const susanin_config *cfg, time_t now)
     return 1;
 }
 
-/* Бюджет прямых проб: проба блокирует цикл, поэтому не более N в минуту. */
+/* Неудачу в test-фазе (tproxy) признаём не раньше этого «возраста» записи: за
+ * первый RTT клиент отправляет до начального окна без ответа, и на медленном
+ * апстриме это дало бы ложный cooldown. */
+#define TPROXY_FAIL_MIN_AGE 3
+
+/* Бюджет прямых проб: проба блокирует цикл, поэтому не более N в минуту и не
+ * более M за календарную секунду (иначе один проход встал бы на 12 с). */
 #define DIRECT_PROBE_MS  1200
 #define DIRECT_PROBE_MAX 10
-static int direct_probe_allow(time_t now)
+#define DIRECT_PROBE_PER_SEC 2
+#define DOK_TTL_OK     300   /* «прямой путь отвечает»: не заворачивать, с */
+#define DOK_TTL_BUDGET 120   /* бюджет проб исчерпан: короткая отметка */
+#define DOK_MAX        256
+
+/* Негативный кэш «прямой путь отвечает»: адрес не заворачиваем и повторно не
+ * пробуем. Фиксированная таблица — память не растёт, персист не нужен. */
+typedef struct { char ip[64]; time_t until; } dokslot;
+static dokslot dok[DOK_MAX];
+
+static int dok_has(const char *ip, time_t now)
+{
+    int i;
+    for (i = 0; i < DOK_MAX; i++)
+        if (dok[i].ip[0] && dok[i].until > now && !strcmp(dok[i].ip, ip))
+            return 1;
+    return 0;
+}
+
+static void dok_add(const char *ip, time_t now, int ttl)
+{
+    int i, slot = -1;
+    time_t oldest = 0;
+    for (i = 0; i < DOK_MAX; i++) {
+        if (!dok[i].ip[0] || dok[i].until <= now) { slot = i; break; }
+        if (slot < 0 || dok[i].until < oldest) { oldest = dok[i].until; slot = i; }
+    }
+    if (slot < 0)
+        slot = 0;
+    snprintf(dok[slot].ip, sizeof(dok[slot].ip), "%s", ip);
+    dok[slot].until = now + ttl;
+}
+
+static int direct_probe_budget_ok(time_t now)
 {
     static time_t win = 0;
     static int cnt = 0;
@@ -282,6 +331,20 @@ static int direct_probe_allow(time_t now)
     return 1;
 }
 
+static int direct_probe_sec_ok(time_t now)
+{
+    static time_t sec = 0;
+    static int cnt = 0;
+    if (sec != now) {
+        sec = now;
+        cnt = 0;
+    }
+    if (cnt >= DIRECT_PROBE_PER_SEC)
+        return 0;
+    cnt++;
+    return 1;
+}
+
 /* L1–L6: пороги обучения (learn_strict увеличивает требования). */
 static unsigned long lmin_op(const susanin_config *c)
 {
@@ -289,7 +352,8 @@ static unsigned long lmin_op(const susanin_config *c)
     return (unsigned long)(c->learn_strict ? v * 2 : v);
 }
 
-static unsigned long lmin_bytes(const susanin_config *c){
+static unsigned long lmin_bytes(const susanin_config *c)
+{
     int v = c->learn_min_bytes > 0 ? c->learn_min_bytes : 1;
     return (unsigned long)(c->learn_strict ? v * 2 : v);
 }
@@ -303,20 +367,32 @@ static unsigned long cmin_bytes(const susanin_config *c)
 /* Подтверждения агрегации: префикс уходит в ok_net только после N РАЗНЫХ
  * адресов (aggregate_confirm). Таблица фиксированного размера — память не растёт. */
 #define AG_CONF 64
-typedef struct { char cidr[64]; char last[64]; int n; time_t at; } agslot;
+#define AG_HIST 3        /* помним до 3 последних адресов префикса */
+#define AG_WINDOW_S 600  /* серия подтверждений живёт 10 минут */
+typedef struct { char cidr[64]; char last[AG_HIST][64]; int n; time_t at; } agslot;
 static agslot ag[AG_CONF];
 
 static int ag_confirm(const susanin_config *cfg, const char *cidr, const char *addr)
 {
     int want = cfg->aggregate_confirm > 1 ? cfg->aggregate_confirm : 1;
-    int i, free_i = -1, oldest = 0;
+    int i, k, free_i = -1, oldest = 0;
     time_t now = time(NULL);
     for (i = 0; i < AG_CONF; i++) {
         if (ag[i].cidr[0] && !strcmp(ag[i].cidr, cidr)) {
-            if (strcmp(ag[i].last, addr) != 0) {   /* новый адрес префикса */
-                ag[i].n++;
-                snprintf(ag[i].last, sizeof(ag[i].last), "%s", addr);
+            if (now - ag[i].at > AG_WINDOW_S) {   /* серия остыла — считаем заново */
+                ag[i].n = 0;
+                for (k = 0; k < AG_HIST; k++)
+                    ag[i].last[k][0] = '\0';
             }
+            for (k = 0; k < AG_HIST; k++)         /* повтор того же адреса не считаем */
+                if (ag[i].last[k][0] && !strcmp(ag[i].last[k], addr)) {
+                    ag[i].at = now;
+                    return ag[i].n >= want;
+                }
+            for (k = AG_HIST - 1; k > 0; k--)     /* сдвигаем историю адресов */
+                memcpy(ag[i].last[k], ag[i].last[k - 1], sizeof(ag[i].last[k]));
+            snprintf(ag[i].last[0], sizeof(ag[i].last[0]), "%s", addr);
+            ag[i].n++;
             ag[i].at = now;
             return ag[i].n >= want;
         }
@@ -327,7 +403,9 @@ static int ag_confirm(const susanin_config *cfg, const char *cidr, const char *a
     }
     i = free_i >= 0 ? free_i : oldest;   /* нет свободных — вытесняем самую старую */
     snprintf(ag[i].cidr, sizeof(ag[i].cidr), "%s", cidr);
-    snprintf(ag[i].last, sizeof(ag[i].last), "%s", addr);
+    for (k = 0; k < AG_HIST; k++)
+        ag[i].last[k][0] = '\0';
+    snprintf(ag[i].last[0], sizeof(ag[i].last[0]), "%s", addr);
     ag[i].n = 1;
     ag[i].at = now;
     return want <= 1;
@@ -354,9 +432,16 @@ static void cdn_aggregate(classifier_ctx *ctx, const ct_flow *f)
               cidr, cfg->aggregate_confirm);
         return;
     }
+    /* Префикс уже изучен: продлеваем TTL и в ipset, и в state (state_touch
+     * создаёт запись или продлевает существующую). */
+    if (state_has(&ctx->st->net, cidr, time(NULL))) {
+        backend_net_add(cfg, cidr, cfg->cdn_prefix_ttl);
+        state_touch(&ctx->st->net, cidr, time(NULL), cfg->cdn_prefix_ttl);
+        return;
+    }
     backend_net_add(cfg, cidr, cfg->cdn_prefix_ttl);
     /* В state — чтобы префикс не терялся при re-provision/fail-open. */
-    state_add(&ctx->st->net, cidr, time(NULL), cfg->cdn_prefix_ttl, 0);
+    state_touch(&ctx->st->net, cidr, time(NULL), cfg->cdn_prefix_ttl);
     slogf(SL_INFO, "CDN: %s -> ok (reason=CONFIRMED %s), ttl=%ds",
           cidr, f->dst, cfg->cdn_prefix_ttl);
 }
@@ -409,8 +494,13 @@ static void media_aggregate(classifier_ctx *ctx, const ct_flow *f)
         slogf(SL_DEBUG, "MEDIA: %s копит подтверждения", cidr);
         return;
     }
+    if (state_has(&ctx->st->net, cidr, time(NULL))) {
+        backend_net_add(cfg, cidr, cfg->media_ttl);   /* уже изучен: продлить TTL */
+        state_touch(&ctx->st->net, cidr, time(NULL), cfg->media_ttl);
+        return;
+    }
     backend_net_add(cfg, cidr, cfg->media_ttl);
-    state_add(&ctx->st->net, cidr, time(NULL), cfg->media_ttl, 0);
+    state_touch(&ctx->st->net, cidr, time(NULL), cfg->media_ttl);
     slogf(SL_INFO, "MEDIA: %s -> vpn (rb=%lu, ob=%lu)", cidr,
           (unsigned long)f->rb, (unsigned long)f->ob);
 }
@@ -420,6 +510,14 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
 {
     int udp = is_udp(f);
     const susanin_config *cfg = ctx->cfg;
+    int syn = !strcmp(reason, "TCP-SYN");
+    /* Адрес СЕЙЧАС в vpn_never — он должен идти напрямую: не учим (иначе
+     * vn_refresh/ipset и наш state расходятся, и sweep_direct рвёт его потоки).
+     * Учитываем и список vpn_never, и пины DNS-снифинга (st.never). */
+    if (vn_has(f->dst) || state_has(&ctx->st->never, f->dst, now)) {
+        slogf(SL_DEBUG, "AUTO-SUSANIN: skip %s:%u (vpn_never)", f->dst, f->dport);
+        return;
+    }
     /* Не учим в VPN адрес, недавно бывший в vpn_never: он должен идти напрямую,
      * иначе возможен «прыжок» direct <-> VPN (план п.8.3). */
     if (vn_is_recently_never(f->dst, now)) {
@@ -427,15 +525,34 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
               f->dst, f->dport);
         return;
     }
-    /* Прямая проба: при сбое на уровне соединения проверяем, что прямой путь
-     * отвечает, и не заворачиваем. При «тишине» после рукопожатия connect
-     * ничего не докажет, поэтому там пробу не делаем. Бюджет — N проб/мин. */
-    if (f->l4proto == 6 && f->dport > 0 && !strstr(reason, "STALL") &&
-        direct_probe_allow(now) &&
-        health_probe_tcp_direct(f->dst, f->dport, DIRECT_PROBE_MS)) {
-        slogf(SL_INFO, "AUTO-SUSANIN: %s skip %s:%u (прямой путь отвечает)",
-              stage, f->dst, f->dport);
-        return;
+    /* Прямая проба — только для «SYN ушёл без ответа»: там свежий connect
+     * информативен. Для DPI-RST/TCP-CLOSE/«тишины» проба бесполезна и вредна:
+     * рукопожатие проходит (блокировка по SNI/данным — уже после connect), и мы
+     * получили бы ложное «прямо ок», не завернув именно тот трафик, что нужно.
+     * Негативный кэш тоже относится только к этому случаю: он не должен
+     * запрещать обучение по сигналам SNI (DPI-RST/CLOSE). */
+    if (f->l4proto == 6 && f->dport > 0 && syn) {
+        if (dok_has(f->dst, now)) {
+            slogf(SL_DEBUG, "AUTO-SUSANIN: skip %s:%u (недавно проверено: прямой жив)",
+                  f->dst, f->dport);
+            return;
+        }
+        if (!direct_probe_budget_ok(now)) {
+            /* Бюджет проб исчерпан: осознанно НЕ заворачиваем (короткая отметка),
+             * иначе защита отключалась бы ровно под нагрузкой. */
+            dok_add(f->dst, now, DOK_TTL_BUDGET);
+            slogf(SL_DEBUG, "AUTO-SUSANIN: %s skip %s:%u (бюджет проб исчерпан)",
+                  stage, f->dst, f->dport);
+            return;
+        }
+        if (!direct_probe_sec_ok(now))
+            return;   /* лимит на секунду: решим в следующий проход, не заворачиваем */
+        if (health_probe_tcp_direct(f->dst, f->dport, DIRECT_PROBE_MS)) {
+            dok_add(f->dst, now, DOK_TTL_OK);
+            slogf(SL_INFO, "AUTO-SUSANIN: %s skip %s:%u (прямой путь отвечает)",
+                  stage, f->dst, f->dport);
+            return;
+        }
     }
     /* D1: снимаем «мягкое прямо» (DIRECT_PREF), иначе RETURN в цепочке не даст
      * адресу уйти в VPN, когда прямой путь снова деградировал. */
@@ -600,13 +717,42 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         if (!ours(f, cfg)) continue;
 
         if ((f->ctmark & cfg->mark_mask) == cfg->mark_test) {
+            int tp = (strcmp(cfg->egress_type, "tproxy") == 0);
             if (!state_has(st_test(ctx->st, udp), f->dst, now)) continue;
             good = failed = 0;
             if (f->l4proto == 6) {
-                if (f->rp >= 2 || f->rb >= cmin_bytes(cfg)) good = 1;
-                if ((strcmp(f->tcp_state, "SYN_SENT") == 0 && f->op >= 3 && f->rp == 0) ||
-                    (strcmp(f->tcp_state, "ESTABLISHED") == 0 && f->op >= lmin_op(cfg) &&
-                     f->ob >= lmin_bytes(cfg) && f->rp <= 1 && f->rb < 128)) failed = 1;
+                /* В tproxy локальный Xray отвечает SYN-ACK/ACK даже когда апстрим
+                 * мёртв, поэтому «есть ответы» ничего не доказывает: подтверждаем
+                 * только по реальным данным (rb). */
+                if (tp) {
+                    if (f->rb >= cmin_bytes(cfg)) good = 1;
+                } else if (f->rp >= 2 || f->rb >= cmin_bytes(cfg)) {
+                    good = 1;
+                }
+                if (tp) {
+                    /* tproxy: Xray отвечает сам, поэтому «нет ответов» (rp == 0)
+                     * недостижимо — неудачу определяем по отсутствию реальных
+                     * данных при состоявшемся соединении. Но не раньше, чем запись
+                     * прожила TPROXY_FAIL_MIN_AGE: за первый RTT клиент успевает
+                     * отправить до начального окна (≈10 сегментов) без ответа, и на
+                     * медленном апстриме это дало бы ложный cooldown.
+                     * Возраст = now − (expire − test_ttl): в test запись не
+                     * продлевается (повторный promote блокирует candidate_ok). */
+                    time_t tu = state_at(st_test(ctx->st, udp), f->dst, now);
+                    int age = (cfg->test_ttl > 0 && tu > 0)
+                                  ? (int)(now - (tu - cfg->test_ttl)) : 0;
+                    if (age >= TPROXY_FAIL_MIN_AGE &&
+                        strcmp(f->tcp_state, "ESTABLISHED") == 0 &&
+                        f->op >= lmin_op(cfg) && f->ob >= lmin_bytes(cfg) &&
+                        f->rb < 128)
+                        failed = 1;
+                } else if ((strcmp(f->tcp_state, "SYN_SENT") == 0 && f->op >= 3 &&
+                            f->rp == 0) ||
+                           (strcmp(f->tcp_state, "ESTABLISHED") == 0 &&
+                            f->op >= lmin_op(cfg) && f->ob >= lmin_bytes(cfg) &&
+                            f->rp <= 1 && f->rb < 128)) {
+                    failed = 1;
+                }
             } else {
                 if (f->rp >= 1) good = 1;
                 if ((f->dport == 443 && f->op >= lmin_op(cfg) && f->rp == 0) ||
@@ -631,10 +777,17 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 backend_ct_delete(f);
             }
         } else if ((f->ctmark & cfg->mark_mask) == cfg->mark_ok) {
+            int tp = (strcmp(cfg->egress_type, "tproxy") == 0);
             if (!state_has(st_ok(ctx->st, udp), f->dst, now)) continue;
             healthy = failed = 0;
             if (f->l4proto == 6) {
-                if (f->rp >= 2 || f->rb >= 128) healthy = 1;
+                /* tproxy: ответы приходят от локального Xray — «здоровым» считаем
+                 * только адрес, от которого есть реальные данные. */
+                if (tp) {
+                    if (f->rb >= 128) healthy = 1;
+                } else if (f->rp >= 2 || f->rb >= 128) {
+                    healthy = 1;
+                }
                 /* rp==0 (а не rp<=1): любой ответ означает живой адрес — так
                  * долгоживущие соединения мессенджеров (Telegram/WhatsApp) не
                  * вылетают из ok из-за одного «тихого» среза. */
