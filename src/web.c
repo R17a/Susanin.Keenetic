@@ -17,6 +17,7 @@
 
 #include <arpa/inet.h>
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -39,6 +40,12 @@
 
 #define REQ_MAX 8192
 #define MAX_BODY 16384
+/* Тело запроса на полную перезапись списка (Memo-редактор). Списки бывают
+ * ~6–10 КБ; раньше тело читалось в буфер 4096, и сохранение молча обрезалось. */
+#define MAX_LIST_BODY 65536
+
+/* Ограничение числа строк при полной перезаписи списка. */
+#define MAX_LIST_LINES 20000
 
 static const char *status_text(int code)
 {
@@ -687,35 +694,111 @@ static int valid_entry(const char *s)
     return 1;
 }
 
-/* add=1 — добавить строку, add=0 — удалить. Бэкап рядом (.bak-Ymd-HMS). */
+/* Копирование файла (для бэкапа списка). Права исходного сохраняем. */
+static int copy_file(const char *src, const char *dst)
+{
+    FILE *s = fopen(src, "rb");
+    FILE *d;
+    struct stat st;
+    int c, rc = 0;
+
+    if (!s)
+        return -1;
+    d = fopen(dst, "wb");
+    if (!d) {
+        fclose(s);
+        return -1;
+    }
+    while ((c = fgetc(s)) != EOF) {
+        if (fputc(c, d) == EOF) {
+            rc = -1;
+            break;
+        }
+    }
+    fclose(s);
+    if (fclose(d) != 0)
+        rc = -1;
+    if (stat(src, &st) == 0)
+        chmod(dst, st.st_mode & 07777);
+    return rc;
+}
+
+/* Имя старого формата бэкапа: <base>.bak-YYYYMMDD-HHMMSS. До 0.4.0-dev7 такие
+ * копии накапливались десятками — правка одной строки плодила новый файл. */
+static int old_bak_name(const char *name, const char *base, size_t blen)
+{
+    const char *p = name;
+    size_t i;
+
+    if (strncmp(p, base, blen) != 0)
+        return 0;
+    p += blen;
+    if (strncmp(p, ".bak-", 5) != 0)
+        return 0;
+    p += 5;
+    for (i = 0; i < 8; i++)
+        if (!isdigit((unsigned char)p[i]))
+            return 0;
+    if (p[8] != '-')
+        return 0;
+    for (i = 9; i < 15; i++)
+        if (!isdigit((unsigned char)p[i]))
+            return 0;
+    return p[15] == '\0';
+}
+
+/* Убрать накопленные <path>.bak-<дата> рядом со списком (одноразовая уборка). */
+static void list_bak_cleanup(const char *path)
+{
+    char dir[600], base[600];
+    const char *slash;
+    DIR *dp;
+    struct dirent *de;
+    size_t blen, dl;
+
+    slash = strrchr(path, '/');
+    if (slash) {
+        dl = (size_t)(slash - path);
+        if (dl == 0)
+            dl = 1;                     /* "/list.txt" — каталог "/" */
+        if (dl >= sizeof(dir))
+            return;
+        memcpy(dir, path, dl);
+        dir[dl] = '\0';
+        snprintf(base, sizeof(base), "%s", slash + 1);
+    } else {
+        snprintf(dir, sizeof(dir), ".");
+        snprintf(base, sizeof(base), "%s", path);
+    }
+    blen = strlen(base);
+    if (!blen)
+        return;
+    dp = opendir(dir);
+    if (!dp)
+        return;
+    while ((de = readdir(dp)) != NULL) {
+        char victim[1300];
+        if (!old_bak_name(de->d_name, base, blen))
+            continue;
+        if (snprintf(victim, sizeof(victim), "%s/%s", dir, de->d_name) < 0)
+            continue;
+        remove(victim);
+    }
+    closedir(dp);
+}
+
+/* add=1 — добавить строку, add=0 — удалить.
+ * Бэкап — ОДИН файл <list>.bak: перезаписывается поверх и только при фактическом
+ * изменении содержимого, копии <list>.bak-<дата> больше не плодятся. */
 static int list_edit(const char *path, const char *val, int add,
                      char *err, size_t errsz)
 {
     char bak[600], tmp[600], line[512];
-    time_t t = time(NULL);
-    struct tm tm;
     FILE *in, *out;
     int found = 0, changed = 0, last_nl = 1;
 
-    localtime_r(&t, &tm);
-    snprintf(bak, sizeof(bak), "%s.bak-%04d%02d%02d-%02d%02d%02d", path,
-             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-             tm.tm_hour, tm.tm_min, tm.tm_sec);
+    snprintf(bak, sizeof(bak), "%s.bak", path);
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-
-    {
-        FILE *s = fopen(path, "r");
-        if (s) {
-            FILE *d = fopen(bak, "w");
-            if (d) {
-                int c;
-                while ((c = fgetc(s)) != EOF)
-                    fputc(c, d);
-                fclose(d);
-            }
-            fclose(s);
-        }
-    }
 
     in = fopen(path, "r");
     out = fopen(tmp, "w");
@@ -760,15 +843,154 @@ static int list_edit(const char *path, const char *val, int add,
         changed = 1;
     }
     fclose(out);
-    if (changed)
+    if (changed) {
+        copy_file(path, bak);   /* один бэкап, поверх прежнего */
+        list_bak_cleanup(path); /* и уборка копий старого формата */
         rename(tmp, path);
-    else
+    } else {
         remove(tmp);
+    }
     return changed ? 1 : 0;
 }
 
+/* Равны ли два файла побайтово (для «бэкап только при фактическом изменении»). */
+static int files_equal(const char *a, const char *b)
+{
+    FILE *fa = fopen(a, "rb"), *fb;
+    int ca, cb, same = 1;
+
+    if (!fa)
+        return 0;                  /* списка нет — считаем, что запись новая */
+    fb = fopen(b, "rb");
+    if (!fb) {
+        fclose(fa);
+        return 0;
+    }
+    for (;;) {
+        ca = fgetc(fa);
+        cb = fgetc(fb);
+        if (ca != cb) {
+            same = 0;
+            break;
+        }
+        if (ca == EOF)
+            break;
+    }
+    fclose(fa);
+    fclose(fb);
+    return same;
+}
+
+/* Полная перезапись списка (Memo-редактор). Построчно: пустые строки и
+ * '#'-комментарии сохраняем, валидные записи — через valid_entry(), битые
+ * строки отбрасываем и считаем (панель показывает предупреждение). Запись
+ * атомарная (.tmp + rename), бэкап — один <list>.bak (как в list_edit). */
+static int list_replace(const char *path, const char *text, int *kept,
+                        int *dropped, char *err, size_t errsz)
+{
+    char tmp[600], bak[600];
+    FILE *out;
+    const char *p = text;
+    int lines = 0;
+
+    *kept = 0;
+    *dropped = 0;
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    snprintf(bak, sizeof(bak), "%s.bak", path);
+
+    out = fopen(tmp, "w");
+    if (!out) {
+        snprintf(err, errsz, "cannot write list file");
+        return -1;
+    }
+    while (p && *p) {
+        const char *nl = strchr(p, '\n');
+        size_t raw = nl ? (size_t)(nl - p) : strlen(p);
+        char line[512];
+        size_t l;
+
+        if (raw >= sizeof(line)) {
+            /* Строка длиннее буфера — обрезать её нельзя (испортили бы запись). */
+            (*dropped)++;
+        } else {
+            memcpy(line, p, raw);
+            line[raw] = '\0';
+            l = raw;
+            while (l && (line[l - 1] == '\r' || line[l - 1] == ' ' || line[l - 1] == '\t'))
+                line[--l] = '\0';
+            {
+                char *q = line;
+                while (*q == ' ' || *q == '\t')
+                    q++;
+                if (*q == '\0')
+                    fputs("\n", out);
+                else if (*q == '#')
+                    fprintf(out, "%s\n", q);      /* комментарий сохраняем */
+                else if (valid_entry(q)) {
+                    fprintf(out, "%s\n", q);
+                    (*kept)++;
+                } else {
+                    (*dropped)++;
+                }
+            }
+        }
+        lines++;
+        if (lines >= MAX_LIST_LINES) {
+            (*dropped)++;               /* лимит строк: остальное не принимаем */
+            break;
+        }
+        if (!nl)
+            break;
+        p = nl + 1;
+    }
+    if (fclose(out) != 0) {
+        remove(tmp);
+        snprintf(err, errsz, "cannot write list file");
+        return -1;
+    }
+    /* Ничего не изменилось — не трогаем ни список, ни бэкап (как в list_edit:
+     * бэкап пишется только при фактическом изменении). */
+    if (files_equal(path, tmp)) {
+        remove(tmp);
+        return 0;
+    }
+    copy_file(path, bak);       /* один бэкап, поверх прежнего */
+    list_bak_cleanup(path);     /* уборка копий старого формата */
+    if (rename(tmp, path) != 0) {
+        remove(tmp);
+        snprintf(err, errsz, "cannot replace list file");
+        return -1;
+    }
+    return 0;
+}
+
+/* Имя списка из query (?name=vpn_always) и путь к нему из конфига. */
+static const char *list_path_from_query(const susanin_config *cfg, const char *query,
+                                        char *name, size_t namesz)
+{
+    if (namesz)
+        name[0] = '\0';
+    if (query) {
+        const char *p = strstr(query, "name=");
+        if (p) {
+            size_t i = 0;
+            p += 5;
+            while (p[i] && p[i] != '&' && i + 1 < namesz) {
+                name[i] = p[i];
+                i++;
+            }
+            name[i] = '\0';
+        }
+    }
+    if (!strcmp(name, "vpn_always"))
+        return cfg->vpn_always_file;
+    if (!strcmp(name, "vpn_never"))
+        return cfg->vpn_never_file;
+    return NULL;
+}
+
 static void handle_action(int fd, const susanin_config *cfg, const char *target,
-                          const char *body)
+                          const char *query, const char *body)
 {
     char a[CFG_PATH_MAX], b[128], err[160];
 
@@ -839,6 +1061,28 @@ static void handle_action(int fd, const susanin_config *cfg, const char *target,
         json_ok(fd, "\"action\":\"restart\"");
         return;
     }
+    if (!strcmp(target, "/api/list/save")) {
+        /* Полная перезапись списка (Memo-редактор): тело запроса — новый текст
+         * списка (text/plain, без form-кодирования), имя списка — в query.
+         * Пустые строки и '#'-комментарии сохраняются, битые строки отбрасываются
+         * (в ответе — сколько принято и сколько отброшено). */
+        const char *path = NULL;
+        char name[32] = "";
+        int kept = 0, dropped = 0, r;
+        path = list_path_from_query(cfg, query, name, sizeof(name));
+        if (!path || !path[0]) { json_err(fd, "bad list"); return; }
+        r = list_replace(path, body, &kept, &dropped, err, sizeof(err));
+        if (r < 0) { json_err(fd, err); return; }
+        {
+            char extra[160];
+            signal_agent(SIGHUP, err, sizeof(err));
+            snprintf(extra, sizeof(extra),
+                     "\"action\":\"list\",\"list\":\"%s\",\"kept\":%d,\"dropped\":%d",
+                     name, kept, dropped);
+            json_ok(fd, extra);
+        }
+        return;
+    }
     if (!strcmp(target, "/api/list")) {
         char op[8];
         const char *path = NULL;
@@ -871,6 +1115,8 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
     char method[8] = { 0 };
     char target[1024] = { 0 };
     char body[4096] = { 0 };
+    char *bodybig = NULL;               /* тело /api/list/save (до MAX_LIST_BODY) */
+    char *bodyp = body;
     char *query = NULL;
     size_t len = 0;
     int head_only = 0;
@@ -940,28 +1186,64 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
             char *end = strstr(req, "\r\n\r\n");
             size_t hdrlen = end ? (size_t)(end - req) + 4 : len;
             size_t have = (len > hdrlen) ? len - hdrlen : 0;
-            size_t need = (want > 0 && (size_t)want < sizeof(body)) ? (size_t)want : 0;
-            if (have > need)
-                have = need;
-            if (have)
-                memcpy(body, req + hdrlen, have);
-            while (have < need) {
-                ssize_t rr = recv(fd, body + have, need - have, 0);
-                if (rr <= 0)
-                    break;
-                have += (size_t)rr;
+            /* Полная перезапись списка (Memo) бывает больше 4 КБ — для неё читаем
+             * тело в отдельный буфер до MAX_LIST_BODY; для остальных запросов
+             * прежний лимит 4096. */
+            char *big = NULL;
+            size_t cap = sizeof(body);
+            if (want > 0 && (size_t)want >= sizeof(body) &&
+                !strcmp(target, "/api/list/save")) {
+                if ((size_t)want > MAX_LIST_BODY) {
+                    reply_text(fd, 413, "list body too large", head_only);
+                    return;
+                }
+                big = malloc(MAX_LIST_BODY + 1);
+                if (!big) {
+                    reply_text(fd, 500, "oom", head_only);
+                    return;
+                }
+                cap = MAX_LIST_BODY + 1;
             }
-            body[have] = '\0';
+            {
+                char *bp = big ? big : body;
+                size_t need = (want > 0 && (size_t)want < cap) ? (size_t)want : 0;
+                int short_read;
+                if (have > need)
+                    have = need;
+                if (have)
+                    memcpy(bp, req + hdrlen, have);
+                while (have < need) {
+                    ssize_t rr = recv(fd, bp + have, need - have, 0);
+                    if (rr <= 0)
+                        break;
+                    have += (size_t)rr;
+                }
+                bp[have] = '\0';
+                /* Тело пришло не полностью (обрыв) — для ПОЛНОЙ перезаписи списка
+                 * это недопустимо: сохранили бы урезанный список. Отклоняем. */
+                short_read = (want > 0 && have < (size_t)want);
+                if (short_read && !strcmp(target, "/api/list/save")) {
+                    free(big);
+                    reply_text(fd, 400, "incomplete body (list not saved)", head_only);
+                    return;
+                }
+            }
+            if (big) {
+                bodybig = big;
+                bodyp = big;
+            }
         }
     }
 
     if (!token_ok(cfg, req, query)) {
+        free(bodybig);
         reply_text(fd, 401, "unauthorized", head_only);
         return;
     }
 
     if (!strcmp(method, "POST")) {
-        handle_action(fd, cfg, target, body);
+        handle_action(fd, cfg, target, query, bodyp);
+        free(bodybig);
         return;
     }
 
@@ -991,21 +1273,50 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
         serve_log(fd, cfg, query, head_only);
         return;
     }
+    if (!strcmp(target, "/api/list/raw")) {
+        /* Сырой текст списка (с комментариями и пустыми строками) — для
+         * Memo-редактора: JSON-вариант /api/list отдаёт только записи. */
+        char name[32] = "";
+        const char *path = list_path_from_query(cfg, query, name, sizeof(name));
+        FILE *f;
+        char *buf;
+        size_t got;
+        if (!path || !path[0]) {
+            reply_text(fd, 400, "bad name", head_only);
+            return;
+        }
+        /* Файл больше лимита редактора отдавать нельзя: панель показала бы
+         * обрезанный текст, а сохранение молча отрезало бы хвост списка. */
+        {
+            struct stat st;
+            if (stat(path, &st) == 0 && st.st_size > MAX_LIST_BODY) {
+                reply_text(fd, 413, "list file is larger than 64 KiB — edit it on the router",
+                           head_only);
+                return;
+            }
+        }
+        f = fopen(path, "r");
+        if (!f) {
+            reply(fd, 200, "text/plain; charset=utf-8", "", 0, head_only);
+            return;
+        }
+        buf = malloc(MAX_LIST_BODY + 1);
+        if (!buf) {
+            fclose(f);
+            reply_text(fd, 500, "oom", head_only);
+            return;
+        }
+        got = fread(buf, 1, MAX_LIST_BODY, f);
+        fclose(f);
+        buf[got] = '\0';
+        reply(fd, 200, "text/plain; charset=utf-8", buf, got, head_only);
+        free(buf);
+        return;
+    }
     if (!strcmp(target, "/api/list")) {
         char name[32] = { 0 };
         char *jb;
-        if (query) {
-            const char *p = strstr(query, "name=");
-            if (p) {
-                size_t i = 0;
-                p += 5;
-                while (p[i] && p[i] != '&' && i + 1 < sizeof(name)) {
-                    name[i] = p[i];
-                    i++;
-                }
-                name[i] = '\0';
-            }
-        }
+        list_path_from_query(cfg, query, name, sizeof(name));
         if (strcmp(name, "vpn_always") && strcmp(name, "vpn_never")) {
             reply_text(fd, 400, "bad name", head_only);
             return;

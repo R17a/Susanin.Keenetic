@@ -26,6 +26,7 @@ static void usage(void)
         "Usage:\n"
         "  susanin-agent version\n"
         "  susanin-agent config show\n"
+        "  susanin-agent config set <key> <value>\n"
         "  susanin-agent discover\n"
         "  susanin-agent ct-scan\n"
         "  susanin-agent datapath {up|down|status|flush|add|del}\n"
@@ -37,8 +38,45 @@ static void usage(void)
         "  susanin-agent install\n"
         "  susanin-agent uninstall\n"
         "  susanin-agent reset <ip|domain>   (forget — синоним)\n"
-        "  susanin-agent diag [start|stop|sample|errors]\n",
+        "  susanin-agent diag errors         (ERROR/WARN из лога агента)\n",
         SUSANIN_VERSION);
+}
+
+/* Путь лога агента (тот же, что отдаёт веб-панель). Переопределяется
+ * переменной SUSANIN_LOG — нужно тестам и нестандартным установкам. */
+#define SUSANIN_LOG_PATH "/opt/susanin/var/susanin.log"
+
+static const char *log_path(void)
+{
+    const char *p = getenv("SUSANIN_LOG");
+    return p && *p ? p : SUSANIN_LOG_PATH;
+}
+
+/* diag errors — строки ERROR/WARN из лога: то, что нужно в отчёте тестера.
+ * Раньше команда отвечала «not implemented yet (Phase 7)», хотя её вызывает
+ * tools/report.sh (замечание внешнего ревью). */
+static int cmd_diag_errors(void)
+{
+    const char *path = log_path();
+    FILE *f = fopen(path, "r");
+    char line[1024];
+    int n = 0;
+
+    if (!f) {
+        printf("diag errors: лог недоступен (%s). При disk_mode=soft лог не ведётся.\n",
+               path);
+        return 0;
+    }
+    printf("=== ERROR/WARN из %s ===\n", path);
+    while (fgets(line, sizeof(line), f)) {
+        if (strstr(line, "ERROR") || strstr(line, "WARN")) {
+            fputs(line, stdout);
+            n++;
+        }
+    }
+    fclose(f);
+    printf("=== строк ERROR/WARN: %d ===\n", n);
+    return 0;
 }
 
 static int print_flow(void *ud, const ct_flow *f)
@@ -106,9 +144,15 @@ int main(int argc, char **argv)
             config_print(&cfg);
             return 0;
         }
-        if (argc > 2 && !strcmp(argv[2], "set")) {
-            fprintf(stderr, "config set: implemented in Phase 5\n");
-            return 2;
+        if (argc > 4 && !strcmp(argv[2], "set")) {
+            if (config_file_set(cfg_path(), argv[3], argv[4], 1) != 0) {
+                fprintf(stderr, "config set: не удалось записать %s "
+                                "(имя ключа — [a-z0-9_], значение — без переводов строк)\n",
+                        argv[3]);
+                return 2;
+            }
+            printf("%s=%s\n", argv[3], argv[4]);
+            return 0;
         }
         usage();
         return 2;
@@ -159,7 +203,10 @@ int main(int argc, char **argv)
     }
 
     if (!strcmp(cmd, "diag")) {
-        printf("diag: not implemented yet (Phase 7)\n");
+        const char *sub = argc > 2 ? argv[2] : "";
+        if (!strcmp(sub, "errors"))
+            return cmd_diag_errors();
+        fprintf(stderr, "usage: susanin-agent diag errors\n");
         return 2;
     }
 

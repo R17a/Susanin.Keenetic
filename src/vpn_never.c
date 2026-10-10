@@ -643,10 +643,12 @@ int vn_refresh2(vpn_never *v, const susanin_config *cfg, int *changed)
             /* Сбросить старые VPN-потоки и убрать из ok/test-кэша: адрес должен
              * идти напрямую (важно при FASTNAT и при позднем добавлении домена). */
             backend_ct_flush_ip(des[i]);
-            backend_ipset_del(cfg, 0, 1, des[i]);
-            backend_ipset_del(cfg, 0, 0, des[i]);
-            backend_ipset_del(cfg, 1, 1, des[i]);
-            backend_ipset_del(cfg, 1, 0, des[i]);
+            /* ok: адресный пин (в port-aware — susanin_ok_net); test: обычные
+             * наборы. В pair-режиме удаление по адресу из test — no-op, такие
+             * записи короткие (test_ttl) и истекают сами. */
+            backend_ok_pin_del(cfg, des[i]);
+            backend_ipset_del_port(cfg, 0, 0, des[i], 0);
+            backend_ipset_del_port(cfg, 1, 0, des[i], 0);
         }
         if (!tracked_has(v, des[i]))
             tracked_add(v, des[i]);

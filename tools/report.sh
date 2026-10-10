@@ -54,7 +54,10 @@ run() { echo "----- $* -----"; "$@" 2>&1; }
     echo "----- route table 100 -----"
     ip route show table 100 2>&1
     echo "----- ipsets (address count) -----"
-    for s in susanin_ok_tcp susanin_ok_udp susanin_test_tcp susanin_test_udp susanin_ok_net susanin_never; do
+    # susanin_direct (D1, «мягко прямо») раньше не попадал в отчёт — по нему нельзя
+    # было понять, сколько адресов агент держит в авто-DIRECT.
+    for s in susanin_ok_tcp susanin_ok_udp susanin_test_tcp susanin_test_udp \
+             susanin_ok_net susanin_never susanin_direct; do
         printf "%s = " "$s"
         ipset list "$s" 2>/dev/null | grep -cE '^[0-9]+\.'
     done

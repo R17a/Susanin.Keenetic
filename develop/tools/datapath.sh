@@ -19,7 +19,7 @@ ipt() { "$IPT" -w "$@"; }
 MODPROBE=$(find_bin modprobe); INSMOD=$(find_bin insmod)
 KVER=$(uname -r 2>/dev/null || echo "")
 KDIR="/lib/modules/$KVER"
-[ -n "ipt" ] || { echo "iptables not found" >&2; exit 2; }
+[ -n "$IPT" ] || { echo "iptables not found" >&2; exit 2; }
 [ -n "$IPSET" ] || { echo "ipset not found" >&2; exit 2; }
 [ -n "$IPCMD" ] || { echo "ip not found" >&2; exit 2; }
 
@@ -102,6 +102,11 @@ NEVERSET=susanin_never
 # Мягкое «прямо» (DIRECT_PREF, D1): RETURN как never, но с TTL и управляется
 # агентом (авто-возврат). Отдельный набор, чтобы не трогать жёсткий never.
 DIRECTSET=susanin_direct
+# Port-aware identity (экспериментально, по умолчанию ВЫКЛ): решения по паре
+# адрес+порт. Тогда ok/test — наборы hash:ip,port, правила матчат dst,dst, а
+# add/del принимают порт. Наборы ok_net/never/direct остаются по адресу.
+PORT_AWARE=${SUSANIN_PORT_AWARE:-0}
+case "$PORT_AWARE" in 1|true|yes|on) PORT_AWARE=1 ;; *) PORT_AWARE=0 ;; esac
 
 say() { echo "[susanin] $*"; }
 load_mod() {
@@ -124,48 +129,88 @@ iprule_fw() { # <mark> <prio>
 
 set_exists() { "$IPSET" list "$1" >/dev/null 2>&1; }
 
+# Бэкап состояния netfilter ПЕРЕД правками — ОДИН фиксированный каталог
+# var/datapath.bak, файлы перезаписываются. Раньше каталоги множились
+# (datapath-<дата> + архивы в var/archive) и забивали носитель — от этого отказались:
+# смысл бэкапа только в «состоянии до наших изменений», история не нужна.
+# Если правила не изменились с прошлого раза — не пишем ничего (нет износа флеша),
+# поэтому прежний лимит «не чаще раза в час» больше не нужен.
+BK_DIR="$PREFIX/susanin/var/datapath.bak"
+
+bk_cleanup_legacy() {
+    # Одноразовая уборка старого множащегося формата: каталоги datapath-<дата>,
+    # архивы var/archive/datapath-*.tar.gz и маркер .last-backup. Фиксированный
+    # datapath.bak под шаблон datapath-[0-9]* не попадает; в archive трогаем
+    # только НАШИ файлы (каталог удаляем лишь если опустел).
+    for _d in "$PREFIX/susanin/var"/datapath-[0-9]*; do
+        [ -e "$_d" ] && rm -rf "$_d" 2>/dev/null || true
+    done
+    for _a in "$PREFIX/susanin/var/archive"/datapath-*.tar.gz; do
+        [ -e "$_a" ] && rm -f "$_a" 2>/dev/null || true
+    done
+    rmdir "$PREFIX/susanin/var/archive" 2>/dev/null || true
+    rm -f "$PREFIX/susanin/var/.last-backup" 2>/dev/null || true
+}
+
+bk_file() { # bk_file <имя> <команда...>
+    _n="$1"; shift
+    _f="$BK_DIR/$_n"; _t="$BK_DIR/.$_n.tmp"
+    "$@" > "$_t" 2>/dev/null || true
+    if [ -f "$_f" ] && cmp -s "$_t" "$_f" 2>/dev/null; then
+        rm -f "$_t"
+        return 0
+    fi
+    mv -f "$_t" "$_f" 2>/dev/null || rm -f "$_t"
+    BK_CHANGED=1
+}
+
 backup() {
     if [ "$DISK_MODE" = "soft" ]; then
-        say "disk_mode=soft: backup/archiving skipped"
+        say "disk_mode=soft: backup skipped"
         return 0
     fi
-    mkdir -p "$PREFIX/susanin/var"
-    _mark="$PREFIX/susanin/var/.last-backup"
-    _now=$(date +%s)
-    _last=$(cat "$_mark" 2>/dev/null || echo 0)
-    case "$_last" in ''|*[!0-9]*) _last=0;; esac
-    if [ $((_now - _last)) -lt "${BACKUP_MIN_INTERVAL:-3600}" ]; then
-        return 0
+    mkdir -p "$BK_DIR" || return 0
+    bk_cleanup_legacy
+    BK_CHANGED=0
+    bk_file mangle.txt   "ipt" -t mangle -S
+    bk_file nat.txt      "ipt" -t nat -S
+    bk_file ip-rule.txt  "$IPCMD" rule show
+    bk_file ip-route.txt "$IPCMD" route show table all
+    if [ "$BK_CHANGED" = "1" ]; then
+        say "backup: $BK_DIR"
     fi
-    printf '%s\n' "$_now" > "$_mark" 2>/dev/null || true
-    bk="$PREFIX/susanin/var/datapath-$(date +%Y%m%d-%H%M%S)"
-    mkdir -p "$bk"
-    "ipt" -t mangle -S > "$bk/mangle.txt" 2>/dev/null || true
-    "ipt" -t nat -S > "$bk/nat.txt" 2>/dev/null || true
-    "$IPCMD" rule show > "$bk/ip-rule.txt" 2>/dev/null || true
-    "$IPCMD" route show table all > "$bk/ip-route.txt" 2>/dev/null || true
-    say "backup: $bk"
-    arc="$PREFIX/susanin/var/archive"
-    mkdir -p "$arc"
-    ls -1dt "$PREFIX/susanin/var"/datapath-* 2>/dev/null | tail -n +4 | \
-        while read -r old; do
-            base=$(basename "$old")
-            if tar -czf "$arc/$base.tar.gz" -C "$(dirname "$old")" "$base" 2>/dev/null; then
-                rm -rf "$old"
-            fi
-        done
-    ls -1dt "$arc"/datapath-*.tar.gz 2>/dev/null | tail -n +6 | \
-        while read -r x; do rm -f "$x"; done
+    return 0
+}
+
+set_type_ok() { # set_type_ok <набор> <ожидаемый тип>
+    "$IPSET" list -t "$1" 2>/dev/null | grep -q "Type: $2"
 }
 
 ensure_sets() {
+    # ВАЖНО: не `[ ] && присваивание` — при ложном условии под `set -e` это
+    # завершает скрипт (проверено харнессом).
+    if [ "$PORT_AWARE" = "1" ]; then
+        _t=hash:ip,port
+    else
+        _t=hash:ip
+    fi
     for s in $SETS; do
-        set_exists "$s" || "$IPSET" create "$s" hash:ip timeout 0
+        if set_exists "$s"; then
+            # Тип мог остаться от прошлой конфигурации (hash:ip <-> hash:ip,port):
+            # пересоздаём, иначе add с портом/без порта будет падать.
+            set_type_ok "$s" "$_t" || {
+                say "ipset $s: тип не $_t — пересоздаю"
+                "$IPSET" destroy "$s" 2>/dev/null || true
+                "$IPSET" create "$s" "$_t" timeout 0
+            }
+        else
+            "$IPSET" create "$s" "$_t" timeout 0
+        fi
     done
     set_exists "$NETSET" || "$IPSET" create "$NETSET" hash:net timeout 0
     set_exists "$NEVERSET" || "$IPSET" create "$NEVERSET" hash:net timeout 0
     set_exists "$DIRECTSET" || "$IPSET" create "$DIRECTSET" hash:net timeout 0
-    say "ipsets ready"
+    say "ipsets ready (port_aware=$PORT_AWARE)"
 }
 
 ensure_chain() {
@@ -205,10 +250,17 @@ rule_mark() {
                 mangle "$CHAIN" -i "$i" -p "$_t" --sport "$_p" -j RETURN
             done
         done
+        # Семантика матча по набору: обычно по адресу цели (dst), в port-aware
+        # режиме — по адресу И порту цели (dst,dst).
+        if [ "$PORT_AWARE" = "1" ]; then
+            _ms=dst,dst
+        else
+            _ms=dst
+        fi
         for p in tcp udp; do
             mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
                 -m mark --mark "0x0/$MARK_MASK" \
-                -m set --match-set susanin_ok_${p} dst \
+                -m set --match-set susanin_ok_${p} $_ms \
                 -j CONNMARK --set-xmark "$MARK_OK/$MARK_MASK"
             mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
                 -m mark --mark "0x0/$MARK_MASK" \
@@ -216,7 +268,7 @@ rule_mark() {
                 -j CONNMARK --set-xmark "$MARK_OK/$MARK_MASK"
             mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
                 -m mark --mark "0x0/$MARK_MASK" \
-                -m set --match-set susanin_test_${p} dst \
+                -m set --match-set susanin_test_${p} $_ms \
                 -j CONNMARK --set-xmark "$MARK_TEST/$MARK_MASK"
         done
         mangle "$CHAIN" -i "$i" -j CONNMARK --restore-mark --nfmask "$MARK_MASK" --ctmask "$MARK_MASK"
@@ -538,21 +590,51 @@ command_flush() {
 }
 
 command_add() {
+    # Допустимы обе формы: «add <ip> <tcp|udp> <test|ok>» и
+    # «add <ip> <port> <tcp|udp> <test|ok>». Во второй форме порт используется
+    # только при port_aware=1 (иначе игнорируется) — так агент может передавать
+    # порт всегда, не зная о режиме.
     ip="$1"; p="$2"; ph="$3"
+    case "${2:-}" in
+        ''|*[!0-9]*) ;;                 # не число -> форма без порта
+        *) ip="$1"; port="$2"; p="$3"; ph="$4" ;;
+    esac
     case "$p" in tcp|udp) ;; *) echo "bad proto: $p" >&2; exit 2;; esac
     case "$ph" in test|ok) ;; *) echo "bad phase: $ph" >&2; exit 2;; esac
     ensure_sets
     ttl=$TTL_TEST; [ "$ph" = ok ] && ttl=$TTL_OK
+    if [ "$PORT_AWARE" = "1" ]; then
+        case "${port:-}" in
+            ''|*[!0-9]*) echo "port_aware=1: нужен порт (add <ip> <port> <tcp|udp> <test|ok>)" >&2; exit 2 ;;
+        esac
+        # Протокол в элементе обязателен: в hash:ip,port элемент без него
+        # считается TCP, и UDP-пакет с ним не совпадёт.
+        "$IPSET" -exist add "susanin_${ph}_${p}" "$ip,$p:$port" timeout "$ttl"
+        say "added $ip,$p:$port -> susanin_${ph}_${p} (timeout ${ttl}s)"
+        return 0
+    fi
     "$IPSET" -exist add "susanin_${ph}_${p}" "$ip" timeout "$ttl"
     say "added $ip -> susanin_${ph}_${p} (timeout ${ttl}s)"
 }
 
 command_del() {
     ip="$1"; p="$2"
+    case "${2:-}" in
+        ''|*[!0-9]*) ;;
+        *) ip="$1"; port="$2"; p="$3" ;;
+    esac
+    case "$p" in tcp|udp) ;; *) echo "bad proto: $p" >&2; exit 2;; esac
+    _val="$ip"
+    if [ "$PORT_AWARE" = "1" ]; then
+        case "${port:-}" in
+            ''|*[!0-9]*) echo "port_aware=1: нужен порт (del <ip> <port> <tcp|udp>)" >&2; exit 2 ;;
+        esac
+        _val="$ip,$p:$port"
+    fi
     for s in "susanin_test_${p}" "susanin_ok_${p}"; do
-        set_exists "$s" && "$IPSET" -exist del "$s" "$ip" >/dev/null 2>&1 || true
+        set_exists "$s" && "$IPSET" -exist del "$s" "$_val" >/dev/null 2>&1 || true
     done
-    say "deleted $ip ($p)"
+    say "deleted $_val ($p)"
 }
 
 case "${1:-}" in
@@ -561,9 +643,10 @@ case "${1:-}" in
     status) command_status ;;
     flush) command_flush ;;
     egress) command_egress "${2:-}" ;;
-    add) command_add "$2" "$3" "$4" ;;
-    del) command_del "$2" "$3" ;;
+    add) command_add "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
+    del) command_del "${2:-}" "${3:-}" "${4:-}" ;;
     *)
-        echo "usage: $0 {up|down|status|flush|egress <iface>|add <ip> <tcp|udp> <test|ok>|del <ip> <tcp|udp>}" >&2
+        echo "usage: $0 {up|down|status|flush|egress <iface>|add <ip> [<port>] <tcp|udp> <test|ok>|del <ip> [<port>] <tcp|udp>}" >&2
+        echo "  (порт обязателен при SUSANIN_PORT_AWARE=1; ok_net/never/direct всегда по адресу)" >&2
         exit 2 ;;
 esac

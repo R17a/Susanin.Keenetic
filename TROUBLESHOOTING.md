@@ -230,9 +230,11 @@ sh /opt/susanin/tools/xray-egress.sh enable     # перезапустит Xray
   ```sh
   sed -i 's/^disk_mode=.*/disk_mode=soft/' /opt/susanin/etc/susanin.conf
   sh /opt/susanin/tools/susanin.sh restart
-  rm -rf /opt/susanin/var/datapath-* /opt/susanin/var/archive/*
+  rm -rf /opt/susanin/var/datapath.bak
   ```
-  (в свежих сборках бэкапы уже ограничены — не чаще раза в час).
+  (в свежих сборках бэкап правил один — `/opt/susanin/var/datapath.bak`, файлы
+  перезаписываются, копии не накапливаются; остатки старого формата
+  `var/datapath-<дата>` и `var/archive` удаляются автоматически при первом `up`).
 
 ## Не возвращается на основной VPN после восстановления (failback)
 
@@ -255,6 +257,37 @@ fail-open DIRECT`.
   регулярно, смотрите память.
 - Диагностика: `sh /opt/susanin/tools/diagnose.sh` — покажет `free`, swap, топ
   по RSS и случаи OOM из `dmesg`.
+
+## Роутер «зависает»: в top много процессов xray
+
+Симптом (2026-10-10): `top` показывает десятки процессов
+`/opt/sbin/xray run -config /opt/susanin/etc/xray-tproxy.json` (часть в состоянии
+`D`), память почти вся занята (`101M/122M`), `load average` ~20 — интернет встаёт.
+
+Причина (до `0.4.0-dev7`): `S93xray-tproxy` искал свой Xray через `pidof xray`
+(BusyBox-апплета может не быть в окружении init-скриптов — тогда `stop` не убивал
+никого, а каждый `start` поднимал новый процесс) и посылал один `SIGTERM` без
+ожидания завершения: если процесс висел в `D`, следующий `start`/`restart` (в том
+числе от вотчдога агента) поднимал второй экземпляр рядом со старым.
+
+Лечение на роутере (ручное):
+```sh
+sh /opt/susanin/tools/susanin.sh stop      # чтобы агент не поднимал новые Xray
+for p in /proc/[0-9]*; do
+    tr '\0' ' ' < "$p/cmdline" 2>/dev/null | grep -q xray-tproxy.json \
+        && kill -9 "${p#/proc/}"
+done                                        # убиваем ТОЛЬКО наш конфиг
+/opt/etc/init.d/S93xray-tproxy start
+sh /opt/susanin/tools/susanin.sh start
+```
+Если процессы в состоянии `D` не уходят — перезагрузка роутера.
+
+Что изменено в `0.4.0-dev7`: свой PID пишется в `/opt/susanin/var/xray.pid`,
+процессы ищутся по `cmdline` с нашим конфигом (без `pidof`), `stop` ждёт
+завершения и добивает `kill -9`, `restart` отменяется, если старый процесс не
+ушёл, а вотчдог агента не поднимает новый экземпляр, пока жив старый (в логе —
+`процесс Xray есть, но :порт не слушает — повторный запуск пропускаю`).
+`S93xray-tproxy status` покажет текущий PID.
 - На роутере ~128 МБ без swap задайте в `susanin.conf`:
   ```
   xray_gogc=50

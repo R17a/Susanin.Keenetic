@@ -667,8 +667,7 @@ static void cache_load(vpn_always *v, const susanin_config *cfg)
         char name[256];
         if (!strncmp(line, "ip ", 3)) {
             if (sscanf(line + 3, "%255s", name) == 1 && !tracked_has(v, name)) {
-                backend_ipset_add(cfg, 0, 1, name, 0);
-                backend_ipset_add(cfg, 1, 1, name, 0);
+                backend_ok_pin_add(cfg, name, 0);
                 tracked_add(v, name);
             }
         } else if (!strncmp(line, "net ", 4)) {
@@ -801,8 +800,7 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
             v->seen_exists = 0;
             v->nd = 0;
             while (v->ntrack > 0) {
-                backend_ipset_del(cfg, 0, 1, v->track[0]);
-                backend_ipset_del(cfg, 1, 1, v->track[0]);
+                backend_ok_pin_del(cfg, v->track[0]);
                 slogf(SL_INFO, "vpn_always: unpin %s (file removed)",
                       v->track[0]);
                 tracked_remove(v, v->track[0]);
@@ -1022,8 +1020,7 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
                     continue;
                 }
             }
-            backend_ipset_del(cfg, 0, 1, v->track[i]);
-            backend_ipset_del(cfg, 1, 1, v->track[i]);
+            backend_ok_pin_del(cfg, v->track[i]);
             slogf(SL_DEBUG, "vpn_always: unpin %s", v->track[i]);
             removed++;
             tracked_remove(v, v->track[i]);
@@ -1068,8 +1065,7 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
             /* pin_reassert=1 (по умолчанию): передобавляем пины каждый проход,
              * само-восстанавливая внешне потерянные (resync/flush/GC/TTL).
              * 0 — добавляем только новые. */
-            backend_ipset_add(cfg, 0, 1, desired[i], 0);
-            backend_ipset_add(cfg, 1, 1, desired[i], 0);
+            backend_ok_pin_add(cfg, desired[i], 0);
         }
         if (!known) {
             tracked_add(v, desired[i]);

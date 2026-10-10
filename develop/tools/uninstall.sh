@@ -27,6 +27,15 @@ if [ -x "$PREFIX/tools/datapath.sh" ]; then
 fi
 [ -f "$INITD" ] && rm -f "$INITD" && say "removed $INITD"
 
+# Симлинк короткого вызова убираем только если он ведёт на НАШ скрипт.
+if [ -L /opt/bin/susanin ]; then
+    _ln=$(readlink /opt/bin/susanin 2>/dev/null || true)
+    case "$_ln" in
+        "$PREFIX/tools/susanin.sh"|/opt/susanin/tools/susanin.sh)
+            rm -f /opt/bin/susanin && say "removed /opt/bin/susanin" ;;
+    esac
+fi
+
 if [ "$PURGE" = 1 ]; then
     rm -rf "$PREFIX"
     say "purged $PREFIX (config/state/logs removed)"

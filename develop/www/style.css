@@ -283,7 +283,40 @@ code { color: #cdd6e3; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes toast-out { to { opacity: 0; transform: translateY(-4px); } }
 
+/* --- Memo-редактор списка (модальное окно) --- */
+.modal {
+  position: fixed; inset: 0; z-index: 30; display: flex;
+  align-items: center; justify-content: center; padding: 16px;
+  background: rgba(4, 6, 10, .68);
+}
+.modal[hidden] { display: none; }
+.modal-card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  width: 100%; max-width: 720px; max-height: 90vh; display: flex;
+  flex-direction: column; gap: 10px; padding: 14px;
+  box-shadow: 0 18px 48px rgba(0,0,0,.45);
+}
+.modal-head { display: flex; align-items: center; justify-content: space-between; }
+.modal-head h3 { margin: 0; font-size: 15px; }
+.memo-hint { margin: 0; font-size: 12px; line-height: 1.45; }
+#memo-text {
+  width: 100%; min-height: 46vh; resize: vertical; box-sizing: border-box;
+  background: #0b0d11; color: #cdd6e3; border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px;
+  font: 12.5px/1.55 ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+#memo-text:focus { outline: 1px solid var(--acc); }
+.modal-actions {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  flex-wrap: wrap;
+}
+.modal-actions #memo-status { margin-right: auto; font-size: 12px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+#memo-text[readonly] { opacity: .75; }
+
 @media (max-width: 720px) {
   .lists-board { grid-template-columns: 1fr; }
   .topbar { flex-direction: column; align-items: stretch; }
+  .modal-card { max-height: 94vh; }
+  #memo-text { min-height: 40vh; }
 }

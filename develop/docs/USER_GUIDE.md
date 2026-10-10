@@ -72,7 +72,10 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootst
 
 - откройте `http://<LAN-IP-роутера>:<web_port>` (по умолчанию `192.168.1.1:8087`);
 - раздел «Конфигурация агента» — правка параметров из браузера; списки
-  `vpn_always`/`vpn_never` — перетаскиванием между колонками;
+  `vpn_always`/`vpn_never` — перетаскиванием между колонками **или кнопкой
+  «Редактор»** (весь файл текстом: можно вставить сразу много строк, сохранить
+  комментарии `#` и пустые строки; нераспознанные строки отбрасываются, панель
+  сообщит их число);
 - управление панелью: `sh /opt/susanin/tools/susanin.sh web {start|stop|restart|status}`;
 - кнопка Restart в панели перезапускает демон и **не затрагивает саму панель**;
   `susanin.sh status` показывает строки `daemon:` и `web:`.
@@ -126,6 +129,13 @@ egress_address=10.8.1.1,10.8.1.2
 пересекаться с сетями qWDTT (`10.66.66.0/24`, `10.70.66.0/16`).
 `diagnose.sh` подскажет при конфликте. Подробнее — README, раздел «Вместе с
 qWDTT_Server_Keenetic».
+
+**Клиенты qWDTT — через Susanin.Keenetic (если так нужно).** Штатная поддержка
+«LAN-серверов»: `lan_server_interfaces=wdtt0,wdttraw0` + `mss_clamp=pmtu`,
+затем `sh /opt/susanin/tools/susanin.sh rescan` и `restart`. Это двойной туннель
+(клиент → qWDTT → Susanin → VPN): скорость ниже, `mss_clamp` обязателен.
+`ipv6_block`/`quic_block` на клиентов qWDTT не действуют. Откат: очистить
+`lan_server_interfaces` и снова `rescan`.
 
 **Профили маршрутизации.** Можно задать профили: список (домены/IP/CIDR) → свой
 туннель. Профилей до 4; задаются повторяющимися ключами `profile1_*` …

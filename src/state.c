@@ -35,6 +35,62 @@ void state_free(susanin_state *s)
     set_free(&s->net); set_free(&s->direct); set_free(&s->never);
 }
 
+/* Ключ записи: port<=0 — адрес как есть, port>0 — "адрес:порт" (port-aware).
+ * Значения пишутся и читаются как строки, поэтому формат файла состояния не
+ * меняется: старые записи (просто адрес) читаются по-прежнему, а в port-aware
+ * режиме они просто не совпадают с парами и истекают по своему TTL. */
+void state_key(char *dst, size_t n, const char *addr, int port)
+{
+    if (!dst || !n)
+        return;
+    if (port > 0)
+        snprintf(dst, n, "%.58s:%d", addr ? addr : "", port);
+    else
+        snprintf(dst, n, "%s", addr ? addr : "");
+}
+
+/* Обратное разложение ключа (см. state.h): получаем ip и порт раздельно, чтобы
+ * обратиться к ipset, где пара записывается через запятую. */
+void state_key_split(const char *key, char *ip, size_t ipn, int *port)
+{
+    const char *c;
+    int colons = 0;
+    if (!ip || !ipn)
+        return;
+    if (port)
+        *port = 0;
+    if (!key) {
+        ip[0] = '\0';
+        return;
+    }
+    /* Пара — только форма "IPv4:порт" (ровно одно двоеточие, дальше цифры):
+     * у IPv6-ключей двоеточий больше, и как пару мы их не разбираем. */
+    for (c = key; *c; c++)
+        if (*c == ':')
+            colons++;
+    if (colons == 1) {
+        const char *colon = strchr(key, ':');
+        const char *d;
+        int all_digits = 1;
+        for (d = colon + 1; *d; d++)
+            if (*d < '0' || *d > '9') {
+                all_digits = 0;
+                break;
+            }
+        if (all_digits && colon[1]) {
+            size_t l = (size_t)(colon - key);
+            if (l >= ipn)
+                l = ipn - 1;
+            memcpy(ip, key, l);
+            ip[l] = '\0';
+            if (port)
+                *port = atoi(colon + 1);
+            return;
+        }
+    }
+    snprintf(ip, ipn, "%s", key);
+}
+
 void state_expire(state_set *st, time_t now)
 {
     int i, w = 0;

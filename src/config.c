@@ -150,6 +150,10 @@ void config_set_defaults(susanin_config *c)
     c->learn_min_bytes = 2000;
     c->confirm_min_bytes = 512;
     c->learn_strict = 0;
+    /* Пресет порогов не задан: значения — как выше (поведение не меняется). */
+    snprintf(c->precision, sizeof(c->precision), "%s", "");
+    /* Port-aware identity: по умолчанию выключено (поведение не меняется). */
+    c->port_aware = 0;
     snprintf(c->cdn_ranges_file, sizeof(c->cdn_ranges_file), "%s",
              "/opt/susanin/etc/cdn_ranges.txt");
     snprintf(c->cdn_ranges_url, sizeof(c->cdn_ranges_url), "%s",
@@ -202,10 +206,56 @@ static void set_str(char *dst, size_t n, const char *v)
     snprintf(dst, n, "%s", v ? v : "");
 }
 
+/* «Профили точности» (precision): пресет порогов автообучения. Значение пресета
+ * применяется к полям, которых НЕТ в конфиге явно (см. биты PREC_* в config_load),
+ * поэтому ключи в susanin.conf всегда сильнее. При config_save/config_print
+ * пресет не «разворачивается» — в файл пишется только сам ключ precision. */
+enum {
+    PREC_FAST_SYN = 1,      /* fast_syn_min_op */
+    PREC_EVICT = 2,         /* ok_evict_misses */
+    PREC_LEARN_OP = 4,      /* learn_min_op */
+    PREC_LEARN_BYTES = 8,   /* learn_min_bytes */
+    PREC_CONFIRM = 16,      /* confirm_min_bytes */
+    PREC_STRICT = 32        /* learn_strict */
+};
+
+/* Значение пресета известно? (strict | normal | aggressive | пусто) */
+static int precision_known(const char *p)
+{
+    return !p[0] || !strcmp(p, "normal") || !strcmp(p, "strict") ||
+           !strcmp(p, "aggressive");
+}
+
+static void apply_precision(susanin_config *c, unsigned seen)
+{
+    const char *p = c->precision;
+    if (!p[0] || !strcmp(p, "normal"))
+        return;
+    if (!strcmp(p, "strict")) {
+        if (!(seen & PREC_FAST_SYN))    c->fast_syn_min_op = 3;
+        if (!(seen & PREC_EVICT))       c->ok_evict_misses = 5;
+        if (!(seen & PREC_LEARN_OP))    c->learn_min_op = 14;
+        if (!(seen & PREC_LEARN_BYTES)) c->learn_min_bytes = 3000;
+        if (!(seen & PREC_CONFIRM))     c->confirm_min_bytes = 1024;
+    } else if (!strcmp(p, "aggressive")) {
+        if (!(seen & PREC_FAST_SYN))    c->fast_syn_min_op = 1;
+        if (!(seen & PREC_EVICT))       c->ok_evict_misses = 2;
+        if (!(seen & PREC_LEARN_OP))    c->learn_min_op = 8;
+        if (!(seen & PREC_LEARN_BYTES)) c->learn_min_bytes = 1500;
+        if (!(seen & PREC_CONFIRM))     c->confirm_min_bytes = 256;
+    } else {
+        /* Опечатка вроде precision=strong раньше молча ничего не делала:
+         * теперь это видно и в stderr (уходит в лог), и в `config show`. */
+        fprintf(stderr, "warning: unknown precision '%s' "
+                        "(expected strict|normal|aggressive) — ignored\n", p);
+    }
+}
+
 int config_load(const char *path, susanin_config *c)
 {
     FILE *fp;
     char line[512];
+    unsigned seen = 0;      /* какие ключи группы порогов были в файле явно */
 
     config_set_defaults(c);
     if (!path)
@@ -306,16 +356,20 @@ int config_load(const char *path, susanin_config *c)
             c->judge_interval = parse_dur(val, U_SEC);
         else if (!strcmp(key, "health_interval"))
             c->health_interval = parse_dur(val, U_SEC);
-        else if (!strcmp(key, "fast_syn_min_op"))
+        else if (!strcmp(key, "fast_syn_min_op")) {
             c->fast_syn_min_op = (int)strtol(val, NULL, 0);
+            seen |= PREC_FAST_SYN;
+        }
         else if (!strcmp(key, "ok_ttl"))
             c->ok_ttl = parse_dur(val, U_SEC);
         else if (!strcmp(key, "ok_refresh_below"))
             c->ok_refresh_below = parse_dur(val, U_HOUR);
         else if (!strcmp(key, "ok_max_entries"))
             c->ok_max_entries = (int)strtol(val, NULL, 0);
-        else if (!strcmp(key, "ok_evict_misses"))
+        else if (!strcmp(key, "ok_evict_misses")) {
             c->ok_evict_misses = (int)strtol(val, NULL, 0);
+            seen |= PREC_EVICT;
+        }
         else if (!strcmp(key, "promo_per_min"))
             c->promo_per_min = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "test_ttl"))
@@ -368,14 +422,26 @@ int config_load(const char *path, susanin_config *c)
             set_str(c->lan_server_interfaces, sizeof(c->lan_server_interfaces), val);
         else if (!strcmp(key, "dp_check_interval"))
             c->dp_check_interval = parse_dur(val, U_SEC);
-        else if (!strcmp(key, "learn_min_op"))
+        else if (!strcmp(key, "learn_min_op")) {
             c->learn_min_op = (int)strtol(val, NULL, 0);
-        else if (!strcmp(key, "learn_min_bytes"))
+            seen |= PREC_LEARN_OP;
+        }
+        else if (!strcmp(key, "learn_min_bytes")) {
             c->learn_min_bytes = (int)strtol(val, NULL, 0);
-        else if (!strcmp(key, "confirm_min_bytes"))
+            seen |= PREC_LEARN_BYTES;
+        }
+        else if (!strcmp(key, "confirm_min_bytes")) {
             c->confirm_min_bytes = (int)strtol(val, NULL, 0);
-        else if (!strcmp(key, "learn_strict"))
+            seen |= PREC_CONFIRM;
+        }
+        else if (!strcmp(key, "learn_strict")) {
             c->learn_strict = (int)strtol(val, NULL, 0);
+            seen |= PREC_STRICT;
+        }
+        else if (!strcmp(key, "port_aware"))
+            c->port_aware = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "precision"))
+            set_str(c->precision, sizeof(c->precision), val);
         else if (!strcmp(key, "cdn_ranges_file"))
             set_str(c->cdn_ranges_file, sizeof(c->cdn_ranges_file), val);
         else if (!strcmp(key, "cdn_ranges_url"))
@@ -463,6 +529,10 @@ int config_load(const char *path, susanin_config *c)
     }
 
     fclose(fp);
+
+    /* «Профили точности»: пресет применяется ПОСЛЕ разбора файла и только к тем
+     * порогам, которых в файле не было (явные ключи сильнее пресета). */
+    apply_precision(c, seen);
 
     /* P2: профили из profiles.d (один профиль = один файл .conf) дополняют
      * profileN_* из susanin.conf. Каталог: $SUSANIN_PROFILES_DIR или
@@ -701,6 +771,13 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "confirm_min_bytes=%d\n", c->confirm_min_bytes);
     fprintf(fp, "# Удвоить пороги обучения (строже): 0 | 1.\n");
     fprintf(fp, "learn_strict=%d\n", c->learn_strict);
+    fprintf(fp, "# Пресет порогов обучения: strict | normal | aggressive (пусто = выкл).\n");
+    fprintf(fp, "# Задаёт только значения по умолчанию: ключи выше, если они есть в\n");
+    fprintf(fp, "# файле, пресет НЕ переопределяет.\n");
+    fprintf(fp, "precision=%s\n", c->precision);
+    fprintf(fp, "# Port-aware identity (экспериментально, по умолчанию 0): решения по паре\n");
+    fprintf(fp, "# адрес+порт вместо адреса целиком. Требует наборов hash:ip,port.\n");
+    fprintf(fp, "port_aware=%d\n", c->port_aware);
     fprintf(fp, "# Файл диапазонов CDN (для агрегации по префиксу).\n");
     fprintf(fp, "cdn_ranges_file=%s\n", c->cdn_ranges_file);
     fprintf(fp, "# URL источника диапазонов CDN.\n");
@@ -916,6 +993,13 @@ void config_print(const susanin_config *c)
     printf("learn_min_bytes=%d\n", c->learn_min_bytes);
     printf("confirm_min_bytes=%d\n", c->confirm_min_bytes);
     printf("learn_strict=%d\n", c->learn_strict);
+    printf("precision=%s%s\n", c->precision[0] ? c->precision : "(выкл)",
+           !c->precision[0] ? "" :
+           (precision_known(c->precision)
+                ? "  (пресет применён к порогам, которых нет в конфиге)"
+                : "  (НЕИЗВЕСТНЫЙ пресет — игнорируется)"));
+    printf("port_aware=%d%s\n", c->port_aware,
+           c->port_aware ? "  (экспериментально: наборы hash:ip,port, решения по паре адрес+порт)" : "");
     printf("cdn_ranges_file=%s\n", c->cdn_ranges_file);
     printf("cdn_ranges_url=%s\n", c->cdn_ranges_url);
     printf("cdn_ranges_interval=%d\n", out_dur(c->cdn_ranges_interval, U_SEC));

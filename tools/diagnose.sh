@@ -139,10 +139,36 @@ echo "dns_sniff=$(cfg dns_sniff) offload=$(cfg kernel_offload) kernel_egress=$(c
 ET=$(cfg egress_type); [ -n "$ET" ] || ET=interface
 if [ "$ET" = "tproxy" ]; then
     echo "tproxy: port=$(cfg tproxy_port) udp_relay=$(cfg udp_relay)"
-    if pidof xray >/dev/null 2>&1; then
-        echo "xray: RUNNING"
+    # Проверяем ИМЕННО наш Xray (по cmdline с нашим конфигом), а не любой процесс
+    # с именем xray: чужой (XKeen) не должен выглядеть как наш (замечание ревью).
+    XPID=""
+    if [ -r /opt/susanin/var/xray.pid ]; then
+        _xp=$(cat /opt/susanin/var/xray.pid 2>/dev/null || true)
+        case "$_xp" in
+            ''|*[!0-9]*) _xp="" ;;
+        esac
+        if [ -n "$_xp" ] && [ -r "/proc/$_xp/cmdline" ] && \
+           tr '\0' ' ' < "/proc/$_xp/cmdline" 2>/dev/null | grep -q '/opt/susanin/etc/xray-tproxy.json'; then
+            XPID="$_xp"
+        fi
+    fi
+    if [ -z "$XPID" ]; then
+        for _d in /proc/[0-9]*; do
+            [ -r "$_d/cmdline" ] || continue
+            if tr '\0' ' ' < "$_d/cmdline" 2>/dev/null | grep -q '/opt/susanin/etc/xray-tproxy.json'; then
+                XPID="${_d#/proc/}"
+                break
+            fi
+        done
+    fi
+    if [ -n "$XPID" ]; then
+        echo "xray: RUNNING (pid=$XPID, наш конфиг)"
     else
-        echo "xray: НЕ запущен"
+        echo "xray: не запущен с нашим конфигом"
+        if pidof xray >/dev/null 2>&1; then
+            echo "xray: ВНИМАНИЕ — есть ЧУЖОЙ процесс xray ($(pidof xray | tr '\n' ' ')): порт $(cfg tproxy_port) может быть занят им"
+            rec "Запущен чужой Xray (не с нашим конфигом). Susanin.Keenetic его не трогает; если он занял tproxy_port=$(cfg tproxy_port), смените tproxy_port или остановите чужой процесс сами."
+        fi
         rec "egress_type=tproxy, но Xray не запущен — трафик идёт DIRECT. Поднимите: /opt/etc/init.d/S93xray-tproxy start (при xray_watchdog=1 агент поднимет сам)."
     fi
     QB=$(cfg quic_block)
@@ -237,6 +263,24 @@ if command -v ipset >/dev/null 2>&1; then
     if [ "${okc:-0}" -eq 0 ] && [ "${okn:-0}" -eq 0 ]; then
         rec "Список выученных адресов пуст — обучение не работает. Проверьте пакеты и правила и что через роутер идёт трафик."
     fi
+fi
+
+# --------------------------------------------------- port-aware (экспериментально)
+PA=$(cfg port_aware)
+if [ "$PA" = "1" ]; then
+    echo "port_aware=1: наборы ok/test хранят ПАРЫ адрес+порт (матч dst,dst)"
+    if command -v ipset >/dev/null 2>&1; then
+        _pt=$(ipset list -t susanin_ok_tcp 2>/dev/null | sed -n 's/^Type: //p')
+        echo "  тип susanin_ok_tcp: ${_pt:-<набора нет>}"
+        case "$_pt" in
+            hash:ip,port) ;;
+            "") rec "port_aware=1, но набора susanin_ok_tcp нет: перезапустите 'sh /opt/susanin/tools/susanin.sh restart' — datapath создаст наборы нужного типа." ;;
+            *)  rec "port_aware=1, но набор susanin_ok_tcp типа '$_pt' (ожидается hash:ip,port): перезапустите агент, datapath пересоздаст наборы при 'up'." ;;
+        esac
+    fi
+    _pa_free=$(free -k 2>/dev/null | awk '$1=="Mem:"{print $4}')
+    [ -n "${_pa_free:-}" ] && echo "  свободной памяти: $((_pa_free / 1024)) МБ"
+    rec "port_aware=1 (экспериментально): пар в наборах больше, чем адресов — на слабом mipsel это заметнее по памяти. Смотрите RSS Xray/агента и OOM в dmesg; при нехватке памяти верните port_aware=0 и перезапустите агент (наборы пересоздадутся как hash:ip)."
 fi
 
 # --------------------------------------------------------------------- списки
@@ -369,8 +413,23 @@ if [ "$QW" = 1 ]; then
     esac
     case ",$LAN," in
         *,wdtt0,*|*,wdttraw0,*)
-            echo "lan_interfaces: содержит wdtt*"
-            rec "Уберите wdtt*/wdttraw* из lan_interfaces/lan_subnets — иначе Susanin.Keenetic начнёт обрабатывать клиентов qWDTT (двойной туннель)." ;;
+            # Штатная фича lan_server_interfaces (LAN-серверы qWDTT как клиенты
+            # Susanin) сама переносит wdtt* в lan_interfaces при rescan — ругаться
+            # на это нельзя. Предупреждаем только про реальный риск: клиенты WDTT
+            # одновременно под политикой Keenetic (двойной заворот).
+            LSRV=$(cfg lan_server_interfaces)
+            case ",$LSRV," in
+                *,wdtt0,*|*,wdttraw0,*)
+                    echo "lan_interfaces: содержит wdtt* (ожидаемо: lan_server_interfaces=$LSRV)"
+                    if [ "$(cfg mss_clamp)" = "0" ] && [ "$(cfg mss_clamp_lan)" != "1" ]; then
+                        rec "Клиенты qWDTT завернуты в Susanin (lan_server_interfaces), но mss_clamp выключен: вложенный туннель 1280-в-1280 упрётся в PMTU — поставьте mss_clamp=pmtu или mss_clamp_lan=1."
+                    fi
+                    NEV=$(ip route show table 4096 2>/dev/null | head -1)
+                    [ -n "$NEV" ] && echo "policy-route 4096: $(echo "$NEV" | cut -c1-60) (проверьте, не перебивает ли политика Keenetic метку Susanin)" ;;
+                *)
+                    echo "lan_interfaces: содержит wdtt*"
+                    rec "Уберите wdtt*/wdttraw* из lan_interfaces/lan_subnets — иначе Susanin.Keenetic начнёт обрабатывать клиентов qWDTT (двойной туннель). Если это нужно намеренно — задайте lan_server_interfaces=wdtt0,wdttraw0 и сделайте rescan." ;;
+            esac ;;
     esac
     if command -v iptables >/dev/null 2>&1; then
         if iptables -t nat -S POSTROUTING 2>/dev/null | grep -qE '\-s 10\.(66|70)\.'; then

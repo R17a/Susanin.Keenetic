@@ -10,7 +10,32 @@
 XRAY=/opt/sbin/xray
 XCFG=/opt/susanin/etc/xray-tproxy.json
 LOGF=/opt/susanin/var/xray.log
+PIDF=/opt/susanin/var/xray.pid
 PORT=12345
+
+# PID ИМЕННО нашего Xray. Раньше использовался `pidof xray` — он матчит любой
+# процесс с этим именем: чужой Xray (XKeen и т.п.) принимался за свой, старт
+# нашего молча пропускался, а stop его убивал. Теперь: pidfile, и только если
+# он потерян — поиск по cmdline (наш конфиг /opt/susanin/etc/xray-tproxy.json).
+xray_pid() {
+    if [ -f "$PIDF" ]; then
+        _p=$(cat "$PIDF" 2>/dev/null || true)
+        case "$_p" in ''|*[!0-9]*) _p="" ;; esac
+        if [ -n "$_p" ] && [ -r "/proc/$_p/cmdline" ] && \
+           tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null | grep -q "$XCFG" && tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null | grep -q -- '-config'; then
+            printf '%s' "$_p"
+            return 0
+        fi
+    fi
+    for _d in /proc/[0-9]*; do
+        [ -r "$_d/cmdline" ] || continue
+        if tr '\0' ' ' < "$_d/cmdline" 2>/dev/null | grep -q "$XCFG" && tr '\0' ' ' < "$_d/cmdline" 2>/dev/null | grep -q -- '-config'; then
+            printf '%s' "${_d#/proc/}"
+            return 0
+        fi
+    done
+    return 1
+}
 
 start() {
     [ -x "$XRAY" ] && [ -f "$XCFG" ] || { echo "xray-tproxy: нет Xray/конфига — пропуск"; return 0; }
@@ -36,22 +61,76 @@ start() {
     [ -n "$_gogc" ] || _gogc=50
     _gomem=$(sed -n 's/^xray_gomemlimit=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
     [ -n "$_gomem" ] || _gomem=64MiB
-    if ! pidof xray >/dev/null 2>&1; then
+    _run=$(xray_pid || true)
+    if [ -z "$_run" ]; then
         GOGC="$_gogc" GOMEMLIMIT="$_gomem" "$XRAY" run -config "$XCFG" >>"$LOGF" 2>&1 &
-        echo "xray-tproxy: started (port=$PORT, loglevel=$_lvl, GOGC=$_gogc, GOMEMLIMIT=$_gomem)"
+        _bg=$!
+        echo "$_bg" > "$PIDF" 2>/dev/null || true
+        echo "xray-tproxy: started (pid=$_bg, port=$PORT, loglevel=$_lvl, GOGC=$_gogc, GOMEMLIMIT=$_gomem)"
+        # Проверяем, что процесс удержался: если порт занят чужим Xray, наш
+        # упадёт на bind — без этой проверки агент молча считал бы порт живым.
+        sleep 2
+        if ! xray_pid >/dev/null 2>&1; then
+            rm -f "$PIDF" 2>/dev/null || true
+            echo "xray-tproxy: ВНИМАНИЕ — Xray не удержался (порт $PORT занят? смотрите $LOGF)"
+            echo "xray-tproxy: чужой процесс на этом порту МЫ НЕ ТРОГАЕМ — смените tproxy_port или остановите его сами"
+        fi
     else
-        echo "xray-tproxy: уже запущен; новый loglevel=$_lvl применится после 'restart'"
+        echo "xray-tproxy: уже запущен (pid=$_run); новый loglevel=$_lvl применится после 'restart'"
     fi
 }
 
 stop() {
-    for p in $(pidof xray 2>/dev/null); do kill "$p" 2>/dev/null; done
-    echo "xray-tproxy: stopped"
+    _p=$(xray_pid || true)
+    if [ -z "$_p" ]; then
+        echo "xray-tproxy: наш Xray не запущен (чужой не трогаем)"
+        rm -f "$PIDF" 2>/dev/null || true
+        return 0
+    fi
+    # SIGTERM, затем ЖДЁМ завершения и добиваем SIGKILL. Старый вариант слал один
+    # SIGTERM и сразу продолжал: если процесс висел в состоянии D (или игнорировал
+    # сигнал), следующий start поднимал второй экземпляр — на роутере накопилось
+    # ~14 процессов Xray, память 101/122 МБ, load average ~20 (2026-10-10).
+    kill "$_p" 2>/dev/null
+    _i=0
+    while [ "$_i" -lt 10 ]; do
+        [ -r "/proc/$_p/cmdline" ] || break
+        sleep 1
+        _i=$((_i + 1))
+    done
+    if [ -r "/proc/$_p/cmdline" ]; then
+        kill -9 "$_p" 2>/dev/null
+        _i=0
+        while [ "$_i" -lt 5 ]; do
+            [ -r "/proc/$_p/cmdline" ] || break
+            sleep 1
+            _i=$((_i + 1))
+        done
+    fi
+    if [ -r "/proc/$_p/cmdline" ]; then
+        echo "xray-tproxy: процесс $_p не завершился (состояние D?) — новый НЕ поднимаю"
+        rm -f "$PIDF" 2>/dev/null || true
+        return 1
+    fi
+    rm -f "$PIDF" 2>/dev/null || true
+    echo "xray-tproxy: stopped (pid=$_p)"
+    return 0
 }
 
 case "$1" in
     start) start ;;
     stop) stop ;;
-    restart) stop; sleep 1; start ;;
-    *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+    restart)
+        # Если старый процесс не завершился, второй экземпляр не поднимаем.
+        if ! stop; then
+            echo "xray-tproxy: restart отменён — сначала освободите процесс вручную"
+            exit 1
+        fi
+        sleep 1
+        start ;;
+    status)
+        _p=$(xray_pid || true)
+        if [ -n "$_p" ]; then echo "xray-tproxy: running (pid=$_p)"; else echo "xray-tproxy: not running"; fi
+        ;;
+    *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
 esac

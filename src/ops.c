@@ -106,6 +106,27 @@ static int cap_contains(const char *exe, char *const argv[], const char *needle)
     return strstr(out, needle) != 0;
 }
 
+/* Есть ли в `ip rule show` наше правило для метки с таблицей. Ядро печатает
+ * правило либо с маской ("fwmark 0x20000000/0x30000000 lookup 100"), либо без
+ * неё, в зависимости от того, как правило добавлено (datapath.sh добавляет с
+ * mark_mask). Раньше искали ТОЛЬКО форму без маски, поэтому status/apply
+ * ложно сообщали MISSING, хотя датаплейн исправен, а apply зря пересоздавал
+ * правило (короткое окно без него). Проверяем обе формы. */
+static int rule_fwmark_present(const char *ip, unsigned long mark,
+                               unsigned long mask, int table)
+{
+    char out[8192], with_mask[96], plain[96];
+    char *a[4];
+
+    a[0] = (char *)ip; a[1] = "rule"; a[2] = "show"; a[3] = NULL;
+    if (run_capture(ip, a, out, sizeof(out)) != 0)
+        return 0;
+    snprintf(with_mask, sizeof(with_mask), "fwmark 0x%lx/0x%lx lookup %d",
+             mark, mask, table);
+    snprintf(plain, sizeof(plain), "fwmark 0x%lx lookup %d", mark, table);
+    return strstr(out, with_mask) != 0 || strstr(out, plain) != 0;
+}
+
 /* Count output lines that start with a digit (ipset members). Streamed so a
  * large set is not truncated by a fixed buffer (ok_max_entries can exceed a
  * 64 KiB capture). */
@@ -213,7 +234,6 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
     const char *ipset = tool("ipset");
     const char *state_path = "/opt/susanin/var/susanin.state";
     char *a[8];
-    char needle[160];
 
     printf("susanin-agent %s\n", SUSANIN_VERSION);
     printf("config file: %s (%s)\n", conf_path,
@@ -233,6 +253,10 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
            cfg->kernel_egress[0] ? cfg->kernel_egress : "-",
            cfg->pin_reassert, cfg->xray_watchdog, cfg->auto_direct,
            cfg->media_enabled);
+    if (cfg->port_aware)
+        printf("port_aware=1 (экспериментально): ok/test — пары ip:port (матч dst,dst); "
+               "ok_net/never/direct — по адресу. Наборы занимают больше памяти — "
+               "следите за RSS, при OOM верните port_aware=0.\n");
     if (cfg->n_profiles > 0) {
         int k;
         printf("profiles (failover=%d):\n", cfg->profile_failover);
@@ -255,9 +279,8 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
     if (strcmp(cfg->egress_type, "tproxy") == 0) {
         /* tproxy: правила test/ok -> table 100 намеренно отсутствуют; вместо них
          * fwmark 0x1 + local-маршрут (UDP-релей) и nat REDIRECT (TCP). */
-        a[0] = (char *)ip; a[1] = "rule"; a[2] = "show"; a[3] = NULL;
-        snprintf(needle, sizeof(needle), "fwmark 0x1 lookup %d", cfg->routing_table);
-        print_check("ip rule tproxy->table", cap_contains(ip, a, needle));
+        print_check("ip rule tproxy->table",
+                    rule_fwmark_present(ip, 0x1, 0xffffffffUL, cfg->routing_table));
         {
             char tbl[16];
             snprintf(tbl, sizeof(tbl), "%d", cfg->routing_table);
@@ -270,11 +293,10 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
         if (cap_contains(ipt, a, "-j TPROXY"))
             printf("  udp-relay: TPROXY present\n");
     } else {
-        a[0] = (char *)ip; a[1] = "rule"; a[2] = "show"; a[3] = NULL;
-        snprintf(needle, sizeof(needle), "fwmark 0x%lx lookup %d", cfg->mark_test, cfg->routing_table);
-        print_check("ip rule test->table", cap_contains(ip, a, needle));
-        snprintf(needle, sizeof(needle), "fwmark 0x%lx lookup %d", cfg->mark_ok, cfg->routing_table);
-        print_check("ip rule ok->table", cap_contains(ip, a, needle));
+        print_check("ip rule test->table",
+                    rule_fwmark_present(ip, cfg->mark_test, cfg->mark_mask, cfg->routing_table));
+        print_check("ip rule ok->table",
+                    rule_fwmark_present(ip, cfg->mark_ok, cfg->mark_mask, cfg->routing_table));
         {
             char tbl[16];
             snprintf(tbl, sizeof(tbl), "%d", cfg->routing_table);
@@ -426,7 +448,6 @@ static int check_missing(const susanin_config *cfg, char *a[])
 {
     const char *ipt = tool("iptables");
     const char *ip = tool("ip");
-    char needle[160];
     char tbl[16];
     int missing = 0;
 
@@ -440,10 +461,9 @@ static int check_missing(const susanin_config *cfg, char *a[])
 
     if (strcmp(cfg->egress_type, "tproxy") == 0) {
         /* tproxy: rule test/ok не нужны; нужен fwmark 0x1 + local-маршрут + REDIRECT. */
-        a[0] = (char *)ip; a[1] = "rule"; a[2] = "show"; a[3] = NULL;
-        snprintf(needle, sizeof(needle), "fwmark 0x1 lookup %d", cfg->routing_table);
-        if (!cap_contains(ip, a, needle)) { missing++; printf("CREATE ip rule tproxy (fwmark 0x1)\n"); }
-        else printf("KEEP ip rule tproxy\n");
+        if (!rule_fwmark_present(ip, 0x1, 0xffffffffUL, cfg->routing_table)) {
+            missing++; printf("CREATE ip rule tproxy (fwmark 0x1)\n");
+        } else printf("KEEP ip rule tproxy\n");
         snprintf(tbl, sizeof(tbl), "%d", cfg->routing_table);
         a[0] = (char *)ip; a[1] = "route"; a[2] = "show"; a[3] = "table"; a[4] = tbl; a[5] = NULL;
         if (!cap_contains(ip, a, "local default")) { missing++; printf("CREATE local route in table %d\n", cfg->routing_table); }
@@ -454,13 +474,12 @@ static int check_missing(const susanin_config *cfg, char *a[])
         return missing;
     }
 
-    a[0] = (char *)ip; a[1] = "rule"; a[2] = "show"; a[3] = NULL;
-    snprintf(needle, sizeof(needle), "fwmark 0x%lx lookup %d", cfg->mark_test, cfg->routing_table);
-    if (!cap_contains(ip, a, needle)) { missing++; printf("CREATE ip rule test (fwmark 0x%lx)\n", cfg->mark_test); }
-    else printf("KEEP ip rule test\n");
-    snprintf(needle, sizeof(needle), "fwmark 0x%lx lookup %d", cfg->mark_ok, cfg->routing_table);
-    if (!cap_contains(ip, a, needle)) { missing++; printf("CREATE ip rule ok (fwmark 0x%lx)\n", cfg->mark_ok); }
-    else printf("KEEP ip rule ok\n");
+    if (!rule_fwmark_present(ip, cfg->mark_test, cfg->mark_mask, cfg->routing_table)) {
+        missing++; printf("CREATE ip rule test (fwmark 0x%lx)\n", cfg->mark_test);
+    } else printf("KEEP ip rule test\n");
+    if (!rule_fwmark_present(ip, cfg->mark_ok, cfg->mark_mask, cfg->routing_table)) {
+        missing++; printf("CREATE ip rule ok (fwmark 0x%lx)\n", cfg->mark_ok);
+    } else printf("KEEP ip rule ok\n");
 
     snprintf(tbl, sizeof(tbl), "%d", cfg->routing_table);
     a[0] = (char *)ip; a[1] = "route"; a[2] = "show"; a[3] = "table"; a[4] = tbl; a[5] = NULL;

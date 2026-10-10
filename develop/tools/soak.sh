@@ -43,7 +43,26 @@ n=0
 
 sample() {
     _pid=$(cat "$PIDF" 2>/dev/null || true)
-    _xpid=$(pidof xray 2>/dev/null || true)
+    # Именно НАШ Xray (по cmdline с нашим конфигом): `pidof xray` в métriques
+    # ловил бы и чужой процесс (XKeen), искажая RSS/CPU.
+    _xpid=""
+    if [ -r /opt/susanin/var/xray.pid ]; then
+        _xp=$(cat /opt/susanin/var/xray.pid 2>/dev/null || true)
+        case "$_xp" in ''|*[!0-9]*) _xp="" ;; esac
+        if [ -n "$_xp" ] && [ -r "/proc/$_xp/cmdline" ] && \
+           tr '\0' ' ' < "/proc/$_xp/cmdline" 2>/dev/null | grep -q 'xray-tproxy.json' && tr '\0' ' ' < "/proc/$_xp/cmdline" 2>/dev/null | grep -q -- '-config'; then
+            _xpid="$_xp"
+        fi
+    fi
+    if [ -z "$_xpid" ]; then
+        for _d in /proc/[0-9]*; do
+            [ -r "$_d/cmdline" ] || continue
+            if tr '\0' ' ' < "$_d/cmdline" 2>/dev/null | grep -q 'xray-tproxy.json' && tr '\0' ' ' < "$_d/cmdline" 2>/dev/null | grep -q -- '-config'; then
+                _xpid="${_d#/proc/}"
+                break
+            fi
+        done
+    fi
     _ts=$(date +%Y-%m-%dT%H:%M:%S 2>/dev/null || echo "?")
     _up=$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)
     _load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null | tr ' ' '/' || echo "?")

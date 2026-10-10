@@ -417,8 +417,7 @@ void dns_sniff_reconcile(const susanin_config *cfg)
         if (!e->domain[0] || e->expire <= now)
             continue;
         if (!e->pinned && list_match(0, cfg->vpn_always_file, e->domain)) {
-            backend_ipset_add(cfg, 0, 1, e->ip, cfg->ok_ttl);
-            backend_ipset_add(cfg, 1, 1, e->ip, cfg->ok_ttl);
+            backend_ok_pin_add(cfg, e->ip, cfg->ok_ttl);
             e->pinned = 1;
             if (g_state) {                      /* переживёт re-provision/рестарт */
                 /* Тот же срок, что и в ipset (ok_ttl), и только продление:
@@ -445,8 +444,7 @@ void dns_sniff_reconcile(const susanin_config *cfg)
                     state_remove(st_ok(g_state, 1), e->ip);
                     state_remove(st_test(g_state, 0), e->ip);
                     state_remove(st_test(g_state, 1), e->ip);
-                    backend_ipset_del(cfg, 0, 1, e->ip);
-                    backend_ipset_del(cfg, 1, 1, e->ip);
+                    backend_ok_pin_del(cfg, e->ip);
                     backend_ct_flush_ip(e->ip);
                     slogf(SL_INFO, "dns-sniff: %s -> %s снят из VPN (конфликт с vpn_never)",
                           e->domain, e->ip);

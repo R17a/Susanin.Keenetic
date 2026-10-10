@@ -4,3 +4,6 @@ Makefile        text eol=lf
 Dockerfile*     text eol=lf
 *.conf          text eol=lf
 S9*susanin      text eol=lf
+*.c             text eol=lf
+*.h             text eol=lf
+*.md            text eol=lf

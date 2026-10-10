@@ -161,6 +161,8 @@
           f('learn_min_bytes', 'learn_min_bytes', 'мин. байт «от нас»', 'number', { kind: 'int' }),
           f('confirm_min_bytes', 'confirm_min_bytes', 'мин. ответных байт для подтверждения', 'number', { kind: 'int' }),
           f('learn_strict', 'learn_strict', 'удвоить пороги (ещё строже)', 'bool'),
+          f('precision', 'precision', 'пресет порогов: strict | normal | aggressive (пусто = выкл); ключи выше сильнее', 'text'),
+          f('port_aware', 'port_aware', 'экспериментально: решения по паре адрес+порт (нужен restart; больше памяти)', 'text'),
           f('learn_exclude_ports', 'Порты без быстрого автообучения', 'через запятую — типовой шум сканов', 'text', { kind: 'intlist' })
         ]}
       ]

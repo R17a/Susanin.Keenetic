@@ -512,6 +512,11 @@ else
         merge_list "$PREFIX/etc/vpn_never.txt" "$_vn" "vpn_never"
     fi
 fi
+# Одноразовая уборка накопленных бэкапов списков старого формата
+# (<список>.bak-ГГГГММДД-ЧЧММСС): правки через панель плодили десятки копий.
+# Теперь бэкап один — <список>.bak (перезаписывается).
+rm -f "$PREFIX/etc/vpn_always.txt".bak-[0-9]* \
+      "$PREFIX/etc/vpn_never.txt".bak-[0-9]* 2>/dev/null || true
 _cdn=$(find_file cdn_ranges.txt) || _cdn=""
 if [ ! -f "$PREFIX/etc/cdn_ranges.txt" ] && [ -n "$_cdn" ]; then
     cp "$_cdn" "$PREFIX/etc/cdn_ranges.txt"
@@ -553,6 +558,8 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     ensure_key "$PREFIX/etc/susanin.conf" learn_min_bytes 2000
     ensure_key "$PREFIX/etc/susanin.conf" confirm_min_bytes 512
     ensure_key "$PREFIX/etc/susanin.conf" learn_strict 0
+    # Пресет порогов (strict|normal|aggressive); пусто = выключен.
+    ensure_key "$PREFIX/etc/susanin.conf" precision ""
     ensure_key "$PREFIX/etc/susanin.conf" cdn_ranges_file /opt/susanin/etc/cdn_ranges.txt
     ensure_key "$PREFIX/etc/susanin.conf" cdn_ranges_url https://www.cloudflare.com/ips-v4
     ensure_key "$PREFIX/etc/susanin.conf" cdn_ranges_interval 86400
@@ -647,6 +654,21 @@ _s95=$(find_file S95susanin-web) || _s95=""
 if [ -n "$_s95" ]; then
     cp "$_s95" "$INITD/S95susanin-web"
     chmod +x "$INITD/S95susanin-web"
+fi
+
+# Короткий вызов: `susanin status` вместо длинного пути. /opt/bin есть в PATH у
+# Entware; если имя уже занято (не нашим симлинком) — не трогаем.
+if [ -d /opt/bin ]; then
+    chmod +x "$PREFIX/tools/susanin.sh" 2>/dev/null || true
+    if [ -L /opt/bin/susanin ]; then
+        say "короткий вызов уже настроен: /opt/bin/susanin -> $(readlink /opt/bin/susanin 2>/dev/null)"
+    elif [ -e /opt/bin/susanin ]; then
+        say "/opt/bin/susanin занят другим файлом — симлинк не создаю"
+    elif ln -s "$PREFIX/tools/susanin.sh" /opt/bin/susanin 2>/dev/null; then
+        say "короткий вызов: susanin {status|check|diagnose|report|restart|...}"
+    else
+        say "симлинк /opt/bin/susanin создать не удалось (не критично)"
+    fi
 fi
 
 # Если оставшийся/выбранный конфиг в tproxy-режиме — поднять Xray ДО старта

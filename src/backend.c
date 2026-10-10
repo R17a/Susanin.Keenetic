@@ -188,6 +188,9 @@ static void set_env(const susanin_config *c)
     setenv("SUSANIN_KERNEL_EGRESS", c->kernel_egress, 1);
     setenv("SUSANIN_MSS_CLAMP", c->mss_clamp[0] ? c->mss_clamp : "0", 1);
     setenv("SUSANIN_MSS_CLAMP_LAN", c->mss_clamp_lan ? "1" : "0", 1);
+    /* Port-aware: datapath.sh создаст наборы hash:ip,port и правила dst,dst.
+     * По умолчанию 0 — прежнее поведение (наборы hash:ip, матч dst). */
+    setenv("SUSANIN_PORT_AWARE", c->port_aware ? "1" : "0", 1);
 }
 
 static int run_script(const susanin_config *c, const char *a1, const char *a2)
@@ -466,39 +469,94 @@ int backend_ct_flush_ip(const char *ip)
     return run_argv(argv);
 }
 
-int backend_ipset_add(const susanin_config *c, int proto_udp, int phase_ok,
-                      const char *ip, int ttl)
+/* Значение элемента набора: в port-aware режиме — "ip,протокол:порт" (наборы
+ * hash:ip,port), иначе обычный "ip". Протокол указывать ОБЯЗАТЕЛЬНО: в
+ * hash:ip,port элемент без протокола считается TCP, и UDP-пакет с ним не
+ * совпадёт (проверка Claude по документации ipset). В состоянии (state_key) для
+ * тех же пар используется форма "ip:порт" — протокол там задан самим набором. */
+void backend_ipset_value(const susanin_config *c, const char *ip, int port,
+                         int proto_udp, char *out, size_t n)
+{
+    if (!out || !n)
+        return;
+    if (c && c->port_aware && port > 0)
+        snprintf(out, n, "%.52s,%s:%d", ip ? ip : "", proto_udp ? "udp" : "tcp", port);
+    else
+        snprintf(out, n, "%s", ip ? ip : "");
+}
+
+int backend_ipset_add_port(const susanin_config *c, int proto_udp, int phase_ok,
+                           const char *ip, int port, int ttl)
 {
     char *argv[8];
-    char name[64], t[32];
-    (void)c;
+    char name[64], t[32], val[80];
     set_name(name, sizeof(name), proto_udp, phase_ok);
+    backend_ipset_value(c, ip, port, proto_udp, val, sizeof(val));
     snprintf(t, sizeof(t), "%d", ttl);
     argv[0] = (char *)tool_ipset();
     argv[1] = "-exist";
     argv[2] = "add";
     argv[3] = name;
-    argv[4] = (char *)ip;
+    argv[4] = val;
     argv[5] = "timeout";
     argv[6] = t;
     argv[7] = NULL;
     return run_argv(argv);
 }
 
-int backend_ipset_del(const susanin_config *c, int proto_udp, int phase_ok,
-                      const char *ip)
+int backend_ipset_del_port(const susanin_config *c, int proto_udp, int phase_ok,
+                           const char *ip, int port)
 {
     char *argv[6];
-    char name[64];
-    (void)c;
+    char name[64], val[80];
     set_name(name, sizeof(name), proto_udp, phase_ok);
+    backend_ipset_value(c, ip, port, proto_udp, val, sizeof(val));
     argv[0] = (char *)tool_ipset();
     argv[1] = "-exist";
     argv[2] = "del";
     argv[3] = name;
-    argv[4] = (char *)ip;
+    argv[4] = val;
     argv[5] = NULL;
     return run_argv(argv);
+}
+
+int backend_ipset_add(const susanin_config *c, int proto_udp, int phase_ok,
+                      const char *ip, int ttl)
+{
+    return backend_ipset_add_port(c, proto_udp, phase_ok, ip, 0, ttl);
+}
+
+int backend_is_our_xray_cmdline(const char *cmdline)
+{
+    if (!cmdline || !*cmdline)
+        return 0;
+    return strstr(cmdline, "xray") && strstr(cmdline, "-config") &&
+           strstr(cmdline, "xray-tproxy.json");
+}
+
+/* Пины по адресу: см. backend.h. Одиночный адрес для hash:net — валидный /32. */
+int backend_ok_pin_add(const susanin_config *c, const char *ip, int ttl)
+{
+    if (c && c->port_aware)
+        return backend_net_add(c, ip, ttl);
+    backend_ipset_add(c, 0, 1, ip, ttl);
+    backend_ipset_add(c, 1, 1, ip, ttl);
+    return 0;
+}
+
+int backend_ok_pin_del(const susanin_config *c, const char *ip)
+{
+    if (c && c->port_aware)
+        return backend_net_del(c, ip);
+    backend_ipset_del(c, 0, 1, ip);
+    backend_ipset_del(c, 1, 1, ip);
+    return 0;
+}
+
+int backend_ipset_del(const susanin_config *c, int proto_udp, int phase_ok,
+                      const char *ip)
+{
+    return backend_ipset_del_port(c, proto_udp, phase_ok, ip, 0);
 }
 
 int backend_ipset_flush(const susanin_config *c)

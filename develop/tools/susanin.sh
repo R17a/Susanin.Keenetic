@@ -9,6 +9,9 @@
 #   sh susanin.sh log [N]        # last N log lines (default 30)
 #   sh susanin.sh install        # data plane setup (datapath up + setup)
 #   sh susanin.sh update [ver]   # update binary/scripts (keeps config and state)
+#   sh susanin.sh check          # состояние датаплейна (datapath.sh status)
+#   sh susanin.sh diagnose       # полная диагностика (diagnose.sh)
+#   sh susanin.sh report         # отчёт для разбора (report.sh)
 #   sh susanin.sh uninstall [--purge]
 #   sh susanin.sh reload         # перечитать susanin.conf на лету (SIGHUP)
 #   sh susanin.sh rescan [--force]  # заново найти LAN/VPN, обновить конфиг и перечитать
@@ -256,6 +259,9 @@ case "${1:-}" in
     reload) cmd_reload ;;
     rescan) cmd_rescan "${2:-}" ;;
     log) cmd_log "${2:-30}" ;;
+    check) sh "$TOOLS/datapath.sh" status ;;
+    diagnose) shift || true; sh "$TOOLS/diagnose.sh" "$@" ;;
+    report) shift || true; sh "$TOOLS/report.sh" "$@" ;;
     install) sh "$TOOLS/datapath.sh" up; "$BIN" setup ;;
     update) shift || true; sh "$TOOLS/update.sh" "$@" ;;
     uninstall) shift || true; sh "$TOOLS/uninstall.sh" "$@" ;;
@@ -266,6 +272,6 @@ case "${1:-}" in
     profiles) SUSANIN_CONF="$CONF" sh "$TOOLS/profiles.sh" "${2:-status}" ;;
     xray) shift; SUSANIN_CONF="$CONF" sh "$TOOLS/xray-egress.sh" "$@" ;;
     *)
-        echo "usage: $0 {start|stop|restart|status|reload|rescan [--force]|web {start|stop|restart|status}|log [N]|install|update [ver]|uninstall [--purge]|down|reset <ip|domain>|forget <ip|domain>|add <ip> <tcp|udp> <test|ok>|del <ip> <tcp|udp>|profiles [up|down|status]|xray {run [ip]|stop|status|test <ip>|untest <ip>}}" >&2
+        echo "usage: $0 {start|stop|restart|status|check|reload|rescan [--force]|web {start|stop|restart|status}|log [N]|diagnose [args]|report [args]|install|update [ver]|uninstall [--purge]|down|reset <ip|domain>|forget <ip|domain>|add <ip> <tcp|udp> <test|ok>|del <ip> <tcp|udp>|profiles [up|down|status]|xray {run [ip]|stop|status|test <ip>|untest <ip>}}" >&2
         exit 2 ;;
 esac

@@ -241,6 +241,37 @@ qWDTT поднимает серверные туннели `wdtt0`/`wdttraw0` и
 `diagnose.sh` обнаруживает qWDTT (интерфейсы, цепочки, хук) и предупреждает о
 конфликтах.
 
+### Если клиенты qWDTT должны идти через Susanin.Keenetic
+
+По умолчанию Susanin.Keenetic клиентами qWDTT **не занимается** (это
+совместимость, а не интеграция). Если нужно завернуть их в свой egress,
+включите штатную поддержку «LAN-серверов»:
+
+```sh
+# /opt/susanin/etc/susanin.conf
+lan_server_interfaces=wdtt0,wdttraw0
+mss_clamp=pmtu          # обязательно: туннель 1280-в-1280 иначе упрётся в PMTU
+sh /opt/susanin/tools/susanin.sh rescan    # перенесёт wdtt* в lan_interfaces
+sh /opt/susanin/tools/susanin.sh restart
+```
+
+Что важно знать:
+
+- это **двойной туннель**: клиент qWDTT → сервер qWDTT → Susanin.Keenetic → VPN.
+  Скорость будет ниже, а `mss_clamp` (`pmtu` или `mss_clamp_lan=1`) обязателен —
+  без него крупные пакеты не пройдут и страницы будут открываться частично;
+- `ipv6_block` и `quic_block` действуют только на интерфейсы из
+  `lan_interfaces` — на клиентов qWDTT они не распространяются;
+- политики Keenetic (`ip rule` 100–107 с `fwmark 0xffffaXX` → таблицы
+  4096/4098/4100/4102) могут перебивать нашу метку — проверьте
+  `ip rule show` и `ip route show table 4096` при подключённом клиенте;
+- обратно: `lan_server_interfaces=` (пусто) + `rescan` возвращает прежнее
+  поведение «не трогаем клиентов qWDTT».
+
+`diagnose.sh` различает эти случаи: если `wdtt*` попали в `lan_interfaces`
+именно из-за `lan_server_interfaces`, предупреждения «уберите wdtt*» не будет —
+вместо него проверяется `mss_clamp`.
+
 ## Профили маршрутизации (экспериментально)
 
 Кроме адаптивного обучения, можно задать **статические профили**: список

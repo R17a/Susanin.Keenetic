@@ -51,7 +51,30 @@ xgomem=$(sed -n 's/^xray_gomemlimit=//p' "$CONF" 2>/dev/null | tail -n1)
 [ -n "$xgomem" ] || xgomem=64MiB
 
 say() { echo "[xray-egress] $*"; }
-xray_running()  { pidof xray >/dev/null 2>&1; }
+# PID ИМЕННО нашего Xray: pidfile, иначе поиск по cmdline с нашим конфигом.
+# `pidof xray` матчит любой процесс с этим именем (чужой Xray/XKeen) — раньше
+# чужой процесс принимался за свой, а stop его убивал (замечание внешнего ревью).
+xray_pid() {
+    _pf="$PREFIX/var/xray.pid"
+    if [ -f "$_pf" ]; then
+        _p=$(cat "$_pf" 2>/dev/null || true)
+        case "$_p" in ''|*[!0-9]*) _p="" ;; esac
+        if [ -n "$_p" ] && [ -r "/proc/$_p/cmdline" ] && \
+           tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null | grep -q "$XCFG"; then
+            printf '%s' "$_p"
+            return 0
+        fi
+    fi
+    for _d in /proc/[0-9]*; do
+        [ -r "$_d/cmdline" ] || continue
+        if tr '\0' ' ' < "$_d/cmdline" 2>/dev/null | grep -q "$XCFG"; then
+            printf '%s' "${_d#/proc/}"
+            return 0
+        fi
+    done
+    return 1
+}
+xray_running()  { xray_pid >/dev/null 2>&1; }
 agent_running() { pidof susanin-agent >/dev/null 2>&1; }
 net_ok()        { nslookup ya.ru >/dev/null 2>&1; }
 # Ждать, пока TCP-порт начнёт слушаться (иначе агент стартует раньше Xray).
@@ -126,7 +149,8 @@ start_xray() {
             say "xray уже запущен (socks 1080 слушается)"; return 0
         fi
         say "xray запущен без socks 1080 — перезапускаю с $XCFG"
-        for p in $(pidof xray); do kill -9 "$p" 2>/dev/null; done
+        _p=$(xray_pid || true)
+        [ -n "$_p" ] && kill -9 "$_p" 2>/dev/null
         sleep 1
     fi
     if [ -x "$INITD/S93xray-tproxy" ]; then
@@ -134,13 +158,20 @@ start_xray() {
     else
         GOGC="$xgogc" GOMEMLIMIT="$xgomem" \
             /opt/sbin/xray run -config "$XCFG" >>"$PREFIX/var/xray.log" 2>&1 &
+        echo $! > "$PREFIX/var/xray.pid" 2>/dev/null || true
     fi
 }
 
 stop_xray() {
-    for p in $(pidof xray); do kill "$p" 2>/dev/null; done
-    sleep 1
-    for p in $(pidof xray); do kill -9 "$p" 2>/dev/null; done
+    _p=$(xray_pid || true)
+    if [ -n "$_p" ]; then
+        kill "$_p" 2>/dev/null
+        sleep 1
+        kill -9 "$_p" 2>/dev/null
+    else
+        say "наш Xray не запущен (чужой процесс не трогаем)"
+    fi
+    rm -f "$PREFIX/var/xray.pid" 2>/dev/null || true
 }
 
 clean_rules() {

@@ -256,6 +256,108 @@
     });
   }
 
+  /* --- Memo-редактор списка: весь файл текстом (с комментариями) --- */
+
+  var memoName = null;
+  var memoLoaded = false;   /* «Сохранить» активна только после успешной загрузки:
+                             * иначе сохранение пустого textarea стёрло бы список */
+
+  function memoSetSaveEnabled(on) {
+    memoLoaded = !!on;
+    $('memo-save').disabled = !on;
+    $('memo-save').title = on ? 'Записать весь список' : 'Сначала дождитесь загрузки списка';
+    $('memo-text').readOnly = !on;
+  }
+
+  /* Читаемая ошибка вместо «Unexpected token» при текстовом ответе (401/413/400). */
+  function httpError(r) {
+    return r.text().then(function (t) {
+      var msg = (t || '').trim();
+      if (r.status === 401) msg = 'нужен токен (обновите страницу с ?token=…)';
+      else if (r.status === 413) msg = 'список больше 64 КБ — правьте его на роутере';
+      else if (!msg) msg = 'HTTP ' + r.status;
+      return { ok: false, error: msg };
+    }).catch(function () { return { ok: false, error: 'HTTP ' + r.status }; });
+  }
+
+  function memoOpen(name) {
+    memoName = name;
+    memoSetSaveEnabled(false);
+    $('memo-title').textContent = 'Список: ' +
+      (name === 'vpn_always' ? 'Всегда через VPN' : 'Всегда напрямую');
+    $('memo-status').textContent = 'загрузка…';
+    $('memo-text').value = '';
+    $('memo').hidden = false;
+    api('/api/list/raw?name=' + encodeURIComponent(name)).then(function (t) {
+      if (memoName !== name) return;
+      $('memo-text').value = t;
+      var n = t.split('\n').filter(function (l) { return l.trim() && l.trim()[0] !== '#'; }).length;
+      $('memo-status').textContent = 'загружено записей: ' + n;
+      memoSetSaveEnabled(true);
+      $('memo-text').focus();
+    }).catch(function (e) {
+      /* Сохранение остаётся заблокированным: не даём стереть список сбоем загрузки. */
+      memoSetSaveEnabled(false);
+      $('memo-status').textContent = 'не удалось загрузить: ' + (e.message || 'ошибка') +
+        ' — сохранение отключено';
+    });
+  }
+
+  function memoClose() {
+    memoName = null;
+    memoSetSaveEnabled(false);
+    $('memo').hidden = true;
+  }
+
+  function memoSave() {
+    if (!memoName || !memoLoaded) return;
+    var name = memoName;
+    var text = $('memo-text').value;
+    var headers = { 'Content-Type': 'text/plain; charset=utf-8' };
+    if (token) headers['X-Auth-Token'] = token;
+    $('memo-status').textContent = 'сохранение…';
+    $('memo-save').disabled = true;
+    fetch('/api/list/save?name=' + encodeURIComponent(name), {
+      method: 'POST', headers: headers, body: text
+    }).then(function (r) {
+      if (r.ok) return r.json().catch(function () { return { ok: false, error: 'плохой ответ сервера' }; });
+      return httpError(r);
+    }).then(function (r) {
+      $('memo-save').disabled = false;
+      if (!r || !r.ok) {
+        $('memo-status').textContent = 'ошибка: ' + ((r && r.error) || 'не сохранено');
+        toast('список не сохранён', false);
+        return;
+      }
+      var msg = 'сохранено записей: ' + r.kept;
+      if (r.dropped) msg += ', отброшено строк: ' + r.dropped;
+      $('memo-status').textContent = msg;
+      toast(name + ': ' + msg, !r.dropped);
+      memoClose();
+      loadLists();
+    }).catch(function (e) {
+      $('memo-save').disabled = false;
+      $('memo-status').textContent = 'ошибка: ' + (e.message || e);
+      toast('список не сохранён', false);
+    });
+  }
+
+  document.querySelectorAll('[data-memo]').forEach(function (btn) {
+    btn.addEventListener('click', function () { memoOpen(btn.getAttribute('data-memo')); });
+  });
+  $('memo-save').onclick = memoSave;
+  $('memo-cancel').onclick = memoClose;
+  $('memo-close').onclick = memoClose;
+  $('memo').addEventListener('click', function (e) { if (e.target === $('memo')) memoClose(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !$('memo').hidden) memoClose();
+    /* Ctrl/Cmd+S — сохранить список из модального окна */
+    if ((e.ctrlKey || e.metaKey) && e.key === 's' && !$('memo').hidden) {
+      e.preventDefault();
+      memoSave();
+    }
+  });
+
   /* --- Вкладки верхнего уровня: Конфигурация / Статус (бейдж версии -> Статус) --- */
 
   $('ver').onclick = function (e) {

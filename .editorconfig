@@ -1,0 +1,10 @@
+# Единый стиль для всех текстовых файлов проекта.
+# BOM запрещён: он ломает shebang у shell-скриптов (#! становится частью
+# команды) и показывается как правка первой строки в диффах.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = false

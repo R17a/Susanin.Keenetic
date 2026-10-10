@@ -65,6 +65,7 @@
         <div class="list-col-head">
           <h3>Всегда через VPN</h3>
           <span class="count" id="cnt-vpn_always">0</span>
+          <button class="btn btn-sm btn-outline" data-memo="vpn_always" title="Править весь список текстом (с комментариями)">Редактор</button>
         </div>
         <div class="list-add">
           <input id="add-vpn_always" placeholder="домен / IP / CIDR / *.domain">
@@ -78,6 +79,7 @@
         <div class="list-col-head">
           <h3>Всегда напрямую</h3>
           <span class="count" id="cnt-vpn_never">0</span>
+          <button class="btn btn-sm btn-outline" data-memo="vpn_never" title="Править весь список текстом (с комментариями)">Редактор</button>
         </div>
         <div class="list-add">
           <input id="add-vpn_never" placeholder="домен / IP / CIDR / *.domain">
@@ -96,6 +98,29 @@
   </section>
 </div>
 </main>
+
+<div id="memo" class="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3 id="memo-title">Список</h3>
+      <button id="memo-close" class="btn-icon" title="Закрыть">×</button>
+    </div>
+    <p class="muted memo-hint">
+      По строке на запись: домен, IP, CIDR или <code>*.domain</code>.
+      Пустые строки и <code>#комментарии</code> сохраняются; строки, которые не
+      распознаны, отбрасываются (об их числе сообщим после сохранения).
+      Комментарий — <b>только отдельной строкой</b>: запись вида
+      <code>domain.ru # пояснение</code> считается нераспознанной и будет
+      отброшена целиком.
+    </p>
+    <textarea id="memo-text" spellcheck="false" autocomplete="off" readonly></textarea>
+    <div class="modal-actions">
+      <span id="memo-status" class="muted"></span>
+      <button id="memo-cancel" class="btn btn-outline">Отмена</button>
+      <button id="memo-save" class="btn" disabled>Сохранить</button>
+    </div>
+  </div>
+</div>
 
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 <script src="app.js"></script>

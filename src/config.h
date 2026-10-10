@@ -152,6 +152,16 @@ typedef struct {
     unsigned long profile_mark[CFG_MAX_PROFILES];
     int profile_auto[CFG_MAX_PROFILES]; /* P2: авто-пин подтверждённых IP, попадающих в диапазон профиля */
     int profile_failover;               /* P2: движок поддерживает default в table профиля на живом egress */
+    /* «Профили точности»: одна строка precision=strict|normal|aggressive вместо
+     * набора порогов. Пресет задаёт ТОЛЬКО значения по умолчанию — ключи,
+     * явно записанные в конфиге, всегда сильнее. Пусто = пресет не используется. */
+    char precision[16];
+    /* Port-aware identity (экспериментально): решения по паре адрес+порт.
+     * 0 = по адресу целиком (обычное поведение). При 1 наборы ok/test —
+     * hash:ip,port (элементы "ip,протокол:порт"), состояние хранит ключи
+     * "ip:порт", адресные пины уходят в susanin_ok_net. Смена значения требует
+     * перезапуска агента; см. TESTBUILD («port_aware — экспериментально»). */
+    int port_aware;
 } susanin_config;
 
 void config_set_defaults(susanin_config *c);

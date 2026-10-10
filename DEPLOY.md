@@ -86,7 +86,8 @@ sh /opt/susanin/tools/uninstall.sh              # удалить (конфиг �
 sh /opt/susanin/tools/uninstall.sh --purge      # удалить всё
 ```
 Перед изменениями `datapath.sh up` сохраняет бэкап правил в
-`/opt/susanin/var/datapath-<дата>/`.
+`/opt/susanin/var/datapath.bak/` — **один** каталог, файлы перезаписываются
+(история не накапливается; при `disk_mode=soft` бэкап не делается).
 
 ## Автозапуск
 ```sh

@@ -275,10 +275,26 @@ static int promo_ok(const susanin_config *cfg, time_t now)
     return 1;
 }
 
-/* Неудачу в test-фазе (tproxy) признаём не раньше этого «возраста» записи: за
- * первый RTT клиент отправляет до начального окна без ответа, и на медленном
- * апстриме это дало бы ложный cooldown. */
-#define TPROXY_FAIL_MIN_AGE 3
+/* Неудачу в test-фазе признаём не раньше этого «возраста» записи: за первый RTT
+ * клиент отправляет до начального окна без ответа, и на медленном апстриме это
+ * дало бы ложный cooldown. Относится к ветке ESTABLISHED (и в tproxy, и в
+ * interface-режиме — экспозиция начального окна там одинаковая). */
+#define TEST_FAIL_MIN_AGE 3
+
+/* Возраст записи test в секундах (0 — возраст неизвестен: test_ttl=0 или записи
+ * нет). Возраст = now − (expire − test_ttl): в фазе test запись не продлевается,
+ * повторный promote блокируется candidate_ok(). */
+static int test_age(const state_set *st, const susanin_config *cfg,
+                    const char *addr, time_t now)
+{
+    time_t exp;
+    if (cfg->test_ttl <= 0)
+        return 0;
+    exp = state_at(st, addr, now);
+    if (exp <= 0)
+        return 0;
+    return (int)(now - (exp - cfg->test_ttl));
+}
 
 /* Бюджет прямых проб: проба блокирует цикл, поэтому не более N в минуту и не
  * более M за календарную секунду (иначе один проход встал бы на 12 с). */
@@ -505,11 +521,29 @@ static void media_aggregate(classifier_ctx *ctx, const ct_flow *f)
           (unsigned long)f->rb, (unsigned long)f->ob);
 }
 
+/* Порт цели для port-aware режима: при port_aware=0 всегда 0 (обычные наборы
+ * hash:ip), при 1 — dport потока (наборы hash:ip,port). */
+static int flow_port(const susanin_config *cfg, const ct_flow *f)
+{
+    return cfg->port_aware ? (int)f->dport : 0;
+}
+
+/* Ключ состояния для потока: пара ip:порт в port-aware режиме, иначе адрес.
+ * Наборы never/direct/net остаются по адресу — там ключ берётся как f->dst. */
+static const char *pair_key(char *buf, size_t n, const susanin_config *cfg,
+                            const ct_flow *f)
+{
+    state_key(buf, n, f->dst, flow_port(cfg, f));
+    return buf;
+}
+
 static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
                          const char *stage, const char *reason)
 {
     int udp = is_udp(f);
     const susanin_config *cfg = ctx->cfg;
+    char kf[64];
+    pair_key(kf, sizeof(kf), cfg, f);
     int syn = !strcmp(reason, "TCP-SYN");
     /* Адрес СЕЙЧАС в vpn_never — он должен идти напрямую: не учим (иначе
      * vn_refresh/ipset и наш state расходятся, и sweep_direct рвёт его потоки).
@@ -560,9 +594,9 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
     state_remove(&ctx->st->direct, f->dst);
     if (!promo_ok(cfg, now))
         return;
-    state_add(st_test(ctx->st, udp), f->dst, now, cfg->test_ttl, 0);
-    state_remove(st_watch(ctx->st, udp), f->dst);
-    backend_ipset_add(cfg, udp, 0, f->dst, cfg->test_ttl);
+    state_add(st_test(ctx->st, udp), kf, now, cfg->test_ttl, 0);
+    state_remove(st_watch(ctx->st, udp), kf);
+    backend_ipset_add_port(cfg, udp, 0, f->dst, flow_port(cfg, f), cfg->test_ttl);
     slogf(SL_INFO, "AUTO-SUSANIN: %s %s %s:%u", stage, reason, f->dst, f->dport);
     backend_ct_delete(f);
 }
@@ -570,9 +604,11 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
 static int candidate_ok(const classifier_ctx *ctx, const ct_flow *f, time_t now)
 {
     int udp = is_udp(f);
-    return !state_has(st_ok(ctx->st, udp), f->dst, now) &&
-           !state_has(st_test(ctx->st, udp), f->dst, now) &&
-           !state_has(st_cool(ctx->st, udp), f->dst, now);
+    char kf[64];
+    pair_key(kf, sizeof(kf), ctx->cfg, f);
+    return !state_has(st_ok(ctx->st, udp), kf, now) &&
+           !state_has(st_test(ctx->st, udp), kf, now) &&
+           !state_has(st_cool(ctx->st, udp), kf, now);
 }
 
 void clr_fast(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
@@ -650,15 +686,19 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 unsigned long dop, drp, dob, drb;
                 if (rate_delta_full(f, now, &dop, &drp, &dob, &drb)) {
                     if (dop > 0 && drp == 0) {
-                        /* orig active, reply silent: watch -> late-stall */
-                        if (!state_has(st_watch(ctx->st, 0), f->dst, now)) {
+                        /* orig active, reply silent: watch -> late-stall.
+                         * Ключ тот же, что у state/pair (ip:порт в port-aware),
+                         * иначе снятие watch по паре не находит запись. */
+                        char wk0[64];
+                        pair_key(wk0, sizeof(wk0), cfg, f);
+                        if (!state_has(st_watch(ctx->st, 0), wk0, now)) {
                             if (candidate_ok(ctx, f, now))
-                                state_add(st_watch(ctx->st, 0), f->dst, now, cfg->watch_ttl, 0);
+                                state_add(st_watch(ctx->st, 0), wk0, now, cfg->watch_ttl, 0);
                         } else {
-                            time_t at = state_at(st_watch(ctx->st, 0), f->dst, now);
+                            time_t at = state_at(st_watch(ctx->st, 0), wk0, now);
                             if (at && (int)(at - now) <= cfg->watch_retry_below) {
                                 if (candidate_ok(ctx, f, now)) {
-                                    state_remove(st_watch(ctx->st, 0), f->dst);
+                                    state_remove(st_watch(ctx->st, 0), wk0);
                                     promote_test(ctx, f, now, "SOFT", "TCP-LATE-STALL");
                                 }
                             }
@@ -683,14 +723,16 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
             } else if (f->dport == 443 && f->op >= 8) {
                 int oa, rs;
                 if (rate_delta(f, now, &oa, &rs) && oa && rs) {
-                    if (!state_has(st_watch(ctx->st, 1), f->dst, now)) {
+                    char wk1[64];
+                    pair_key(wk1, sizeof(wk1), cfg, f);
+                    if (!state_has(st_watch(ctx->st, 1), wk1, now)) {
                         if (candidate_ok(ctx, f, now))
-                            state_add(st_watch(ctx->st, 1), f->dst, now, cfg->watch_ttl, 0);
+                            state_add(st_watch(ctx->st, 1), wk1, now, cfg->watch_ttl, 0);
                     } else {
-                        time_t at = state_at(st_watch(ctx->st, 1), f->dst, now);
+                        time_t at = state_at(st_watch(ctx->st, 1), wk1, now);
                         if (at && (int)(at - now) <= cfg->watch_retry_below) {
                             if (candidate_ok(ctx, f, now)) {
-                                state_remove(st_watch(ctx->st, 1), f->dst);
+                                state_remove(st_watch(ctx->st, 1), wk1);
                                 promote_test(ctx, f, now, "SOFT", "QUIC-LATE-STALL");
                             }
                         }
@@ -710,6 +752,8 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         const ct_flow *f = &flows[i];
         int udp;
         int good, failed, healthy = 0;
+        char kf[64];
+        pair_key(kf, sizeof(kf), cfg, f);
         if (f->l4proto != 6 && f->l4proto != 17) continue;
         if (!from_lan(cfg, f->src)) continue;
         udp = is_udp(f);
@@ -718,7 +762,7 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
 
         if ((f->ctmark & cfg->mark_mask) == cfg->mark_test) {
             int tp = (strcmp(cfg->egress_type, "tproxy") == 0);
-            if (!state_has(st_test(ctx->st, udp), f->dst, now)) continue;
+            if (!state_has(st_test(ctx->st, udp), kf, now)) continue;
             good = failed = 0;
             if (f->l4proto == 6) {
                 /* В tproxy локальный Xray отвечает SYN-ACK/ACK даже когда апстрим
@@ -732,16 +776,9 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 if (tp) {
                     /* tproxy: Xray отвечает сам, поэтому «нет ответов» (rp == 0)
                      * недостижимо — неудачу определяем по отсутствию реальных
-                     * данных при состоявшемся соединении. Но не раньше, чем запись
-                     * прожила TPROXY_FAIL_MIN_AGE: за первый RTT клиент успевает
-                     * отправить до начального окна (≈10 сегментов) без ответа, и на
-                     * медленном апстриме это дало бы ложный cooldown.
-                     * Возраст = now − (expire − test_ttl): в test запись не
-                     * продлевается (повторный promote блокирует candidate_ok). */
-                    time_t tu = state_at(st_test(ctx->st, udp), f->dst, now);
-                    int age = (cfg->test_ttl > 0 && tu > 0)
-                                  ? (int)(now - (tu - cfg->test_ttl)) : 0;
-                    if (age >= TPROXY_FAIL_MIN_AGE &&
+                     * данных при состоявшемся соединении, но не раньше, чем запись
+                     * прожила TEST_FAIL_MIN_AGE (см. выше). */
+                    if (test_age(st_test(ctx->st, udp), cfg, f->dst, now) >= TEST_FAIL_MIN_AGE &&
                         strcmp(f->tcp_state, "ESTABLISHED") == 0 &&
                         f->op >= lmin_op(cfg) && f->ob >= lmin_bytes(cfg) &&
                         f->rb < 128)
@@ -749,8 +786,12 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 } else if ((strcmp(f->tcp_state, "SYN_SENT") == 0 && f->op >= 3 &&
                             f->rp == 0) ||
                            (strcmp(f->tcp_state, "ESTABLISHED") == 0 &&
+                            test_age(st_test(ctx->st, udp), cfg, f->dst, now) >= TEST_FAIL_MIN_AGE &&
                             f->op >= lmin_op(cfg) && f->ob >= lmin_bytes(cfg) &&
                             f->rp <= 1 && f->rb < 128)) {
+                    /* SYN_SENT без единого ответа — сигнал немедленный (окна данных
+                     * ещё нет); ESTABLISHED без реальных данных — только после
+                     * TEST_FAIL_MIN_AGE, иначе первое окно TCP даёт ложный cooldown. */
                     failed = 1;
                 }
             } else {
@@ -759,26 +800,26 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                     (f->dport != 443 && f->op >= lmin_op(cfg) * 2 && f->rp == 0)) failed = 1;
             }
             if (good) {
-                state_add(st_ok(ctx->st, udp), f->dst, now, cfg->ok_ttl, 0);
-                state_remove(st_test(ctx->st, udp), f->dst);
-                state_remove(st_watch(ctx->st, udp), f->dst);
-                state_remove(st_cool(ctx->st, udp), f->dst);
-                backend_ipset_add(cfg, udp, 1, f->dst, cfg->ok_ttl);
-                backend_ipset_del(cfg, udp, 0, f->dst);
+                state_add(st_ok(ctx->st, udp), kf, now, cfg->ok_ttl, 0);
+                state_remove(st_test(ctx->st, udp), kf);
+                state_remove(st_watch(ctx->st, udp), kf);
+                state_remove(st_cool(ctx->st, udp), kf);
+                backend_ipset_add_port(cfg, udp, 1, f->dst, flow_port(cfg, f), cfg->ok_ttl);
+                backend_ipset_del_port(cfg, udp, 0, f->dst, flow_port(cfg, f));
                 slogf(SL_INFO, "AUTO-SUSANIN: CONFIRMED %s:%u", f->dst, f->dport);
                 cdn_aggregate(ctx, f);
                 profile_auto_learn(ctx->cfg, f->dst);
             } else if (failed) {
-                state_remove(st_test(ctx->st, udp), f->dst);
-                state_remove(st_watch(ctx->st, udp), f->dst);
-                state_add(st_cool(ctx->st, udp), f->dst, now, cfg->cooldown_ttl, 0);
-                backend_ipset_del(cfg, udp, 0, f->dst);
+                state_remove(st_test(ctx->st, udp), kf);
+                state_remove(st_watch(ctx->st, udp), kf);
+                state_add(st_cool(ctx->st, udp), kf, now, cfg->cooldown_ttl, 0);
+                backend_ipset_del_port(cfg, udp, 0, f->dst, flow_port(cfg, f));
                 slogf(SL_INFO, "AUTO-SUSANIN: COOLDOWN %s:%u", f->dst, f->dport);
                 backend_ct_delete(f);
             }
         } else if ((f->ctmark & cfg->mark_mask) == cfg->mark_ok) {
             int tp = (strcmp(cfg->egress_type, "tproxy") == 0);
-            if (!state_has(st_ok(ctx->st, udp), f->dst, now)) continue;
+            if (!state_has(st_ok(ctx->st, udp), kf, now)) continue;
             healthy = failed = 0;
             if (f->l4proto == 6) {
                 /* tproxy: ответы приходят от локального Xray — «здоровым» считаем
@@ -805,11 +846,11 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                         continue;   /* ещё наблюдаем — из ok не снимаем */
                     os->seen = 0;
                 }
-                state_remove(st_ok(ctx->st, udp), f->dst);
-                state_remove(st_test(ctx->st, udp), f->dst);
-                state_remove(st_watch(ctx->st, udp), f->dst);
-                state_add(st_cool(ctx->st, udp), f->dst, now, cfg->cooldown_ok_ttl, 0);
-                backend_ipset_del(cfg, udp, 1, f->dst);
+                state_remove(st_ok(ctx->st, udp), kf);
+                state_remove(st_test(ctx->st, udp), kf);
+                state_remove(st_watch(ctx->st, udp), kf);
+                state_add(st_cool(ctx->st, udp), kf, now, cfg->cooldown_ok_ttl, 0);
+                backend_ipset_del_port(cfg, udp, 1, f->dst, flow_port(cfg, f));
                 /* D1: адрес в VPN (ok) деградирует — пробуем «прямо» (мягкое
                  * «прямо» с TTL). Если и прямой путь плох, обучение вернёт VPN. */
                 if (cfg->auto_direct && cfg->direct_pref_ttl > 0) {
@@ -832,10 +873,10 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 backend_ct_delete(f);
             } else if (healthy && !failed) {
                 of_forget(f->dst, udp);
-                time_t at = state_at(st_ok(ctx->st, udp), f->dst, now);
+                time_t at = state_at(st_ok(ctx->st, udp), kf, now);
                 if (at && (int)(at - now) <= cfg->ok_refresh_below) {
-                    state_add(st_ok(ctx->st, udp), f->dst, now, cfg->ok_ttl, 1);
-                    backend_ipset_add(cfg, udp, 1, f->dst, cfg->ok_ttl);
+                    state_add(st_ok(ctx->st, udp), kf, now, cfg->ok_ttl, 1);
+                    backend_ipset_add_port(cfg, udp, 1, f->dst, flow_port(cfg, f), cfg->ok_ttl);
                 }
             }
         }
