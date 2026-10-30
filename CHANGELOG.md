@@ -16,6 +16,8 @@
   добавлены `version_latest`, `update_available`, `release_url`,
   `release_checked`. Настройки: `release_check` (по умолчанию 1) и
   `release_check_interval` (43200 с); в панели — «Проверять новые релизы».
+  Тумблер работает и в старом конфиге, где этих ключей ещё нет: при сохранении
+  раздела они создаются со значениями 0/1, а не блокируются как «нет в файле».
   Затронуты `src/release.[ch]`, `src/config.[ch]`, `src/engine.c`, `src/ops.c`,
   `www/`, `config.example.conf`, добавлен тест `tests/test_release`.
 

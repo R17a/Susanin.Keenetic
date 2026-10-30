@@ -242,8 +242,8 @@
           f('web_listen', 'Адрес (LAN)', 'не 0.0.0.0', 'text', { kind: 'ip', noZero: true }),
           f('web_port', 'Порт', '', 'number', { kind: 'int' }),
           f('web_token', 'Токен доступа', 'пусто = оставить как есть; «Сбросить» — снять токен', 'token'),
-          f('release_check', 'Проверять новые релизы', 'показывать «!» у версии, если на GitHub есть более новый релиз', 'bool'),
-          f('release_check_interval', 'Период проверки релизов', 'сек; по умолчанию 12 ч', 'text', { kind: 'duration' })
+          f('release_check', 'Проверять новые релизы', 'показывать «!» у версии, если на GitHub есть более новый релиз', 'bool', { def: '1' }),
+          f('release_check_interval', 'Период проверки релизов', 'сек; по умолчанию 12 ч', 'text', { kind: 'duration', def: '43200' })
         ]}
       ]
     },
@@ -895,9 +895,12 @@
       sw.className = 'switch';
       var cb = document.createElement('input');
       cb.type = 'checkbox';
-      cb.checked = val === '1';
+      cb.checked = present ? val === '1' : fld.def === '1';
       cb.dataset.key = fld.key;
-      if (!present) cb.disabled = true;
+      /* bool можно безопасно создать: 0/1 всегда валидны. Раньше ключ,
+       * которого ещё нет в старом susanin.conf (например release_check),
+       * был заблокирован и не реагировал на переключатель. */
+      if (!present && !fld.creatable) cb.disabled = true;
       var track = document.createElement('span');
       track.className = 'track';
       var thumb = document.createElement('span');
@@ -950,6 +953,7 @@
       inp.type = fld.type === 'password' ? 'password' : (fld.type === 'number' ? 'number' : 'text');
       inp.dataset.key = fld.key;
       if (val) inp.value = val;
+      else if (!present && fld.def) inp.value = fld.def;
       else inp.placeholder = present ? '(пусто)' : 'нет в файле — впишите значение, ключ будет создан';
 
       if (isChoiceKind(fld.kind)) {
