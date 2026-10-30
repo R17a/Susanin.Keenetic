@@ -134,6 +134,10 @@ web_listen=192.168.1.1
 web_port=8087
 # Токен доступа; пусто = вход без пароля (не рекомендуется).
 web_token=
+# W6: проверять новые релизы на GitHub и показывать «!» у версии: 0 | 1.
+release_check=1
+# W6: период проверки релизов, сек (43200 = 12 ч). 0 = не проверять.
+release_check_interval=43200
 
 # --- Egress через XRay (tproxy) ---
 # Тип egress: interface (nwg*/wdtt*/tun*) | tproxy (XRay/REALITY без TUN).

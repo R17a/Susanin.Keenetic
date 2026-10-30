@@ -171,6 +171,10 @@ typedef struct {
      * "ip:порт", адресные пины уходят в susanin_ok_net. Смена значения требует
      * перезапуска агента; см. TESTBUILD («port_aware — экспериментально»). */
     int port_aware;
+    /* W6: проверять на GitHub более новый релиз и показывать «!» в шапке
+     * панели. Сеть опрашивается не чаще release_check_interval (сек). */
+    int release_check;
+    int release_check_interval;
 } susanin_config;
 
 void config_set_defaults(susanin_config *c);

@@ -4,6 +4,7 @@
 #include "cdn.h"
 #include "classifier.h"
 #include "log.h"
+#include "release.h"
 #include "state.h"
 #include "vpn_always.h"
 #include "version.h"
@@ -636,9 +637,15 @@ int ops_status_json(const susanin_config *cfg, const char *conf_path,
     };
     const char *ipset = tool("ipset");
     const char *state_path = "/opt/susanin/var/susanin.state";
+    const release_info *ri;
     int used = 0, k;
     char esc[CFG_PATH_MAX * 2];
     int va_count = -1, vn_count = -1;
+
+    /* Веб-панель — отдельный процесс: кэш релиза пишет демон, поэтому
+     * перечитываем файл на каждый status (это мелкое чтение, не сеть). */
+    release_init(cfg);
+    ri = release_get();
 
     if (cfg->vpn_always_file[0])
         va_count = count_list_lines(cfg->vpn_always_file);
@@ -647,6 +654,13 @@ int ops_status_json(const susanin_config *cfg, const char *conf_path,
 
     japp(buf, n, &used, "{");
     japp(buf, n, &used, "\"version\":\"%s\",", SUSANIN_VERSION);
+    json_str(esc, sizeof(esc), cfg->release_check ? ri->url : "");
+    japp(buf, n, &used,
+         "\"version_latest\":\"%s\",\"update_available\":%s,"
+         "\"release_url\":\"%s\",\"release_checked\":%ld,",
+         cfg->release_check ? ri->tag : "",
+         (cfg->release_check && release_update_available(SUSANIN_VERSION)) ? "true" : "false",
+         esc, cfg->release_check ? (long)ri->checked : 0L);
 
     json_str(esc, sizeof(esc), conf_path ? conf_path : "");
     japp(buf, n, &used, "\"config\":\"%s\",\"config_present\":%s,",

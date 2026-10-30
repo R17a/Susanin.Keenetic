@@ -44,6 +44,33 @@ h1 { font-size: 17px; margin: 0; font-weight: 700; letter-spacing: .2px; }
 }
 .badge-ver { text-decoration: none; cursor: pointer; }
 .badge-ver:hover { background: rgba(79,156,249,0.22); }
+/* W6: «!» рядом с версией, если на GitHub есть более новый релиз. */
+.badge-upd {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; margin-left: 4px;
+  border-radius: 50%; background: var(--warn); color: #1a1a1a;
+  font-size: 11px; font-weight: 800; line-height: 1;
+  text-decoration: none; vertical-align: 1px;
+}
+.badge-upd[hidden] { display: none; }
+.badge-upd:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+.badge-upd::after {
+  content: attr(data-tip);
+  position: absolute; left: 50%; top: calc(100% + 6px);
+  transform: translateX(-50%);
+  min-width: 180px; max-width: 260px;
+  padding: 6px 8px; border-radius: 6px;
+  background: #1b1f27; color: #fff;
+  font-size: 11px; font-weight: 500; line-height: 1.35;
+  white-space: normal; text-align: left;
+  box-shadow: 0 4px 12px rgba(0,0,0,.35);
+  opacity: 0; visibility: hidden; pointer-events: none; z-index: 50;
+  transition: opacity .12s;
+}
+.badge-upd:hover::after, .badge-upd:focus::after {
+  opacity: 1; visibility: visible;
+}
 .dot {
   width: 8px; height: 8px; border-radius: 50%; background: var(--mut);
   box-shadow: 0 0 0 3px rgba(139,147,161,0.15);

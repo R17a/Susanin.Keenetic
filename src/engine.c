@@ -7,6 +7,7 @@
 #include "dns_sniff.h"
 #include "health.h"
 #include "log.h"
+#include "release.h"
 #include "state.h"
 #include "udp_relay.h"
 #include "vpn_always.h"
@@ -813,6 +814,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     time_t all_down_since = 0;
     time_t last_allwarn = 0;
     time_t last_cdn = 0;
+    time_t last_release = 0;
     time_t next_xray_try = 0;
     int xray_tries = 0;
     int stuck_tries = 0;      /* подряд «процесс есть, но порт не слушается» */
@@ -862,6 +864,12 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     if (cdn_load(cfg) > 0)
         slogf(SL_INFO, "CDN: загружено %d диапазонов из %s", cdn_count(), cfg->cdn_ranges_file);
     last_cdn = time(NULL);
+    /* W6: кэш релиза читаем сразу, но сеть дёргаем не на старте, а через 30 с —
+     * чтобы не удлинять запуск агента на недоступном GitHub. */
+    release_init(cfg);
+    last_release = time(NULL);
+    if (cfg->release_check && cfg->release_check_interval > 30)
+        last_release -= (time_t)(cfg->release_check_interval - 30);
     /* Стартуем с приоритетного egress (фейловер переключит при падении).
      * В tproxy-режиме режим не меняем: см. engine_pick_start_egress(). */
     ei = engine_pick_start_egress(cfg);
@@ -954,6 +962,12 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             if (conf_path && config_load(conf_path, &nc) == 0) {
                 *cfg = nc;
                 slogf(SL_INFO, "config reloaded: %s", conf_path);
+                /* W6: перечитать настройку индикатора релиза; при включении —
+                 * проверка в ближайшие 30 с, а не через 12 ч. */
+                release_init(cfg);
+                last_release = now;
+                if (cfg->release_check && cfg->release_check_interval > 30)
+                    last_release -= (time_t)(cfg->release_check_interval - 30);
                 /* Пробы и их окно — заново: адреса/пороги могли измениться. */
                 probe_job_stop();
                 eg_reset();
@@ -1191,6 +1205,12 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             now - last_cdn >= (time_t)cfg->cdn_ranges_interval) {
             last_cdn = now;
             cdn_refresh(cfg);
+        }
+
+        if (cfg->release_check && cfg->release_check_interval > 0 &&
+            now - last_release >= (time_t)cfg->release_check_interval) {
+            last_release = now;
+            release_check_now(cfg);
         }
 
         if (cfg->dns_sniff && tunnel_up && now - last_dnssniff >= 10) {

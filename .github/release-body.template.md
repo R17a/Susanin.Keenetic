@@ -36,10 +36,9 @@ opkg install susanin-keenetic_{{VER}}_<arch>.ipk
 # если ставили архивом:
 sh /opt/susanin/tools/susanin.sh update {{TAG}}
 ```
-Если установлена `0.4.0.RC1.Hotfix`, opkg считает `{{VER}}` понижением
-(`{{VER}}` < `0.4.0.RC1.Hotfix`) и откажется ставить — используйте
-`opkg install --force-downgrade susanin-keenetic_{{VER}}_<arch>.ipk` или
-обновление архивом (`susanin.sh update`).
+Если opkg считает пакет понижением версии (например, при откате на более
+старую), используйте `opkg install --force-downgrade susanin-keenetic_{{VER}}_<arch>.ipk`
+или обновление архивом (`susanin.sh update`).
 `update` печатает `installed → target`, делает бэкап `susanin.conf` и
 `susanin.state` в `/opt/susanin/var/backup/`, заменяет бинарь и скрипты,
 **не трогая** `etc/` и `var/`, затем перезапускает демон.
@@ -76,6 +75,6 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/{{TAG}}/tools/
 - пакеты Entware: `susanin-keenetic_{{VER}}_mipsel-3.4.ipk`, `…_mips-3.4.ipk`,
   `…_aarch64-3.10.ipk`, `…_armv7sf-k3.2.ipk`, `…_x86-64.ipk` и `SHA256SUMS`.
 
-**Проверено**: mipsel — Keenetic Viva, KeeneticOS 5.1.4–5.1.5, Entware
-(+ клиент OpenConnect). Остальные архитектуры собраны и приложены готовыми
-архивами, но на живом железе не тестировались — сообщайте об ошибках в Issues.
+**Проверено**: host-сборка и автотесты; пакеты и архивы собраны для 5
+архитектур. На живом железе проверьте под свою модель и прошивку — об ошибках
+пишите в Issues.

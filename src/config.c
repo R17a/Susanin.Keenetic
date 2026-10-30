@@ -172,6 +172,9 @@ void config_set_defaults(susanin_config *c)
     snprintf(c->web_listen, sizeof(c->web_listen), "%s", "");
     c->web_port = 8087;
     snprintf(c->web_token, sizeof(c->web_token), "%s", "");
+    /* W6: индикатор нового релиза в панели; GitHub опрашивается раз в 12 ч. */
+    c->release_check = 1;
+    c->release_check_interval = 43200;
     snprintf(c->egress_type, sizeof(c->egress_type), "%s", "interface");
     c->tproxy_port = 12345;
     c->udp_relay = 0;
@@ -537,6 +540,10 @@ int config_load(const char *path, susanin_config *c)
             c->web_port = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "web_token"))
             set_str(c->web_token, sizeof(c->web_token), val);
+        else if (!strcmp(key, "release_check"))
+            c->release_check = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "release_check_interval"))
+            c->release_check_interval = parse_dur(val, U_SEC);
     }
 
     fclose(fp);
@@ -828,6 +835,10 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "web_port=%d\n", c->web_port);
     fprintf(fp, "# Токен доступа к веб-панели (пусто = без пароля).\n");
     fprintf(fp, "web_token=%s\n", c->web_token);
+    fprintf(fp, "# W6: проверять новые релизы на GitHub и показывать «!» в шапке: 0 | 1.\n");
+    fprintf(fp, "release_check=%d\n", c->release_check);
+    fprintf(fp, "# W6: период проверки релизов, сек (по умолчанию 12 ч).\n");
+    fprintf(fp, "release_check_interval=%d\n", out_dur(c->release_check_interval, U_SEC));
     fprintf(fp, "# Возврат на приоритетный (первый живой) egress после восстановления: 0 | 1.\n");
     fprintf(fp, "egress_failback=%d\n", c->egress_failback);
     fprintf(fp, "# Сколько секунд Master должен держать UP до возврата (антидребезг).\n");
@@ -1037,6 +1048,8 @@ void config_print(const susanin_config *c)
     printf("web_listen=%s\n", c->web_listen);
     printf("web_port=%d\n", c->web_port);
     printf("web_token=%s\n", c->web_token);
+    printf("release_check=%d\n", c->release_check);
+    printf("release_check_interval=%d\n", out_dur(c->release_check_interval, U_SEC));
     printf("egress_failback=%d\n", c->egress_failback);
     printf("egress_failback_debounce=%d\n", out_dur(c->egress_failback_debounce, U_SEC));
     printf("egress_type=%s\n", c->egress_type);

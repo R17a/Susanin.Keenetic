@@ -293,6 +293,45 @@ static const char *tool_ip(void)
     return buf;
 }
 
+/* Занят ли xtables-lock. iptables — общий ресурс: пока NDM пересобирает свои
+ * правила, `-S`/`-C` завершается кодом 4 («Another app is currently holding the
+ * xtables lock»). Правило при этом на месте — это не «датаплейн пропал». */
+int backend_xt_locked(int rc, const char *out)
+{
+    if (rc == BACKEND_XT_LOCK_RC)
+        return 1;
+    return (out && strstr(out, "xtables lock")) ? 1 : 0;
+}
+
+/* Проверочный вызов с ретраями на xtables-lock. Без него агент считал занятый
+ * замок пропажей правил: писал "data plane missing", перепровижнил датаплейн и
+ * помечал списки грязными. На стенде 2026-10-28 rc=4 случался до 5 раз за 45 с,
+ * а ложные срабатывания шли раз в 1–2 минуты. */
+#define XT_LOCK_RETRIES 4
+#define XT_LOCK_WAIT_US (120 * 1000)
+/* Замок не отпустили за все ретраи: проверить правило нельзя, но это НЕ
+ * доказательство, что его нет. T6: на 0.4.1 такой rc=4 приводил к ложному
+ * «data plane missing», ре-провижну и пометке списков грязными каждые 5 с. */
+#define XT_BUSY (-2)
+
+static int run_check(char *const argv[], char *out, size_t outsz)
+{
+    int rc = -1, i;
+    for (i = 0; i < XT_LOCK_RETRIES; i++) {
+        if (i) {
+            if (out && outsz)
+                out[0] = '\0';
+            usleep(XT_LOCK_WAIT_US);
+        }
+        rc = out ? run_capture_argv(argv, out, outsz) : run_argv(argv);
+        if (!backend_xt_locked(rc, out))
+            return rc;
+    }
+    slogf(SL_DEBUG, "ready check: xtables lock busy after %d tries (rc=%d) — "
+                    "assume OK, retry on next pass", XT_LOCK_RETRIES, rc);
+    return XT_BUSY;
+}
+
 /* Жив ли хоть один кандидат-интерфейс (не псевдоним tproxy/xray). Нужен, чтобы
  * не требовать маршрут в таблице, когда VPN-подключение отключили и интерфейс
  * исчез: маршрут уходит вместе с ним, и это не повреждение датаплейна. */
@@ -350,6 +389,7 @@ int backend_ready(const susanin_config *c)
 {
     char *argv[6];
     char out[8192], needle[96];
+    int rc;
 
     argv[0] = (char *)tool_iptables();
     argv[1] = "-t";
@@ -357,7 +397,10 @@ int backend_ready(const susanin_config *c)
     argv[3] = "-S";
     argv[4] = "SUSANIN";
     argv[5] = NULL;
-    if (run_argv(argv) != 0)
+    rc = run_check(argv, NULL, 0);
+    if (rc == XT_BUSY)
+        return 1;               /* проверить нельзя — не объявляем пропажу */
+    if (rc != 0)
         return 0;
 
     /* T3: dns_hijack ставит DNAT 53 заранее (в т.ч. шаблоном oc+ без живого
@@ -371,8 +414,10 @@ int backend_ready(const susanin_config *c)
         char *na[6];
         na[0] = (char *)tool_iptables();
         na[1] = "-t"; na[2] = "nat"; na[3] = "-S"; na[4] = "PREROUTING"; na[5] = NULL;
-        if (run_capture_argv(na, out, sizeof(out)) != 0 ||
-            !strstr(out, "susanin-dns"))
+        rc = run_check(na, out, sizeof(out));
+        if (rc == XT_BUSY)
+            return 1;
+        if (rc != 0 || !strstr(out, "susanin-dns"))
             return 0;
     }
 
@@ -381,7 +426,10 @@ int backend_ready(const susanin_config *c)
         snprintf(needle, sizeof(needle), "-j REDIRECT --to-ports %d", c->tproxy_port);
         argv[0] = (char *)tool_iptables();
         argv[1] = "-t"; argv[2] = "nat"; argv[3] = "-S"; argv[4] = "PREROUTING"; argv[5] = NULL;
-        if (run_capture_argv(argv, out, sizeof(out)) != 0 || !strstr(out, needle))
+        rc = run_check(argv, out, sizeof(out));
+        if (rc == XT_BUSY)
+            return 1;
+        if (rc != 0 || !strstr(out, needle))
             return 0;
 
         /* UDP TPROXY -> udp_relay_port (если релей включён) */
@@ -389,7 +437,10 @@ int backend_ready(const susanin_config *c)
             snprintf(needle, sizeof(needle), "TPROXY --on-port %d", c->udp_relay_port);
             argv[0] = (char *)tool_iptables();
             argv[1] = "-t"; argv[2] = "mangle"; argv[3] = "-S"; argv[4] = "PREROUTING"; argv[5] = NULL;
-            if (run_capture_argv(argv, out, sizeof(out)) != 0 || !strstr(out, needle))
+            rc = run_check(argv, out, sizeof(out));
+            if (rc == XT_BUSY)
+                return 1;
+            if (rc != 0 || !strstr(out, needle))
                 return 0;
         }
 
@@ -399,7 +450,10 @@ int backend_ready(const susanin_config *c)
             snprintf(needle, sizeof(needle), "fwmark 0x1 lookup %d", c->routing_table);
             ipargv[0] = (char *)tool_ip();
             ipargv[1] = "rule"; ipargv[2] = "show"; ipargv[3] = NULL;
-            if (run_capture_argv(ipargv, out, sizeof(out)) != 0 || !strstr(out, needle))
+            rc = run_check(ipargv, out, sizeof(out));
+            if (rc == XT_BUSY)
+                return 1;
+            if (rc != 0 || !strstr(out, needle))
                 return 0;
         }
         return 1;
@@ -417,7 +471,10 @@ int backend_ready(const susanin_config *c)
                  c->routing_table);
         ipargv[0] = (char *)tool_ip();
         ipargv[1] = "rule"; ipargv[2] = "show"; ipargv[3] = NULL;
-        if (run_capture_argv(ipargv, out, sizeof(out)) != 0 || !strstr(out, needle))
+        rc = run_check(ipargv, out, sizeof(out));
+        if (rc == XT_BUSY)
+            return 1;
+        if (rc != 0 || !strstr(out, needle))
             return 0;
 
         /* Маршрут в таблице проверяем ТОЛЬКО пока жив хоть один кандидат.
@@ -430,8 +487,10 @@ int backend_ready(const susanin_config *c)
             ipargv[0] = (char *)tool_ip();
             ipargv[1] = "route"; ipargv[2] = "show"; ipargv[3] = "table";
             ipargv[4] = tbl; ipargv[5] = NULL;
-            if (run_capture_argv(ipargv, out, sizeof(out)) != 0 ||
-                !strstr(out, "default"))
+            rc = run_check(ipargv, out, sizeof(out));
+            if (rc == XT_BUSY)
+                return 1;
+            if (rc != 0 || !strstr(out, "default"))
                 return 0;
         }
 
@@ -447,7 +506,10 @@ int backend_ready(const susanin_config *c)
             fargv[4] = "FORWARD"; fargv[5] = "-m"; fargv[6] = "mark";
             fargv[7] = "--mark"; fargv[8] = mbuf; fargv[9] = "-j";
             fargv[10] = "ACCEPT"; fargv[11] = NULL;
-            if (run_argv(fargv) != 0)
+            rc = run_check(fargv, NULL, 0);
+            if (rc == XT_BUSY)
+                return 1;
+            if (rc != 0)
                 return 0;
         }
     }

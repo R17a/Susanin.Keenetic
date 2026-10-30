@@ -124,6 +124,22 @@
 
   function renderStatus(d) {
     $('ver').textContent = 'v' + d.version;
+    var upd = $('verupd');
+    if (upd) {
+      var latest = d.version_latest || '';
+      var avail = !!d.update_available && !!latest;
+      upd.hidden = !avail;
+      if (avail) {
+        var tip = 'Есть обновление до версии ' + latest;
+        upd.title = tip;
+        upd.setAttribute('aria-label', tip);
+        upd.setAttribute('data-tip', tip);
+        upd.href = d.release_url || '#status';
+      } else {
+        upd.title = '';
+        upd.removeAttribute('data-tip');
+      }
+    }
     var tb = document.querySelector('#sets tbody');
     tb.innerHTML = '';
     var ipsets = d.ipsets || {};

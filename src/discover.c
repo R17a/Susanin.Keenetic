@@ -198,6 +198,32 @@ static int iface_cidr4(const char *name, char *out, size_t outsz)
     return out[0] ? 0 : -1;
 }
 
+/* Подсеть пула OpenConnect по адресу ocN. На Keenetic tun
+ * point-to-point: локальный адрес приходит как /32 (172.16.5.1,
+ * peer 172.16.5.3), поэтому /32 расширяем до /24. Более широкую
+ * маску (если прошивка её отдала) оставляем как есть. */
+static int iface_oc_pool(const char *name, char *out, size_t outsz)
+{
+    char cidr[64], ip[INET_ADDRSTRLEN];
+    struct in_addr a;
+    int len;
+    if (iface_cidr4(name, cidr, sizeof(cidr)) != 0)
+        return -1;
+    if (sscanf(cidr, "%15[^/]/%d", ip, &len) != 2)
+        return -1;
+    if (len != 32) {
+        snprintf(out, outsz, "%s", cidr);
+        return 0;
+    }
+    if (inet_pton(AF_INET, ip, &a) != 1)
+        return -1;
+    a.s_addr = htonl(ntohl(a.s_addr) & 0xffffff00u);
+    if (!inet_ntop(AF_INET, &a, ip, sizeof(ip)))
+        return -1;
+    snprintf(out, outsz, "%s/24", ip);
+    return 0;
+}
+
 /* Добавить серверные туннели (qWDTT wdtt0/wdttraw0 и т.п.) в LAN: интерфейс
  * в lan_interfaces и его IPv4-сеть в lan_subnets. Пусто — ничего не делаем. */
 static void merge_lan_servers(const susanin_config *c, susanin_discovery *d)
@@ -222,10 +248,20 @@ static void merge_lan_servers(const susanin_config *c, susanin_discovery *d)
 
 /* OpenConnect-сервер на этом роутере: /var/run/ocserv/ocserv.conf создаётся
  * штатной службой. Процесс на Keenetic может не называться ocserv, поэтому
- * определяем по файлу (в discovery нет вызова iptables). */
+ * определяем по файлу. На части прошивок Keenetic этого файла нет, зато при
+ * подключённом клиенте существует ocN — это второй признак. */
 static int ocserv_alive(void)
 {
-    return access("/var/run/ocserv/ocserv.conf", R_OK) == 0;
+    int i;
+    if (access("/var/run/ocserv/ocserv.conf", R_OK) == 0)
+        return 1;
+    for (i = 0; i < DISC_MAXIF; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "oc%d", i);
+        if (iface_exists(name))
+            return 1;
+    }
+    return 0;
 }
 
 /* Пул клиентов OpenConnect из того же конфига (ipv4-network=172.16.5.0/24). */
@@ -272,9 +308,9 @@ static int csv_has_oc(const char *csv)
     return 0;
 }
 
-/* OpenConnect — НЕ у всех: сами 'oc+' в lan_interfaces не добавляем. Задача этой
- * функции — поддержать тех, кто уже указал oc+/ocN вручную: держим подсеть пула,
- * чтобы адреса клиентов не выпадали из обработки после rescan (регрессия
+/* OpenConnect — НЕ у всех: сами 'oc+' в lan_interfaces не добавляем, если
+ * сервер не найден. Задача этой функции — поддержать тех, кто уже указал
+ * oc+/ocN вручную, и не терять пул клиентов после rescan (регрессия
  * 2026-10-14: «часть сайтов висит, status зелёный»). */
 static void merge_ocserv(const susanin_config *c, susanin_discovery *d)
 {
@@ -285,17 +321,26 @@ static void merge_ocserv(const susanin_config *c, susanin_discovery *d)
         return;
     if (!ocserv_alive())
         return;
+
+    /* Держим шаблон oc+, а не только текущий ocN: после переподключения
+     * клиента имя может смениться (oc1, oc2, ...). */
+    append_csv(d->lan_interfaces, sizeof(d->lan_interfaces), "oc+");
+
     if (ocserv_pool(pool, sizeof(pool)) == 0 && strchr(pool, '/')) {
         if (!csv_has(d->lan_subnets, pool))
             append_csv(d->lan_subnets, sizeof(d->lan_subnets), pool);
         return;
     }
+
+    /* Файла с ipv4-network нет (штатный Keenetic): берём адрес живого ocN
+     * и расширяем /32 до /24 — именно так выглядит пул на стенде. */
     for (i = 0; i < DISC_MAXIF; i++) {
         char name[32];
         snprintf(name, sizeof(name), "oc%d", i);
         if (!iface_exists(name))
             continue;
-        if (iface_cidr4(name, cidr, sizeof(cidr)) == 0 && !csv_has(d->lan_subnets, cidr))
+        if (iface_oc_pool(name, cidr, sizeof(cidr)) == 0 &&
+            !csv_has(d->lan_subnets, cidr))
             append_csv(d->lan_subnets, sizeof(d->lan_subnets), cidr);
     }
 }

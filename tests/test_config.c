@@ -55,6 +55,14 @@ int main(void)
     CHECK(cfg.fast_syn_min_op == 2 && cfg.confirm_min_bytes == 512,
           "неизвестный пресет игнорируется (и пишет warning в stderr)");
 
+    printf("=== W6: release_check ===\n");
+    config_load(write_cfg(""), &cfg);
+    CHECK(cfg.release_check == 1, "по умолчанию проверка релизов включена");
+    CHECK(cfg.release_check_interval == 43200, "по умолчанию интервал 12 ч");
+    config_load(write_cfg("release_check=0\nrelease_check_interval=3600\n"), &cfg);
+    CHECK(cfg.release_check == 0, "release_check=0 разобран");
+    CHECK(cfg.release_check_interval == 3600, "release_check_interval=3600 разобран");
+
     remove("/tmp/susanin-test.conf");
     printf("\n%s\n", failures ? "ЕСТЬ ОШИБКИ" : "все проверки пройдены");
     return failures ? 1 : 0;

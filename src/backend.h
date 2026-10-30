@@ -10,6 +10,12 @@ int backend_provision(const susanin_config *c);
 int backend_teardown(const susanin_config *c);
 int backend_ready(const susanin_config *c);
 
+/* iptables не смог взять общий xtables-lock (код 4, «Another app is currently
+ * holding the xtables lock»). Это НЕ признак пропавшего правила — проверку надо
+ * повторить; вынесено наружу ради host-теста. */
+#define BACKEND_XT_LOCK_RC 4
+int backend_xt_locked(int rc, const char *out);
+
 /* Отметка о ре-провижене датаплейна (NDM снёс наши правила — агент их вернул).
  * Пишет /opt/susanin/var/dp-reprov ("epoch reason"); читается в status/diagnose. */
 void backend_mark_reprov(const char *reason);
