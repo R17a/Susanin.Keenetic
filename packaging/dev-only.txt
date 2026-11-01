@@ -9,6 +9,8 @@ tools/build-mips.sh         — сборка под MIPS (инструмент �
 tools/make-ipk.sh           — сборка .ipk-пакетов (инструмент упаковки)
 tools/stage-release.sh      — раскладка tar-архива релиза по манифесту
 tools/check-shipping.sh     — сверка манифеста с .ipk
+tools/check-lang.sh         — сверка языковых словарей www/lang (dev)
+tools/dev-web.py            — локальный сервер www с мок-API для проверки UI (dev)
 
 # --- внешний наблюдатель "интерфейс -> Xray" (штатный путь — кандидат tproxy) ---
 tools/egress-failover.sh    — два механизма одновременно конфликтуют; в движке

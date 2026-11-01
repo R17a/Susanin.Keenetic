@@ -343,6 +343,23 @@ tr:last-child td { border-bottom: 0; }
 .dbadge--ct b { background: #598bd7; }
 .dbadge--da b { background: #f5a623; color: #241800; }
 
+/* Выбор языка: прижат к правому краю шапки (margin-left:auto), чтобы не
+ * «прыгал» при изменении ширины бейджей донатов. */
+.langsel {
+  display: flex; align-items: center; gap: 8px;
+  margin-left: auto; padding-left: 8px; flex: none;
+}
+.langsel .lang-label { color: var(--mut); font-size: 12.5px; white-space: nowrap; }
+.langsel select {
+  padding: 5px 8px; font-size: 12.5px; border-radius: 7px;
+  background: var(--card-2); color: var(--fg); max-width: 160px;
+}
+
+/* Пока словарь не применён, страницу не показываем: иначе на английском и
+ * китайском на мгновение виден русский текст. Класс ставит и снимает i18n.js;
+ * без JS класс не появится и правило не сработает. */
+.i18n-pending body { visibility: hidden; }
+
 @media (max-width: 720px) {
   /* Шапка больше не липкая на узком экране: баннер донатов — третья строка, и
    * при sticky она наезжала на список, а жёсткий top:76px уводил навигацию под
@@ -350,6 +367,8 @@ tr:last-child td { border-bottom: 0; }
   .topbar { position: static; z-index: auto; }
   .topactions { margin-left: 0; }
   .donate { margin-left: 0; padding-left: 0; border-left: 0; flex-wrap: wrap; }
+  .langsel { margin-left: 0; padding-left: 0; flex-wrap: wrap; }
+  .langsel select { max-width: none; }
   .config-layout { grid-template-columns: 1fr; }
   .config-nav {
     position: static; flex-direction: row; overflow-x: auto; flex-wrap: nowrap;

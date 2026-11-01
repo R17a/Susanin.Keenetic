@@ -10,7 +10,9 @@
 
   var TOKEN_KEY = 'susanin_token';
   var LISTS = ['vpn_always', 'vpn_never'];
-  var LIST_LABEL = { vpn_always: 'через VPN', vpn_never: 'напрямую' };
+  /* Подписи списков — из словаря языка (fallback — прежние русские строки). */
+  var LIST_LABEL_KEY = { vpn_always: 'list.label.always', vpn_never: 'list.label.never' };
+  var LIST_LABEL_RU = { vpn_always: 'через VPN', vpn_never: 'напрямую' };
 
   var qs = new URLSearchParams(window.location.search);
   if (qs.get('token')) {
@@ -28,6 +30,13 @@
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
     });
   };
+
+  /* Перевод строк интерфейса. i18n.js подключается в index.html раньше, но
+   * если его нет (старый кэш, другой потребитель www) — работают литералы. */
+  function T(key, fallback, vars) {
+    return (window.I18N && window.I18N.t) ? window.I18N.t(key, fallback, vars) : fallback;
+  }
+  function listLabel(name) { return T(LIST_LABEL_KEY[name], LIST_LABEL_RU[name]); }
 
   /* --- «известные системе» значения (один запрос на всю панель) ---
    * config.js читает window.susaninChoices при отрисовке полей. Запрос делаем
@@ -60,11 +69,11 @@
         var j = JSON.parse(msg);
         if (j && j.error) msg = j.error;
       } catch (e) { /* не JSON — оставляем текст как есть */ }
-      if (r.status === 401) msg = 'нужен токен (обновите страницу с ?token=…)';
+      if (r.status === 401) msg = T('err.token', 'нужен токен (обновите страницу с ?token=…)');
       else if (r.status === 403) {
-        msg = 'панель только для чтения: задайте токен — ' +
-              'susanin-agent config set web_token <секрет>, затем susanin restart';
-      } else if (r.status === 413) msg = 'список больше 64 КБ — правьте его на роутере';
+        msg = T('err.readonly', 'панель только для чтения: задайте токен — ' +
+              'susanin-agent config set web_token <секрет>, затем susanin restart');
+      } else if (r.status === 413) msg = T('err.toolarge', 'список больше 64 КБ — правьте его на роутере');
       else if (!msg) msg = 'HTTP ' + r.status;
       return new Error(msg);
     }).catch(function () { return new Error('HTTP ' + r.status); });
@@ -87,7 +96,9 @@
     if (token) headers['X-Auth-Token'] = token;
     return fetch(path, { method: 'POST', headers: headers, body: body }).then(function (r) {
       if (!r.ok) return respErr(r).then(function (e) { throw e; });
-      return r.json().catch(function () { return { ok: false, error: 'плохой ответ сервера' }; });
+      return r.json().catch(function () {
+        return { ok: false, error: T('err.badJson', 'плохой ответ сервера') };
+      });
     });
   }
 
@@ -100,6 +111,9 @@
     window.setTimeout(function () { el.remove(); }, 3000);
   }
 
+  /* i18n.js показывает этим тостом свои ошибки (не загрузился словарь языка). */
+  window.susaninToast = toast;
+
   function setConn(ok) {
     var d = $('dot');
     d.className = 'dot ' + (ok ? 'ok' : 'err');
@@ -107,19 +121,24 @@
 
   function doPost(path, params, label) {
     return post(path, params).then(function (r) {
-      if (r && r.ok) { toast(label + ': ок', true); return true; }
-      toast(label + ': ' + ((r && r.error) || 'ошибка'), false);
+      if (r && r.ok) { toast(T('toast.opOk', '{op}: ок', { op: label }), true); return true; }
+      toast(T('toast.opErr', '{op}: {err}', {
+        op: label, err: (r && r.error) || T('err.unknown', 'ошибка')
+      }), false);
       return false;
-    }).catch(function (e) { toast(label + ': ' + e.message, false); return false; });
+    }).catch(function (e) {
+      toast(T('toast.opErr', '{op}: {err}', { op: label, err: e.message }), false);
+      return false;
+    });
   }
 
-  $('reload').onclick = function () { doPost('/api/reload', {}, 'reload').then(loadAll); };
-  $('rescan').onclick = function () { doPost('/api/rescan', {}, 'rescan').then(loadAll); };
-  $('restart').onclick = function () { doPost('/api/restart', {}, 'restart').then(loadAll); };
+  $('reload').onclick = function () { doPost('/api/reload', {}, T('op.reload', 'reload')).then(loadAll); };
+  $('rescan').onclick = function () { doPost('/api/rescan', {}, T('op.rescan', 'rescan')).then(loadAll); };
+  $('restart').onclick = function () { doPost('/api/restart', {}, T('op.restart', 'restart')).then(loadAll); };
   $('reset').onclick = function () {
     var ip = $('fip').value.trim();
-    if (!ip) { toast('reset: укажите IP или домен', false); return; }
-    doPost('/api/reset', { ip: ip }, 'reset ' + ip);
+    if (!ip) { toast(T('toast.resetNeed', 'reset: укажите IP или домен'), false); return; }
+    doPost('/api/reset', { ip: ip }, T('op.reset', 'reset {value}', { value: ip }));
   };
 
   function renderStatus(d) {
@@ -130,7 +149,7 @@
       var avail = !!d.update_available && !!latest;
       upd.hidden = !avail;
       if (avail) {
-        var tip = 'Есть обновление до версии ' + latest;
+        var tip = T('app.verupd', 'Есть обновление до версии {version}', { version: latest });
         upd.title = tip;
         upd.setAttribute('aria-label', tip);
         upd.setAttribute('data-tip', tip);
@@ -153,6 +172,7 @@
     api('/api/status').then(function (t) {
       var d;
       try { d = JSON.parse(t); } catch (e) { throw new Error('bad JSON'); }
+      lastStatus = d;
       renderStatus(d);
       setConn(true);
     }).catch(function () {
@@ -161,13 +181,14 @@
 
     api('/api/log?lines=200').then(function (t) {
       var el = $('log');
-      el.textContent = t || '(пусто)';
+      el.textContent = t || T('status.log.empty', '(пусто)');
       el.scrollTop = el.scrollHeight;
     }).catch(function () { /* лог не критичен */ });
   }
 
   /* --- Списки vpn_always / vpn_never: drag & drop между колонками --- */
 
+  var lastStatus = null;
   var lists = { vpn_always: [], vpn_never: [] };
   var filters = { vpn_always: '', vpn_never: '' };
   var listErrors = { vpn_always: null, vpn_never: null };
@@ -175,9 +196,12 @@
   function fetchList(name) {
     return api('/api/list?name=' + name).then(function (t) {
       listErrors[name] = null;
-      try { return JSON.parse(t); } catch (e) { listErrors[name] = 'bad JSON'; return null; }
+      try { return JSON.parse(t); } catch (e) {
+        listErrors[name] = T('err.badJson', 'плохой ответ сервера');
+        return null;
+      }
     }).catch(function (e) {
-      listErrors[name] = e.message || 'ошибка';
+      listErrors[name] = e.message || T('err.unknown', 'ошибка');
       return null;
     });
   }
@@ -200,12 +224,14 @@
       var box = $('items-' + name);
       box.innerHTML = '';
       if (listErrors[name]) {
-        box.innerHTML = '<div class="list-empty err">не удалось загрузить: ' + esc(listErrors[name]) + '</div>';
+        box.innerHTML = '<div class="list-empty err">' +
+          esc(T('list.loadFail', 'не удалось загрузить: {err}', { err: listErrors[name] })) + '</div>';
         return;
       }
       if (!items.length) {
         box.innerHTML = '<div class="list-empty">' +
-          (lists[name].length ? 'ничего не найдено' : 'список пуст') + '</div>';
+          esc(lists[name].length ? T('list.noMatch', 'ничего не найдено')
+                                 : T('list.empty', 'список пуст')) + '</div>';
         return;
       }
       items.forEach(function (v) {
@@ -234,14 +260,14 @@
 
     var move = document.createElement('button');
     move.className = 'btn-icon move';
-    move.title = 'Переместить в «' + LIST_LABEL[otherList(name)] + '»';
+    move.title = T('list.moveTo', 'Переместить в «{label}»', { label: listLabel(otherList(name)) });
     move.textContent = name === 'vpn_always' ? '→' : '←';
     move.onclick = function () { moveEntry(value, name, otherList(name)); };
     row.appendChild(move);
 
     var del = document.createElement('button');
     del.className = 'btn-icon del';
-    del.title = 'Удалить из списка';
+    del.title = T('list.remove', 'Удалить из списка');
     del.textContent = '×';
     del.onclick = function () { deleteEntry(value, name); };
     row.appendChild(del);
@@ -283,7 +309,8 @@
     var addFn = function () {
       var v = addInput.value.trim();
       if (!v) return;
-      doPost('/api/list', { list: name, op: 'add', value: v }, 'добавить ' + v)
+      doPost('/api/list', { list: name, op: 'add', value: v },
+             T('op.add', 'добавить {value}', { value: v }))
         .then(function (ok) { if (ok) { addInput.value = ''; loadLists(); } });
     };
     addInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') addFn(); });
@@ -295,21 +322,25 @@
       var input = $('add-' + name);
       var v = input.value.trim();
       if (!v) return;
-      doPost('/api/list', { list: name, op: 'add', value: v }, 'добавить ' + v)
+      doPost('/api/list', { list: name, op: 'add', value: v },
+             T('op.add', 'добавить {value}', { value: v }))
         .then(function (ok) { if (ok) { input.value = ''; loadLists(); } });
     });
   });
 
   function deleteEntry(value, from) {
-    doPost('/api/list', { list: from, op: 'del', value: value }, 'удалить ' + value)
+    doPost('/api/list', { list: from, op: 'del', value: value },
+           T('op.del', 'удалить {value}', { value: value }))
       .then(function (ok) { if (ok) loadLists(); });
   }
 
   function moveEntry(value, from, to) {
-    doPost('/api/list', { list: from, op: 'del', value: value }, 'del ' + value).then(function (ok) {
+    doPost('/api/list', { list: from, op: 'del', value: value },
+           T('op.del', 'удалить {value}', { value: value })).then(function (ok) {
       if (!ok) return;
-      doPost('/api/list', { list: to, op: 'add', value: value }, 'add ' + value).then(function (ok2) {
-        if (ok2) toast(value + ' → ' + LIST_LABEL[to], true);
+      doPost('/api/list', { list: to, op: 'add', value: value },
+             T('op.add', 'добавить {value}', { value: value })).then(function (ok2) {
+        if (ok2) toast(value + ' → ' + listLabel(to), true);
         loadLists();
       });
     });
@@ -324,7 +355,8 @@
   function memoSetSaveEnabled(on) {
     memoLoaded = !!on;
     $('memo-save').disabled = !on;
-    $('memo-save').title = on ? 'Записать весь список' : 'Сначала дождитесь загрузки списка';
+    $('memo-save').title = on ? T('memo.saveTip', 'Записать весь список')
+                              : T('memo.saveTipDisabled', 'Сначала дождитесь загрузки списка');
     $('memo-text').readOnly = !on;
   }
 
@@ -332,8 +364,8 @@
   function httpError(r) {
     return r.text().then(function (t) {
       var msg = (t || '').trim();
-      if (r.status === 401) msg = 'нужен токен (обновите страницу с ?token=…)';
-      else if (r.status === 413) msg = 'список больше 64 КБ — правьте его на роутере';
+      if (r.status === 401) msg = T('err.token', 'нужен токен (обновите страницу с ?token=…)');
+      else if (r.status === 413) msg = T('err.toolarge', 'список больше 64 КБ — правьте его на роутере');
       else if (!msg) msg = 'HTTP ' + r.status;
       return { ok: false, error: msg };
     }).catch(function () { return { ok: false, error: 'HTTP ' + r.status }; });
@@ -342,23 +374,26 @@
   function memoOpen(name) {
     memoName = name;
     memoSetSaveEnabled(false);
-    $('memo-title').textContent = 'Список: ' +
-      (name === 'vpn_always' ? 'Всегда через VPN' : 'Всегда напрямую');
-    $('memo-status').textContent = 'загрузка…';
+    $('memo-title').textContent = T('memo.titleOf', 'Список: {name}', {
+      name: name === 'vpn_always' ? T('list.always.title', 'Всегда через VPN')
+                                  : T('list.never.title', 'Всегда напрямую')
+    });
+    $('memo-status').textContent = T('memo.loading', 'загрузка…');
     $('memo-text').value = '';
     $('memo').hidden = false;
     api('/api/list/raw?name=' + encodeURIComponent(name)).then(function (t) {
       if (memoName !== name) return;
       $('memo-text').value = t;
       var n = t.split('\n').filter(function (l) { return l.trim() && l.trim()[0] !== '#'; }).length;
-      $('memo-status').textContent = 'загружено записей: ' + n;
+      $('memo-status').textContent = T('memo.loaded', 'загружено записей: {n}', { n: n });
       memoSetSaveEnabled(true);
       $('memo-text').focus();
     }).catch(function (e) {
       /* Сохранение остаётся заблокированным: не даём стереть список сбоем загрузки. */
       memoSetSaveEnabled(false);
-      $('memo-status').textContent = 'не удалось загрузить: ' + (e.message || 'ошибка') +
-        ' — сохранение отключено';
+      $('memo-status').textContent = T('memo.loadFail',
+        'не удалось загрузить: {err} — сохранение отключено',
+        { err: e.message || T('err.unknown', 'ошибка') });
     });
   }
 
@@ -374,30 +409,34 @@
     var text = $('memo-text').value;
     var headers = { 'Content-Type': 'text/plain; charset=utf-8' };
     if (token) headers['X-Auth-Token'] = token;
-    $('memo-status').textContent = 'сохранение…';
+    $('memo-status').textContent = T('memo.saving', 'сохранение…');
     $('memo-save').disabled = true;
     fetch('/api/list/save?name=' + encodeURIComponent(name), {
       method: 'POST', headers: headers, body: text
     }).then(function (r) {
-      if (r.ok) return r.json().catch(function () { return { ok: false, error: 'плохой ответ сервера' }; });
+      if (r.ok) return r.json().catch(function () {
+        return { ok: false, error: T('err.badJson', 'плохой ответ сервера') };
+      });
       return httpError(r);
     }).then(function (r) {
       $('memo-save').disabled = false;
       if (!r || !r.ok) {
-        $('memo-status').textContent = 'ошибка: ' + ((r && r.error) || 'не сохранено');
-        toast('список не сохранён', false);
+        $('memo-status').textContent = T('memo.error', 'ошибка: {err}', {
+          err: (r && r.error) || T('memo.notSaved', 'не сохранено')
+        });
+        toast(T('memo.notSaved', 'список не сохранён'), false);
         return;
       }
-      var msg = 'сохранено записей: ' + r.kept;
-      if (r.dropped) msg += ', отброшено строк: ' + r.dropped;
+      var msg = T('memo.saved', 'сохранено записей: {n}', { n: r.kept });
+      if (r.dropped) msg += T('memo.dropped', ', отброшено строк: {n}', { n: r.dropped });
       $('memo-status').textContent = msg;
       toast(name + ': ' + msg, !r.dropped);
       memoClose();
       loadLists();
     }).catch(function (e) {
       $('memo-save').disabled = false;
-      $('memo-status').textContent = 'ошибка: ' + (e.message || e);
-      toast('список не сохранён', false);
+      $('memo-status').textContent = T('memo.error', 'ошибка: {err}', { err: e.message || e });
+      toast(T('memo.notSaved', 'список не сохранён'), false);
     });
   }
 
@@ -426,6 +465,22 @@
 
   function loadAll() { load(); loadLists(); }
 
+  /* Смена языка: перерисовываем всё, что собрано из строк словаря (списки,
+   * статус, заголовок модалки). Ответы сервера (лог, тексты ошибок API) —
+   * как их отдал агент, их перевод — отдельная задача на стороне C-кода. */
+  function relabel() {
+    renderLists();
+    if (lastStatus) renderStatus(lastStatus);
+    if (memoName) {
+      $('memo-title').textContent = T('memo.titleOf', 'Список: {name}', {
+        name: memoName === 'vpn_always' ? T('list.always.title', 'Всегда через VPN')
+                                        : T('list.never.title', 'Всегда напрямую')
+      });
+      memoSetSaveEnabled(memoLoaded);
+    }
+  }
+  document.addEventListener('susanin:lang', relabel);
+
   /* Высота липкой шапки в CSS-переменную: на узком экране шапка выше одной
    * строки, и жёсткий top:76px у навигации ломал вёрстку (дефект 2026-10-14). */
   (function trackTopbar() {
@@ -438,9 +493,16 @@
     apply();
   })();
 
-  loadAll();
-  loadChoices();   /* один раз: подсказки для полей конфигурации (config.js) */
-  /* Список НЕ переопрашиваем таймером — иначе перерисовка мешает
-   * перетаскиванию; обновляется по действию и вручную ("Обновить"). */
-  window.setInterval(load, 5000);
+  function boot() {
+    loadAll();
+    loadChoices();   /* один раз: подсказки для полей конфигурации (config.js) */
+    /* Список НЕ переопрашиваем таймером — иначе перерисовка мешает
+     * перетаскиванию; обновляется по действию и вручную ("Обновить"). */
+    window.setInterval(load, 5000);
+  }
+
+  /* Рисуем только после того, как i18n применил словарь: иначе подписи и
+   * пустые состояния на мгновение были бы на другом языке. */
+  if (window.I18N && window.I18N.ready) window.I18N.ready(boot);
+  else boot();
 })();

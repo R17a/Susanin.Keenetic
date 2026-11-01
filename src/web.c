@@ -146,10 +146,12 @@ static int has_dotdot(const char *p)
     return 0;
 }
 
-/* Белый список расширений статики: через www нельзя отдать .conf/.token и пр. */
+/* Белый список расширений статики: через www нельзя отдать .conf/.token и пр.
+ * .json нужен словарям интерфейса (www/lang/RU.JSON, EN.JSON, ZH.JSON):
+ * в www по правилам репозитория нет ни конфигов, ни секретов. */
 static int ext_allowed(const char *path)
 {
-    static const char *ok[] = { ".html", ".htm", ".css", ".js", ".svg", ".png",
+    static const char *ok[] = { ".html", ".htm", ".css", ".js", ".json", ".svg", ".png",
                                 ".jpg", ".jpeg", ".gif", ".ico", ".woff",
                                 ".woff2", ".webmanifest", NULL };
     const char *dot = strrchr(path, '.');

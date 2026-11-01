@@ -37,8 +37,19 @@
     return undefined;
   }
 
+  /* Перевод строк UI (i18n.js). Нет словаря/ключа — остаётся русский литерал,
+   * поэтому разметка ниже по-прежнему читается без языковых файлов. */
+  function T(key, fallback, vars) {
+    return (window.I18N && window.I18N.t) ? window.I18N.t(key, fallback, vars) : fallback;
+  }
+
   function f(key, label, desc, type, extra) {
     var o = { key: key, label: label, desc: desc || '', type: type || 'text' };
+    /* Ключи словаря выводятся из имени параметра конфига: добавляя поле, вы
+     * автоматически получаете пару ключей cfg.<key>.label / cfg.<key>.desc —
+     * их достаточно дописать в www/lang/*.JSON. */
+    o.labelKey = 'cfg.' + key + '.label';
+    o.descKey = 'cfg.' + key + '.desc';
     if (extra) for (var k in extra) o[k] = extra[k];
     /* bool — всегда 0/1: такой ключ безопасно создать, если его нет в конфиге. */
     if (o.type === 'bool') o.creatable = true;
@@ -262,15 +273,23 @@
           f('profile_failover', 'Держать профиль на рабочем VPN', 'следить, чтобы таблица профиля указывала на первый живой egress из списка', 'bool')
         ]}
       ].concat([1, 2, 3, 4].map(function (n) {
-        var p = 'profile' + n + '_';
+        /* Все четыре профиля одинаковы по смыслу, поэтому подписи/описания
+         * берутся из общих ключей cfg.profile.<поле>.*, а не из
+         * cfg.profileN_<поле>.* — иначе пришлось бы держать 4 копии перевода. */
+        function pf(suffix, label, desc, type, extra) {
+          var o = f('profile' + n + '_' + suffix, label, desc, type, extra);
+          o.labelKey = 'cfg.profile.' + suffix + '.label';
+          o.descKey = 'cfg.profile.' + suffix + '.desc';
+          return o;
+        }
         return { title: 'Профиль ' + n, profile: n, fields: [
-          f(p + 'name', 'Имя', 'a-z, 0-9, _ ; пусто = профиль выключен', 'text', { kind: 'ident', creatable: true }),
-          f(p + 'egress', 'Egress (туннель)', 'интерфейсы через запятую; порядок = приоритет — перетаскивайте чипы', 'text', { kind: 'ifacelist', creatable: true }),
-          f(p + 'list', 'Файл списка', 'путь, например /opt/susanin/etc/profiles/имя.txt (по строке: домен / IP / CIDR); можно выбрать существующий файл', 'text', { kind: 'path', creatable: true }),
-          f(p + 'geo_url', 'Ссылка на список (гео)', 'скачиваемый CIDR-список; кэш в var/profiles/', 'text', { creatable: true }),
-          f(p + 'auto', 'Автообучение профиля', 'пополнять профиль новыми адресами из его диапазона', 'bool', { creatable: true }),
-          f(p + 'table', 'Таблица маршрутизации', 'пусто = по умолчанию (201…204); занятые таблицы помечены', 'text', { kind: 'table', creatable: true }),
-          f(p + 'mark', 'fwmark', 'hex; пусто = по умолчанию; занятые метки помечены', 'text', { kind: 'mark', creatable: true })
+          pf('name', 'Имя', 'a-z, 0-9, _ ; пусто = профиль выключен', 'text', { kind: 'ident', creatable: true }),
+          pf('egress', 'Egress (туннель)', 'интерфейсы через запятую; порядок = приоритет — перетаскивайте чипы', 'text', { kind: 'ifacelist', creatable: true }),
+          pf('list', 'Файл списка', 'путь, например /opt/susanin/etc/profiles/имя.txt (по строке: домен / IP / CIDR); можно выбрать существующий файл', 'text', { kind: 'path', creatable: true }),
+          pf('geo_url', 'Ссылка на список (гео)', 'скачиваемый CIDR-список; кэш в var/profiles/', 'text', { creatable: true }),
+          pf('auto', 'Автообучение профиля', 'пополнять профиль новыми адресами из его диапазона', 'bool', { creatable: true }),
+          pf('table', 'Таблица маршрутизации', 'пусто = по умолчанию (201…204); занятые таблицы помечены', 'text', { kind: 'table', creatable: true }),
+          pf('mark', 'fwmark', 'hex; пусто = по умолчанию; занятые метки помечены', 'text', { kind: 'mark', creatable: true })
         ]};
       })),
       note: 'Профили: свой список доменов/IP на отдельный туннель, со своей меткой и таблицей. ' +
@@ -431,7 +450,8 @@
    * confValues — объект, но ключа нет — прочитан, просто нет такой строки в
    * файле (новые ключи через API не создаются, поэтому поле недоступно). */
   function missingLabel() {
-    return confValues === null ? 'конфиг не прочитан' : 'нет в файле';
+    return confValues === null ? T('cfg.missing.unread', 'конфиг не прочитан')
+                               : T('cfg.missing.absent', 'нет в файле');
   }
 
   function missingTag() {
@@ -522,9 +542,9 @@
       else phys.push(opt);
     });
     var groups = [];
-    if (tun.length) groups.push({ label: 'Туннели', items: tun });
-    if (br.length) groups.push({ label: 'Мосты', items: br });
-    if (phys.length) groups.push({ label: 'Физические', items: phys });
+    if (tun.length) groups.push({ label: T('cfg.choices.tunnels', 'Туннели'), items: tun });
+    if (br.length) groups.push({ label: T('cfg.choices.bridges', 'Мосты'), items: br });
+    if (phys.length) groups.push({ label: T('cfg.choices.physical', 'Физические'), items: phys });
     /* Подсети здесь НЕ предлагаем: имя интерфейса и CIDR — разные вещи.
      * Подсказки из subnets[] живут в iplist/cidrlist (см. subnetChoiceItems). */
     return groups;
@@ -563,38 +583,46 @@
       var items = subnetChoiceItems(kind);
       if (items.length) {
         groups.push({
-          label: kind === 'cidrlist' ? 'Подсети интерфейсов' : 'Адреса интерфейсов',
+          label: kind === 'cidrlist' ? T('cfg.choices.subnets', 'Подсети интерфейсов')
+                                     : T('cfg.choices.addresses', 'Адреса интерфейсов'),
           items: items
         });
       }
       return groups;
     }
     if (kind === 'table') {
-      groups.push({ label: 'Таблицы маршрутизации', items: (c.tables || []).map(function (t) {
-        return { value: String(t.id), note: t.used ? 'занята' : 'свободна' };
-      }) });
+      groups.push({ label: T('cfg.choices.tables', 'Таблицы маршрутизации'),
+        items: (c.tables || []).map(function (t) {
+          return { value: String(t.id), note: t.used ? T('cfg.choices.used', 'занята')
+                                                     : T('cfg.choices.free', 'свободна') };
+        }) });
       return groups;
     }
     if (kind === 'mark') {
       if ((c.marks || []).length) {
-        groups.push({ label: 'Метки профилей', items: (c.marks || []).map(function (m) {
-          return { value: m.value, note: m.used ? 'занята' : 'свободна' };
-        }) });
+        groups.push({ label: T('cfg.choices.marks', 'Метки профилей'),
+          items: (c.marks || []).map(function (m) {
+            return { value: m.value, note: m.used ? T('cfg.choices.used', 'занята')
+                                                  : T('cfg.choices.free', 'свободна') };
+          }) });
       }
       if ((c.used_marks || []).length) {
-        groups.push({ label: 'Уже заданы в конфиге', items: (c.used_marks || []).map(function (v) {
-          return { value: v, note: 'занята' };
-        }) });
+        groups.push({ label: T('cfg.choices.usedMarks', 'Уже заданы в конфиге'),
+          items: (c.used_marks || []).map(function (v) {
+            return { value: v, note: T('cfg.choices.used', 'занята') };
+          }) });
       }
       return groups;
     }
     if (kind === 'path') {
       if ((c.lists || []).length) {
-        groups.push({ label: 'Файлы списков', items: (c.lists || []).map(function (l) {
-          return { value: l.path, note: l.name };
-        }) });
+        groups.push({ label: T('cfg.choices.files', 'Файлы списков'),
+          items: (c.lists || []).map(function (l) {
+            return { value: l.path, note: l.name };
+          }) });
       }
-      if (c.list_dir) groups.push({ label: 'Каталог', items: [{ value: c.list_dir, note: 'каталог' }] });
+      if (c.list_dir) groups.push({ label: T('cfg.choices.dir', 'Каталог'),
+        items: [{ value: c.list_dir, note: T('cfg.choices.dirNote', 'каталог') }] });
       return groups;
     }
     return groups;
@@ -608,7 +636,7 @@
     sel.className = 'choice-select';
     var empty = document.createElement('option');
     empty.value = '';
-    empty.textContent = opts.placeholder || '— выбрать известное —';
+    empty.textContent = opts.placeholder || T('cfg.select.ph', '— выбрать известное —');
     sel.appendChild(empty);
     groups.forEach(function (g) {
       var og = document.createElement('optgroup');
@@ -642,7 +670,8 @@
       return;
     }
     el.hidden = false;
-    el.textContent = '«' + v + '» нет в списке известных — сохранится как есть';
+    el.textContent = T('cfg.warn.unknownOne', '«{value}» нет в списке известных — сохранится как есть',
+                       { value: v });
   }
 
   /* Предупреждение для чипового списка: перечисляем неизвестные значения
@@ -656,9 +685,10 @@
     }
     var shown = unknown.slice(0, 3).join(', ');
     if (unknown.length > 3)
-      shown += ' …(ещё ' + (unknown.length - 3) + ')';
+      shown += T('cfg.warn.more', ' …(ещё {n})', { n: unknown.length - 3 });
     el.hidden = false;
-    el.textContent = 'нет в списке известных: ' + shown + ' — сохранится как есть';
+    el.textContent = T('cfg.warn.unknownMany',
+      'нет в списке известных: {list} — сохранится как есть', { list: shown });
   }
 
   /* --- чипы (ifacelist/iplist/cidrlist): порядок значим, есть drag&drop и стрелки --- */
@@ -708,7 +738,7 @@
       left.type = 'button';
       left.className = 'btn-icon chip-move';
       left.textContent = '←';
-      left.title = 'Выше в списке (приоритетнее)';
+      left.title = T('cfg.chips.up', 'Выше в списке (приоритетнее)');
       left.onclick = function () { move(idx, idx - 1); };
       chip.appendChild(left);
 
@@ -716,7 +746,7 @@
       right.type = 'button';
       right.className = 'btn-icon chip-move';
       right.textContent = '→';
-      right.title = 'Ниже в списке';
+      right.title = T('cfg.chips.down', 'Ниже в списке');
       right.onclick = function () { move(idx, idx + 1); };
       chip.appendChild(right);
 
@@ -724,7 +754,7 @@
       del.type = 'button';
       del.className = 'btn-icon chip-del';
       del.textContent = '✕';
-      del.title = 'Убрать из списка';
+      del.title = T('cfg.chips.del', 'Убрать из списка');
       del.onclick = function () { values.splice(idx, 1); sync(); };
       chip.appendChild(del);
 
@@ -755,7 +785,7 @@
       if (!values.length) {
         var empty = document.createElement('span');
         empty.className = 'chips-empty';
-        empty.textContent = 'пусто';
+        empty.textContent = T('cfg.chips.empty', 'пусто');
         chips.appendChild(empty);
       }
       values.forEach(function (v, idx) { chips.appendChild(makeChip(v, idx)); });
@@ -767,24 +797,25 @@
 
     var add = document.createElement('div');
     add.className = 'chips-add';
-    var sel = buildChoiceSelect(groups, { placeholder: '＋ выбрать известный…' });
+    var sel = buildChoiceSelect(groups, { placeholder: T('cfg.chips.phSelect', '＋ выбрать известный…') });
     sel.disabled = !groups.length;
 
-    if (!groups.length) sel.title = 'агент не отдал список известных значений';
+    if (!groups.length) sel.title = T('cfg.chips.noChoices', 'агент не отдал список известных значений');
     add.appendChild(sel);
 
     var inp = document.createElement('input');
     inp.type = 'text';
     inp.className = 'chip-input';
-    inp.placeholder = 'или введите вручную…';
-    inp.title = 'Своё значение сохранится, даже если агент его не знает';
+    inp.placeholder = T('cfg.chips.phManual', 'или введите вручную…');
+    inp.title = T('cfg.chips.manualTip', 'Своё значение сохранится, даже если агент его не знает');
     add.appendChild(inp);
 
     function addValue(v) {
       v = String(v || '').trim();
       if (!v) return;
       if (!isValidFormat(fld, v)) {
-        toast('«' + v + '» не подходит для поля «' + fld.label + '»', false);
+        toast(T('cfg.chips.badValue', '«{value}» не подходит для поля «{label}»',
+                { value: v, label: T(fld.labelKey, fld.label) }), false);
         return;
       }
       values.push(v);
@@ -796,8 +827,8 @@
     var btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'btn btn-sm btn-outline';
-    btn.textContent = '＋ добавить';
-    btn.title = 'Добавить значение в конец (менее приоритетно)';
+    btn.textContent = T('cfg.chips.add', '＋ добавить');
+    btn.title = T('cfg.chips.addTip', 'Добавить значение в конец (менее приоритетно)');
     btn.onclick = function () { addValue(sel.value || inp.value); };
     add.appendChild(btn);
 
@@ -819,7 +850,7 @@
   function attachChoicePicker(inp, fld, warn) {
     var groups = choiceGroupsFor(fld.kind);
     if (!groups.length) return null;
-    var sel = buildChoiceSelect(groups, { placeholder: '＋ известное значение…' });
+    var sel = buildChoiceSelect(groups, { placeholder: T('cfg.select.picker', '＋ известное значение…') });
     sel.onchange = function () {
       if (!sel.value) return;
       inp.value = sel.value;
@@ -838,7 +869,7 @@
     var lbl = document.createElement('div');
     lbl.className = 'lbl';
     var b = document.createElement('b');
-    b.textContent = fld.label;
+    b.textContent = T(fld.labelKey, fld.label);
     var key = document.createElement('span');
     key.className = 'key';
     key.textContent = fld.key;
@@ -849,15 +880,16 @@
     if (fld.desc) {
       var d = document.createElement('div');
       d.className = 'desc';
-      d.textContent = fld.desc;
+      d.textContent = T(fld.descKey, fld.desc);
       wrap.appendChild(d);
     }
 
     if (fld.type === 'readonly') {
       var ro = document.createElement('div');
       ro.className = 'desc';
-      ro.textContent = tokenSet ? 'токен задан (значение скрыто)'
-        : 'токен не задан — панель работает только на чтение (изменения запрещены). Задайте токен: susanin-agent config set web_token <секрет>';
+      ro.textContent = tokenSet
+        ? T('cfg.token.set', 'токен задан (значение скрыто)')
+        : T('cfg.token.unset', 'токен не задан — панель работает только на чтение (изменения запрещены). Задайте токен: susanin-agent config set web_token <секрет>');
       wrap.appendChild(ro);
       return wrap;
     }
@@ -869,18 +901,19 @@
       tinp.type = 'password';
       tinp.dataset.key = fld.key;
       tinp.autocomplete = 'new-password';
-      tinp.placeholder = tokenSet ? '(задан — оставьте пустым, чтобы не менять)'
-                                  : '(пусто — доступ без пароля)';
+      tinp.placeholder = tokenSet
+        ? T('cfg.token.phSet', '(задан — оставьте пустым, чтобы не менять)')
+        : T('cfg.token.phEmpty', '(пусто — доступ без пароля)');
       wrap.appendChild(tinp);
       var tclr = document.createElement('button');
       tclr.type = 'button';
       tclr.className = 'btn btn-sm';
-      tclr.textContent = 'Сбросить';
-      tclr.title = 'Снять токен (сохранить web_token=)';
+      tclr.textContent = T('cfg.token.clear', 'Сбросить');
+      tclr.title = T('cfg.token.clearTip', 'Снять токен (сохранить web_token=)');
       tclr.onclick = function () {
         tinp.value = '';
         tinp.dataset.clear = '1';
-        toast('Токен будет снят после «Сохранить раздел»', true);
+        toast(T('cfg.token.clearToast', 'Токен будет снят после «Сохранить раздел»'), true);
       };
       wrap.appendChild(tclr);
       return wrap;
@@ -916,7 +949,7 @@
       if (!present) {
         var placeholderOpt = document.createElement('option');
         placeholderOpt.value = '';
-        placeholderOpt.textContent = '— ' + missingLabel() + ' —';
+        placeholderOpt.textContent = T('cfg.select.missing', '— {label} —', { label: missingLabel() });
         placeholderOpt.selected = true;
         placeholderOpt.disabled = true;
         sel.appendChild(placeholderOpt);
@@ -932,7 +965,7 @@
       if (present && (fld.options || []).indexOf(val) < 0) {
         var custom = document.createElement('option');
         custom.value = val;
-        custom.textContent = val + ' (нет в списке)';
+        custom.textContent = T('cfg.select.notInList', '{value} (нет в списке)', { value: val });
         custom.selected = true;
         sel.appendChild(custom);
       }
@@ -954,7 +987,9 @@
       inp.dataset.key = fld.key;
       if (val) inp.value = val;
       else if (!present && fld.def) inp.value = fld.def;
-      else inp.placeholder = present ? '(пусто)' : 'нет в файле — впишите значение, ключ будет создан';
+      else inp.placeholder = present
+        ? T('cfg.inp.empty', '(пусто)')
+        : T('cfg.inp.newHere', 'нет в файле — впишите значение, ключ будет создан');
 
       if (isChoiceKind(fld.kind)) {
         /* Одиночное поле с подсказками (iface/table/mark/path): значение
@@ -1026,11 +1061,12 @@
     });
 
     if (invalidField) {
-      toast('Проверьте формат поля «' + invalidField.label + '»', false);
+      toast(T('cfg.err.badFormat', 'Проверьте формат поля «{label}»',
+              { label: T(invalidField.labelKey, invalidField.label) }), false);
       return;
     }
     if (!n) {
-      toast('Нечего сохранять — все поля раздела пустые/отсутствуют в файле', false);
+      toast(T('cfg.err.nothing', 'Нечего сохранять — все поля раздела пустые/отсутствуют в файле'), false);
       return;
     }
 
@@ -1045,10 +1081,10 @@
       if (!r.ok) {
         /* 403 = панель в режиме «только чтение» (web_token не задан). */
         if (r.status === 403) {
-          throw new Error('панель только для чтения: задайте токен — ' +
-                          'susanin-agent config set web_token <секрет>, затем susanin restart');
+          throw new Error(T('err.readonly', 'панель только для чтения: задайте токен — ' +
+                          'susanin-agent config set web_token <секрет>, затем susanin restart'));
         }
-        if (r.status === 401) throw new Error('нужен токен (обновите страницу с ?token=…)');
+        if (r.status === 401) throw new Error(T('err.token', 'нужен токен (обновите страницу с ?token=…)'));
         return r.text().then(function (t) {
           var msg = (t || '').trim();
           try { var j = JSON.parse(msg); if (j && j.error) msg = j.error; } catch (e) {}
@@ -1066,15 +1102,17 @@
         } catch (e) {}
         if (r.skipped && r.skipped.length) {
           /* Часть ключей сервер не принял — не показываем «Сохранено» молча. */
-          toast('Сохранено, но не приняты ключи: ' + r.skipped.join(', '), false);
+          toast(T('cfg.save.skipped', 'Сохранено, но не приняты ключи: {keys}',
+                  { keys: r.skipped.join(', ') }), false);
         } else {
-          toast('Сохранено, конфиг перечитан агентом (SIGHUP)', true);
+          toast(T('cfg.save.ok', 'Сохранено, конфиг перечитан агентом (SIGHUP)'), true);
         }
         return loadConfig();
       }
-      toast('Ошибка сохранения: ' + ((r && r.error) || 'неизвестно'), false);
+      toast(T('cfg.save.error', 'Ошибка сохранения: {err}',
+              { err: (r && r.error) || T('cfg.save.unknown', 'неизвестно') }), false);
     }).catch(function (e) {
-      toast('Ошибка сохранения: ' + e.message, false);
+      toast(T('cfg.save.error', 'Ошибка сохранения: {err}', { err: e.message }), false);
     });
   }
 
@@ -1118,6 +1156,7 @@
     row.setAttribute('role', 'tablist');
     tab.subnav.forEach(function (s) {
       var unset = !!(s.profile && profileUnset(s.profile));
+      var label = s.profile ? T('subnav.profile', 'Профиль {n}', { n: s.profile }) : s.label;
       var b = document.createElement('button');
       b.type = 'button';
       /* Кликабельная закладка: активная заметно выделена (CSS .cfg-subtab.active).
@@ -1129,13 +1168,13 @@
       b.setAttribute('role', 'tab');
       b.setAttribute('aria-selected', s.id === activeId ? 'true' : 'false');
       b.title = unset
-        ? 'Профиль ' + s.profile + ' не задан — нажмите, чтобы настроить'
-        : 'Настроить ' + s.label;
-      b.textContent = s.label;
+        ? T('cfg.subnav.unsetTip', 'Профиль {n} не задан — нажмите, чтобы настроить', { n: s.profile })
+        : T('cfg.subnav.configure', 'Настроить {label}', { label: label });
+      b.textContent = label;
       if (unset) {
         var note = document.createElement('span');
         note.className = 'cfg-subtab-note';
-        note.textContent = 'не задан';
+        note.textContent = T('cfg.subnav.unsetNote', 'не задан');
         b.appendChild(note);
       }
       b.onclick = function () {
@@ -1148,18 +1187,29 @@
     return row;
   }
 
-  function renderGroup(g) {
+  /* Подпись группы: ключ выводится из раздела и порядка группы
+   * (grp.<tabId>.<index>); группы профилей подписаны отдельным ключом. */
+  function groupLabel(tab, g) {
+    if (g.profile) return T('grp.profile', 'Профиль {n}', { n: g.profile });
+    if (!g.title) return '';
+    var idx = tab.groups.indexOf(g);
+    return T('grp.' + tab.id + '.' + idx, g.title);
+  }
+
+  function renderGroup(g, tab) {
     var group = document.createElement('div');
     group.className = 'cfg-group';
     if (g.title) {
       var gt = document.createElement('div');
       gt.className = 'cfg-group-title';
-      gt.textContent = g.title;
+      gt.textContent = groupLabel(tab, g);
       group.appendChild(gt);
     }
     g.fields.forEach(function (fld) { group.appendChild(fieldRow(fld)); });
     return group;
   }
+
+  function tabLabel(tab) { return T('tab.' + tab.id + '.label', tab.label); }
 
   function renderPane(tab) {
     if (statusEl) { statusEl.hidden = true; statusHome.appendChild(statusEl); }
@@ -1170,13 +1220,13 @@
 
     var title = document.createElement('div');
     title.className = 'cfg-pane-title';
-    title.textContent = tab.label;
+    title.textContent = tabLabel(tab);
     head.appendChild(title);
 
     if (!confValues) {
       var err = document.createElement('span');
       err.className = 'cfg-pane-note err';
-      err.textContent = 'не удалось прочитать конфиг';
+      err.textContent = T('cfg.err.unread', 'не удалось прочитать конфиг');
       head.appendChild(err);
     }
 
@@ -1191,14 +1241,14 @@
     if (tab.note) {
       var note = document.createElement('div');
       note.className = 'cfg-pane-extra';
-      note.textContent = tab.note;
+      note.textContent = T('tab.' + tab.id + '.note', tab.note);
       body.appendChild(note);
     }
 
     if (tab.placeholder) {
       var ph = document.createElement('div');
       ph.className = 'cfg-placeholder';
-      ph.textContent = tab.placeholder;
+      ph.textContent = T('tab.' + tab.id + '.placeholder', tab.placeholder);
       body.appendChild(ph);
       return;
     }
@@ -1207,7 +1257,7 @@
       var activeId = ensureSubId(tab);
       tab.groups.forEach(function (g) {
         if (isSubGroup(g)) return;
-        body.appendChild(renderGroup(g));
+        body.appendChild(renderGroup(g, tab));
         if (tab.subnavAfterGroup && g.title === tab.subnavAfterGroup)
           body.appendChild(renderSubNav(tab));
       });
@@ -1220,30 +1270,62 @@
       if (sub && sub.profile && profileUnset(sub.profile)) {
         var hint = document.createElement('div');
         hint.className = 'cfg-profile-hint';
-        hint.textContent = 'Профиль ' + sub.profile + ' не задан — впишите имя, чтобы включить ' +
-          '(остальные поля станут активными). Поля ниже можно заполнять уже сейчас.';
+        hint.textContent = T('cfg.profile.hint',
+          'Профиль {n} не задан — впишите имя, чтобы включить ' +
+          '(остальные поля станут активными). Поля ниже можно заполнять уже сейчас.',
+          { n: sub.profile });
         body.appendChild(hint);
       }
-      shown.forEach(function (g) { body.appendChild(renderGroup(g)); });
+      shown.forEach(function (g) { body.appendChild(renderGroup(g, tab)); });
     } else {
-      tab.groups.forEach(function (g) { body.appendChild(renderGroup(g)); });
+      tab.groups.forEach(function (g) { body.appendChild(renderGroup(g, tab)); });
     }
 
     var save = document.createElement('div');
     save.className = 'cfg-save';
     var btn = document.createElement('button');
     btn.className = 'btn btn-outline';
-    btn.textContent = 'Сохранить раздел';
-    btn.title = 'POST /api/config — правит только поля, у которых есть значение в файле';
+    btn.textContent = T('cfg.save.btn', 'Сохранить раздел');
+    btn.title = T('cfg.save.tip', 'POST /api/config — правит только поля, у которых есть значение в файле');
     btn.onclick = function () { saveTab(tab, body); };
     var hint = document.createElement('span');
     hint.className = 'muted';
     hint.style.fontSize = '12px';
-    hint.textContent = 'сохраняются только поля, присутствующие в текущем конфиге';
+    hint.textContent = T('cfg.save.hint', 'сохраняются только поля, присутствующие в текущем конфиге');
     save.appendChild(btn);
     save.appendChild(hint);
     body.appendChild(save);
+
+    takeSnapshot();
   }
+
+  /* --- «грязная» форма: перед сменой языка предупреждаем о потере ввода --- */
+
+  var baseline = {};
+
+  function fieldValue(el) {
+    if (el.type === 'checkbox') return el.checked ? '1' : '0';
+    return String(el.value == null ? '' : el.value);
+  }
+
+  function takeSnapshot() {
+    baseline = {};
+    var els = body.querySelectorAll('[data-key]');
+    for (var i = 0; i < els.length; i++) {
+      baseline[els[i].getAttribute('data-key')] = fieldValue(els[i]);
+    }
+  }
+
+  function isDirty() {
+    var els = body.querySelectorAll('[data-key]');
+    for (var i = 0; i < els.length; i++) {
+      var k = els[i].getAttribute('data-key');
+      if (baseline[k] !== fieldValue(els[i])) return true;
+    }
+    return false;
+  }
+
+  function tabById(id) { return TABS.filter(function (t) { return t.id === id; })[0]; }
 
   var activeTabId = TABS[0].id;
 
@@ -1252,7 +1334,7 @@
     Array.prototype.forEach.call(nav.children, function (btn) {
       btn.classList.toggle('active', btn.getAttribute('data-tab') === id);
     });
-    var tab = TABS.filter(function (t) { return t.id === id; })[0];
+    var tab = tabById(id);
     if (tab) renderPane(tab);
   }
 
@@ -1260,10 +1342,21 @@
     var btn = document.createElement('button');
     btn.className = 'cfg-tab' + (i === 0 ? ' active' : '');
     btn.setAttribute('data-tab', tab.id);
-    btn.textContent = tab.label;
+    btn.textContent = tabLabel(tab);
     btn.onclick = function () { selectTab(tab.id); };
     nav.appendChild(btn);
   });
+
+  /* Смена языка: переписываем подписи закладок и перерисовываем активную
+   * панель (схема остаётся прежней — меняются только строки словаря). */
+  function relabel() {
+    Array.prototype.forEach.call(nav.children, function (btn) {
+      var tab = tabById(btn.getAttribute('data-tab'));
+      if (tab) btn.textContent = tabLabel(tab);
+    });
+    var tab = tabById(activeTabId);
+    if (tab) renderPane(tab);
+  }
 
   function loadConfig() {
     return fetch(API_URL, { cache: 'no-store', headers: authHeaders() }).then(function (r) {
@@ -1281,9 +1374,24 @@
   }
 
   window.susaninOpenTab = selectTab;
-  if (window.location.hash === '#status') selectTab('status');
 
-  loadConfig();
+  /* Пользователь сменил язык при несохранённых правках — спрашиваем. Отказ
+   * возвращает селектор на прежний язык (см. i18n.set). */
+  if (window.I18N) {
+    window.I18N.beforeChange = function () {
+      if (!isDirty()) return true;
+      return window.confirm(T('cfg.confirm.langDirty',
+        'В разделе есть несохранённые изменения — они будут потеряны. Переключить язык?'));
+    };
+  }
+  document.addEventListener('susanin:lang', relabel);
+
+  function bootConfig() {
+    if (window.location.hash === '#status') selectTab('status');
+    loadConfig();
+  }
+  if (window.I18N && window.I18N.ready) window.I18N.ready(bootConfig);
+  else bootConfig();
 
   /* /api/choices приходит асинхронно (запрос делает app.js). Если панель
    * успела отрисоваться раньше — перерисуем активную закладку, чтобы в полях

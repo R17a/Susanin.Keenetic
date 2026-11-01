@@ -35,6 +35,7 @@ init    init/entware/S94susanin
 init    init/entware/S95susanin-web
 
 doc     README.md
+doc     TECHNICAL.RU.md
 doc     USER_GUIDE.md
 doc     TROUBLESHOOTING.md
 doc     DEPLOY.md

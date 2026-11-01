@@ -5,29 +5,34 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Susanin.Keenetic</title>
 <link rel="stylesheet" href="style.css">
+<script src="i18n.js"></script>
 </head>
 <body>
 <header class="topbar">
   <div class="brand">
-    <h1>Susanin.Keenetic <a id="ver" class="badge-ver" href="#status" title="Открыть «Статус»"></a><a id="verupd" class="badge-upd" href="#status" target="_blank" rel="noopener" hidden aria-label="">!</a></h1>
-    <span id="dot" class="dot" title="Соединение с агентом"></span>
+    <h1>Susanin.Keenetic <a id="ver" class="badge-ver" href="#status" title="Открыть «Статус»" data-i18n-title="app.ver.tip"></a><a id="verupd" class="badge-upd" href="#status" target="_blank" rel="noopener" hidden aria-label="">!</a></h1>
+    <span id="dot" class="dot" title="Соединение с агентом" data-i18n-title="app.dot.tip"></span>
   </div>
   <div class="actions topactions">
-    <button id="reload" class="btn btn-sm" title="Перечитать конфиг и списки (SIGHUP)">Reload</button>
-    <button id="rescan" class="btn btn-sm" title="Переопределить сетевые интерфейсы">Rescan</button>
-    <button id="restart" class="btn btn-sm btn-warn" title="Полный перезапуск демона">Restart</button>
+    <button id="reload" class="btn btn-sm" title="Перечитать конфиг и списки (SIGHUP)" data-i18n-title="app.btn.reload.tip" data-i18n="app.btn.reload">Reload</button>
+    <button id="rescan" class="btn btn-sm" title="Переопределить сетевые интерфейсы" data-i18n-title="app.btn.rescan.tip" data-i18n="app.btn.rescan">Rescan</button>
+    <button id="restart" class="btn btn-sm btn-warn" title="Полный перезапуск демона" data-i18n-title="app.btn.restart.tip" data-i18n="app.btn.restart">Restart</button>
   </div>
-  <div class="donate" title="Проект развивается на энтузиазме. Если он оказался полезным — можно поддержать разработку.">
+  <div class="donate" title="Проект развивается на энтузиазме. Если он оказался полезным — можно поддержать разработку." data-i18n-title="donate.tip">
     <svg class="heart" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
     <a class="dbadge dbadge--ct" href="https://pay.cloudtips.ru/p/dcbf5f2e" target="_blank" rel="noopener"><span>donate</span><b>CloudTips</b></a>
     <a class="dbadge dbadge--da" href="https://www.donationalerts.com/r/dmitriy_r17a" target="_blank" rel="noopener"><span>donate</span><b>DonationAlerts</b></a>
+  </div>
+  <div class="langsel">
+    <label class="lang-label" for="lang" data-i18n="app.lang">Язык:</label>
+    <select id="lang"></select>
   </div>
 </header>
 
 <main>
 <div id="view-config" class="view">
   <section class="panel">
-    <h2>Конфигурация агента</h2>
+    <h2 data-i18n="cfg.title">Конфигурация агента</h2>
     <div class="config-layout">
       <nav class="config-nav" id="cfgNav"></nav>
       <div class="config-body" id="cfgBody"></div>
@@ -38,54 +43,55 @@
 
 <div id="view-status" class="view" hidden>
   <section class="panel">
-    <h2>VPN-наборы (ipset)</h2>
+    <h2 data-i18n="status.sets.title">VPN-наборы (ipset)</h2>
     <div class="table-wrap">
       <table id="sets">
-        <thead><tr><th>Набор</th><th>Записей</th></tr></thead>
+        <thead><tr><th data-i18n="status.th.set">Набор</th><th data-i18n="status.th.count">Записей</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
   </section>
 
   <section class="panel">
-    <h2>Reset</h2>
+    <h2 data-i18n="status.reset.title">Reset</h2>
     <div class="actions">
-      <input id="fip" placeholder="IP или домен для reset">
-      <button id="reset" class="btn btn-outline">Reset</button>
+      <input id="fip" placeholder="IP или домен для reset" data-i18n-ph="status.reset.ph">
+      <button id="reset" class="btn btn-outline" data-i18n="status.reset.btn">Reset</button>
     </div>
   </section>
 
   <section class="panel">
-    <h2>Списки маршрутизации
-      <span class="hint muted">перетащите запись в другую колонку, чтобы изменить список — либо нажмите стрелку</span>
+    <h2>
+      <span data-i18n="status.lists.title">Списки маршрутизации</span>
+      <span class="hint muted" data-i18n="status.lists.hint">перетащите запись в другую колонку, чтобы изменить список — либо нажмите стрелку</span>
     </h2>
     <div class="lists-board">
 
       <div class="list-col list-col--always" data-list="vpn_always">
         <div class="list-col-head">
-          <h3>Всегда через VPN</h3>
+          <h3 data-i18n="list.always.title">Всегда через VPN</h3>
           <span class="count" id="cnt-vpn_always">0</span>
-          <button class="btn btn-sm btn-outline" data-memo="vpn_always" title="Править весь список текстом (с комментариями)">Редактор</button>
+          <button class="btn btn-sm btn-outline" data-memo="vpn_always" title="Править весь список текстом (с комментариями)" data-i18n-title="list.editor.tip" data-i18n="list.editor.btn">Редактор</button>
         </div>
         <div class="list-add">
-          <input id="add-vpn_always" placeholder="домен / IP / CIDR / *.domain">
-          <button class="btn btn-sm" data-add="vpn_always">Добавить</button>
+          <input id="add-vpn_always" placeholder="домен / IP / CIDR / *.domain" data-i18n-ph="list.add.ph">
+          <button class="btn btn-sm" data-add="vpn_always" data-i18n="list.add.btn">Добавить</button>
         </div>
-        <input class="list-filter" id="filter-vpn_always" placeholder="фильтр…">
+        <input class="list-filter" id="filter-vpn_always" placeholder="фильтр…" data-i18n-ph="list.filter.ph">
         <div class="list-items" id="items-vpn_always" data-list="vpn_always"></div>
       </div>
 
       <div class="list-col list-col--never" data-list="vpn_never">
         <div class="list-col-head">
-          <h3>Всегда напрямую</h3>
+          <h3 data-i18n="list.never.title">Всегда напрямую</h3>
           <span class="count" id="cnt-vpn_never">0</span>
-          <button class="btn btn-sm btn-outline" data-memo="vpn_never" title="Править весь список текстом (с комментариями)">Редактор</button>
+          <button class="btn btn-sm btn-outline" data-memo="vpn_never" title="Править весь список текстом (с комментариями)" data-i18n-title="list.editor.tip" data-i18n="list.editor.btn">Редактор</button>
         </div>
         <div class="list-add">
-          <input id="add-vpn_never" placeholder="домен / IP / CIDR / *.domain">
-          <button class="btn btn-sm" data-add="vpn_never">Добавить</button>
+          <input id="add-vpn_never" placeholder="домен / IP / CIDR / *.domain" data-i18n-ph="list.add.ph">
+          <button class="btn btn-sm" data-add="vpn_never" data-i18n="list.add.btn">Добавить</button>
         </div>
-        <input class="list-filter" id="filter-vpn_never" placeholder="фильтр…">
+        <input class="list-filter" id="filter-vpn_never" placeholder="фильтр…" data-i18n-ph="list.filter.ph">
         <div class="list-items" id="items-vpn_never" data-list="vpn_never"></div>
       </div>
 
@@ -93,7 +99,7 @@
   </section>
 
   <section class="panel">
-    <h2>Лог</h2>
+    <h2 data-i18n="status.log.title">Лог</h2>
     <pre id="log" class="log">…</pre>
   </section>
 </div>
@@ -102,10 +108,10 @@
 <div id="memo" class="modal" hidden>
   <div class="modal-card">
     <div class="modal-head">
-      <h3 id="memo-title">Список</h3>
-      <button id="memo-close" class="btn-icon" title="Закрыть">×</button>
+      <h3 id="memo-title" data-i18n="memo.title">Список</h3>
+      <button id="memo-close" class="btn-icon" title="Закрыть" data-i18n-title="memo.close">×</button>
     </div>
-    <p class="muted memo-hint">
+    <p class="muted memo-hint" data-i18n-html="memo.hint.html">
       По строке на запись: домен, IP, CIDR или <code>*.domain</code>.
       Пустые строки и <code>#комментарии</code> сохраняются; строки, которые не
       распознаны, отбрасываются (об их числе сообщим после сохранения).
@@ -116,8 +122,8 @@
     <textarea id="memo-text" spellcheck="false" autocomplete="off" readonly></textarea>
     <div class="modal-actions">
       <span id="memo-status" class="muted"></span>
-      <button id="memo-cancel" class="btn btn-outline">Отмена</button>
-      <button id="memo-save" class="btn" disabled>Сохранить</button>
+      <button id="memo-cancel" class="btn btn-outline" data-i18n="memo.cancel">Отмена</button>
+      <button id="memo-save" class="btn" disabled data-i18n="memo.save">Сохранить</button>
     </div>
   </div>
 </div>
