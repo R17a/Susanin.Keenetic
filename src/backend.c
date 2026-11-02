@@ -356,7 +356,7 @@ static int bt_flush(void)
          * Применяем поштучно — медленнее, но без потери остальных записей. */
         size_t off = 0;
         int ncmd = 0, bad = 0;
-        char firstbad[256] = "";
+        char firstbad[512] = "";
         while (off < g_bt_len) {
             char *nl = memchr(g_bt + off, '\n', g_bt_len - off);
             size_t len = nl ? (size_t)(nl - (g_bt + off)) : (g_bt_len - off);
