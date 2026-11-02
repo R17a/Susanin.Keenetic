@@ -85,6 +85,19 @@ static int run_argv(char *const argv[])
 
 #define BT_PATH "/tmp/susanin-ipset.batch"
 #define BT_MAX (1024 * 1024)
+/* ipset принимает timeout не больше 2147483 с (INT_MAX/1000). Больше —
+ * «Syntax error: ... is out of range» и падает ВСЯ пачка ipset restore;
+ * так терялась запись с expire=0x7fffffff («никогда не истекает»).
+ * Такие записи отправляем как timeout 0 = бессрочно. */
+#define IPSET_MAX_TIMEOUT 2147483
+
+/* TTL для ipset: 0 = бессрочно; всё, что вне 1..2147483, приводим к 0. */
+static int ipset_ttl(int ttl)
+{
+    if (ttl <= 0 || ttl > IPSET_MAX_TIMEOUT)
+        return 0;
+    return ttl;
+}
 
 static char *g_bt;              /* накопленные команды restore */
 static size_t g_bt_len, g_bt_cap;
@@ -1086,9 +1099,9 @@ int backend_ipset_add_port(const susanin_config *c, int proto_udp, int phase_ok,
         slogf(SL_DEBUG, "ipset: пропускаю невалидное значение '%s' (%s)", val, name);
         return -1;
     }
-    if (g_bt_depth > 0 && bt_cmd("add %s %s timeout %d\n", name, val, ttl) == 0)
+    if (g_bt_depth > 0 && bt_cmd("add %s %s timeout %d\n", name, val, ipset_ttl(ttl)) == 0)
         return 0;
-    snprintf(t, sizeof(t), "%d", ttl);
+    snprintf(t, sizeof(t), "%d", ipset_ttl(ttl));
     argv[0] = (char *)tool_ipset();
     argv[1] = "-exist";
     argv[2] = "add";
@@ -1198,9 +1211,9 @@ int backend_set_add(const susanin_config *c, const char *set, const char *val,
     char *argv[8];
     char t[32];
     (void)c;
-    if (g_bt_depth > 0 && bt_cmd("add %s %s timeout %d\n", set, val, ttl) == 0)
+    if (g_bt_depth > 0 && bt_cmd("add %s %s timeout %d\n", set, val, ipset_ttl(ttl)) == 0)
         return 0;
-    snprintf(t, sizeof(t), "%d", ttl);
+    snprintf(t, sizeof(t), "%d", ipset_ttl(ttl));
     argv[0] = (char *)tool_ipset();
     argv[1] = "-exist";
     argv[2] = "add";
@@ -1244,9 +1257,9 @@ int backend_net_add(const susanin_config *c, const char *cidr, int ttl)
     char *argv[8];
     char t[32];
     (void)c;
-    if (g_bt_depth > 0 && bt_cmd("add susanin_ok_net %s timeout %d\n", cidr, ttl) == 0)
+    if (g_bt_depth > 0 && bt_cmd("add susanin_ok_net %s timeout %d\n", cidr, ipset_ttl(ttl)) == 0)
         return 0;
-    snprintf(t, sizeof(t), "%d", ttl);
+    snprintf(t, sizeof(t), "%d", ipset_ttl(ttl));
     argv[0] = (char *)tool_ipset();
     argv[1] = "-exist";
     argv[2] = "add";
