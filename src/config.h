@@ -39,6 +39,8 @@ typedef struct {
     int ok_max_entries;     /* bounded GC: per-proto ok-cache limit (0=off) */
     int test_ttl;
     int cooldown_ttl;
+    /* 1 = применять ipset-операции пачкой (`ipset restore`), 0 = поштучно. */
+    int ipset_batch;
     int cooldown_ok_ttl;
     int watch_ttl;
     int watch_retry_below;

@@ -74,6 +74,8 @@ int backend_net_del(const susanin_config *c, const char *cidr);
  * `ipset restore -exist` (один fork на пачку). Возврат end(): 0 = применено
  * (или нечего применять), иначе код ошибки ipset. */
 void backend_batch_begin(void);
+/* 1 = батч включён (по умолчанию), 0 = каждая запись отдельным fork (как 0.4.3). */
+void backend_batch_enable(int on);
 int backend_batch_end(void);
 
 /* Generic named ipset entry ops (e.g. susanin_never). */

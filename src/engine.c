@@ -845,6 +845,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         }
     }
     slog_init(cfg->log_level);
+    backend_batch_enable(cfg->ipset_batch);
     if (strcmp(cfg->disk_mode, "soft") == 0)
         slogf(SL_INFO, "disk_mode=soft: log file off, state not saved, no backups");
     if (cfg->ok_ttl == 0)
@@ -970,6 +971,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             g_reload = 0;
             if (conf_path && config_load(conf_path, &nc) == 0) {
                 *cfg = nc;
+                backend_batch_enable(cfg->ipset_batch);
                 slogf(SL_INFO, "config reloaded: %s", conf_path);
                 /* W6: перечитать настройку индикатора релиза; при включении —
                  * проверка в ближайшие 30 с, а не через 12 ч. */
