@@ -70,6 +70,12 @@ int backend_ipset_flush(const susanin_config *c);
 int backend_net_add(const susanin_config *c, const char *cidr, int ttl);
 int backend_net_del(const susanin_config *c, const char *cidr);
 
+/* Батч ipset-операций: между begin/end все add/del копятся и применяются одним
+ * `ipset restore -exist` (один fork на пачку). Возврат end(): 0 = применено
+ * (или нечего применять), иначе код ошибки ipset. */
+void backend_batch_begin(void);
+int backend_batch_end(void);
+
 /* Generic named ipset entry ops (e.g. susanin_never). */
 int backend_set_add(const susanin_config *c, const char *set, const char *val,
                     int ttl);

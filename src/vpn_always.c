@@ -807,6 +807,12 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
     char exa[3][64] = { "", "", "" };
     long long t0 = now_ms();
     int interval = cfg->vpn_always_interval > 0 ? cfg->vpn_always_interval : 300;
+    /* Бюджет одного прохода: по умолчанию 250 мс (см. vpn_refresh_budget_ms).
+     * Раньше жёсткие 4000 мс держали главный цикл — в это время классификатор
+     * не работал и метки не ставились. 0 в конфиге = прежние 4 с. */
+    long long budget = (cfg->vpn_refresh_budget_ms > 0)
+                           ? (long long)cfg->vpn_refresh_budget_ms
+                           : (long long)VA_BUDGET_MS;
     char (*desired)[16];
     char (*desired_net)[40];
 
@@ -904,8 +910,8 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
         }
         if (nb > 0) {
             long long spent = now_ms() - t0;
-            if (spent < VA_BUDGET_MS) {
-                long left = VA_BUDGET_MS - spent;
+            if (spent < budget) {
+                long left = (long)(budget - spent);
                 int to = VA_QUERY_MAX_MS;
                 if (left < 300)
                     left = 300;
@@ -958,11 +964,11 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
                 continue;
             }
         }
-        if (spent >= VA_BUDGET_MS) {
+        if (spent >= budget) {
             pending = 1;
             continue;
         }
-        left = VA_BUDGET_MS - spent;
+        left = (long)(budget - spent);
         if (left < 300)
             left = 300;
         to = VA_QUERY_MAX_MS < left ? VA_QUERY_MAX_MS : (int)left;

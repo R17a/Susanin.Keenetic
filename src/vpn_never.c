@@ -457,6 +457,11 @@ int vn_refresh2(vpn_never *v, const susanin_config *cfg, int *changed)
     char exa[3][64] = { "", "", "" };
     long long t0 = now_ms();
     int interval = cfg->vpn_never_interval > 0 ? cfg->vpn_never_interval : 300;
+    /* Бюджет одного прохода (см. vpn_refresh_budget_ms в susanin.conf):
+     * короткие проходы не держат главный цикл и не задерживают метки. */
+    long long budget = (cfg->vpn_refresh_budget_ms > 0)
+                           ? (long long)cfg->vpn_refresh_budget_ms
+                           : (long long)VN_BUDGET_MS;
 
     /* Флаг «набор изменился» обнуляем сразу: при раннем выходе (нет файла и т.п.)
      * вызывающий не должен получить значение от предыдущего вызова. */
@@ -531,12 +536,12 @@ int vn_refresh2(vpn_never *v, const susanin_config *cfg, int *changed)
             }
         }
         spent = now_ms() - t0;
-        if (spent >= VN_BUDGET_MS) {
+        if (spent >= budget) {
             pending = 1;
             continue;
         }
         {
-            long left = VN_BUDGET_MS - (long)spent;
+            long left = (long)(budget - spent);
             int to = VN_QUERY_MAX_MS;
             if (left < 300)
                 left = 300;

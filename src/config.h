@@ -28,6 +28,10 @@ typedef struct {
     int judge_interval;
     int health_interval;
     int fast_syn_min_op;
+    /* Сколько неотвеченных UDP-пакетов в потоке нужно, чтобы завернуть адрес
+     * в VPN. 12 (прежнее жёсткое значение) недостижимо для голосовых
+     * хендшейков: Discord шлёт 3 echo с нового порта и сдаётся. */
+    int udp_min_op;
     int ok_ttl;
     int ok_refresh_below;
     int ok_evict_misses;    /* сколько подряд «сбоев» до снятия из ok (гистерезис) */
@@ -49,6 +53,10 @@ typedef struct {
     int vpn_always_interval;
     char vpn_never_file[CFG_PATH_MAX];
     int vpn_never_interval;
+    /* Сколько миллисекунд за один проход разрешено тратить на DNS-обновление
+     * vpn_always/vpn_never. Раньше проход мог занимать до 4 с и всё это время
+     * главный цикл не классифицировал потоки (метки не ставились). 0 = 4000. */
+    int vpn_refresh_budget_ms;
     char log_level[16];
     char xray_loglevel[16]; /* уровень логов Xray (читает xray-egress.sh, не сам агент) */
     char xray_gogc[16];      /* GOGC Xray (память; читает init/xray-egress.sh) */

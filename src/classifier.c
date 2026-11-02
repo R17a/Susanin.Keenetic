@@ -809,8 +809,18 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
             }
         } else if (f->l4proto == 17) {
             if (!f->has_reply) {
+                /* Порог UDP-обучения настраивается (udp_min_op, по умолчанию 3).
+                 * Прежние 12 были недостижимы на практике: голосовой хендшейк
+                 * (Discord RTC) — это 3 echo-пакета с нового локального порта,
+                 * после чего клиент сдаётся и заводит следующий сокет. В итоге
+                 * адрес голосового сервера не попадал в susanin_test_udp, поток
+                 * шёл напрямую и «маршрут не строился» (стенд 2026-11-02). */
+                unsigned long umin = (cfg->udp_min_op > 0)
+                                         ? (unsigned long)cfg->udp_min_op : 12UL;
                 if (f->dport != 443 && f->dport != 53 && f->dport != 67 &&
-                    f->dport != 68 && f->dport != 123 && f->op >= 12 && f->rp == 0) {
+                    f->dport != 68 && f->dport != 123 &&
+                    !port_excluded(cfg, f->dport) &&
+                    f->op >= umin && f->rp == 0) {
                     if (candidate_ok(ctx, f, now))
                         promote_test(ctx, f, now, "SOFT", "UDP");
                 }

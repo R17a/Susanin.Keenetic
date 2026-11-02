@@ -3,6 +3,7 @@
 #include "log.h"
 
 #include <fcntl.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,6 +68,131 @@ static int run_argv(char *const argv[])
     if (WIFEXITED(st))
         return WEXITSTATUS(st);
     return -1;
+}
+
+/* ---- Батч ipset-операций ---------------------------------------------------
+ * Между backend_batch_begin() и backend_batch_end() все add/del копятся в
+ * текстовом буфере и применяются ОДНИМ `ipset restore -exist` — один fork на
+ * пачку вместо fork+exec на каждую запись. Это нужно там, где за проход
+ * меняются сотни записей:
+ *   - resync_sets() после ре-провижна/рестарта (восстановление кэша),
+ *   - обновление vpn_always/vpn_never (пины сотен IP за проход).
+ * На MIPS каждый fork+exec — единицы миллисекунд, и такой залп держал главный
+ * цикл секундами (в это время классификатор не работает и не выставляет
+ * метки — «маршрут не строится» с задержкой).
+ * Вложенность считается счётчиком; flush — на внешнем end(). */
+
+#define BT_PATH "/tmp/susanin-ipset.batch"
+#define BT_MAX (1024 * 1024)
+
+static char *g_bt;              /* накопленные команды restore */
+static size_t g_bt_len, g_bt_cap;
+static int g_bt_depth;
+
+void backend_batch_begin(void)
+{
+    g_bt_depth++;
+}
+
+static int bt_space(size_t need)
+{
+    char *p;
+    size_t ncap;
+    if (g_bt_len + need + 1 <= g_bt_cap)
+        return 0;
+    if (g_bt_len + need + 1 > BT_MAX)
+        return -1;                  /* слишком большая пачка — применим поштучно */
+    ncap = g_bt_cap ? g_bt_cap * 2 : 8192;
+    while (ncap < g_bt_len + need + 1)
+        ncap *= 2;
+    p = realloc(g_bt, ncap);
+    if (!p)
+        return -1;
+    g_bt = p;
+    g_bt_cap = ncap;
+    return 0;
+}
+
+/* Добавить строку команды restore. 0 = накоплено, -1 = не вышло (тогда
+ * вызывающий сделает обычный fork+exec). */
+static int bt_cmd(const char *fmt, ...)
+{
+    char line[512];
+    va_list ap;
+    int n;
+    va_start(ap, fmt);
+    n = vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    if (n <= 0 || (size_t)n >= sizeof(line))
+        return -1;
+    if (bt_space((size_t)n) != 0)
+        return -1;
+    memcpy(g_bt + g_bt_len, line, (size_t)n);
+    g_bt_len += (size_t)n;
+    return 0;
+}
+
+static int bt_flush(void)
+{
+    int fd, st = -1;
+    pid_t pid;
+    if (!g_bt_len)
+        return 0;
+    fd = open(BT_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) {
+        g_bt_len = 0;
+        return -1;
+    }
+    if (write(fd, g_bt, g_bt_len) != (ssize_t)g_bt_len) {
+        close(fd);
+        unlink(BT_PATH);
+        g_bt_len = 0;
+        return -1;
+    }
+    close(fd);
+    pid = fork();
+    if (pid == 0) {
+        int in = open(BT_PATH, O_RDONLY);
+        int devnull = open("/dev/null", O_WRONLY);
+        if (in >= 0) {
+            dup2(in, 0);
+            if (in > 2)
+                close(in);
+        }
+        if (devnull >= 0) {
+            dup2(devnull, 1);
+            dup2(devnull, 2);
+            if (devnull > 2)
+                close(devnull);
+        }
+        {
+            char *av[4];
+            av[0] = (char *)tool_ipset();
+            av[1] = "-exist";
+            av[2] = "restore";
+            av[3] = NULL;
+            execvp(av[0], av);
+        }
+        _exit(127);
+    }
+    if (pid > 0 && waitpid(pid, &st, 0) >= 0 && WIFEXITED(st))
+        st = WEXITSTATUS(st);
+    unlink(BT_PATH);
+    g_bt_len = 0;
+    return st;
+}
+
+int backend_batch_end(void)
+{
+    int rc;
+    if (g_bt_depth > 0)
+        g_bt_depth--;
+    if (g_bt_depth > 0)
+        return 0;
+    rc = bt_flush();
+    if (rc != 0)
+        slogf(SL_ERROR, "ipset restore: пачка команд не применена (rc=%d)", rc);
+    return rc;
 }
 
 /* Run argv capturing combined stdout+stderr into out (truncated to outsz). */
@@ -734,6 +860,8 @@ int backend_ipset_add_port(const susanin_config *c, int proto_udp, int phase_ok,
     char name[64], t[32], val[80];
     set_name(name, sizeof(name), proto_udp, phase_ok);
     backend_ipset_value(c, ip, port, proto_udp, val, sizeof(val));
+    if (g_bt_depth > 0 && bt_cmd("add %s %s timeout %d\n", name, val, ttl) == 0)
+        return 0;
     snprintf(t, sizeof(t), "%d", ttl);
     argv[0] = (char *)tool_ipset();
     argv[1] = "-exist";
@@ -753,6 +881,8 @@ int backend_ipset_del_port(const susanin_config *c, int proto_udp, int phase_ok,
     char name[64], val[80];
     set_name(name, sizeof(name), proto_udp, phase_ok);
     backend_ipset_value(c, ip, port, proto_udp, val, sizeof(val));
+    if (g_bt_depth > 0 && bt_cmd("del %s %s\n", name, val) == 0)
+        return 0;
     argv[0] = (char *)tool_ipset();
     argv[1] = "-exist";
     argv[2] = "del";
@@ -840,6 +970,8 @@ int backend_set_add(const susanin_config *c, const char *set, const char *val,
     char *argv[8];
     char t[32];
     (void)c;
+    if (g_bt_depth > 0 && bt_cmd("add %s %s timeout %d\n", set, val, ttl) == 0)
+        return 0;
     snprintf(t, sizeof(t), "%d", ttl);
     argv[0] = (char *)tool_ipset();
     argv[1] = "-exist";
@@ -856,6 +988,8 @@ int backend_set_del(const susanin_config *c, const char *set, const char *val)
 {
     char *argv[6];
     (void)c;
+    if (g_bt_depth > 0 && bt_cmd("del %s %s\n", set, val) == 0)
+        return 0;
     argv[0] = (char *)tool_ipset();
     argv[1] = "-exist";
     argv[2] = "del";
@@ -882,6 +1016,8 @@ int backend_net_add(const susanin_config *c, const char *cidr, int ttl)
     char *argv[8];
     char t[32];
     (void)c;
+    if (g_bt_depth > 0 && bt_cmd("add susanin_ok_net %s timeout %d\n", cidr, ttl) == 0)
+        return 0;
     snprintf(t, sizeof(t), "%d", ttl);
     argv[0] = (char *)tool_ipset();
     argv[1] = "-exist";
@@ -898,6 +1034,8 @@ int backend_net_del(const susanin_config *c, const char *cidr)
 {
     char *argv[6];
     (void)c;
+    if (g_bt_depth > 0 && bt_cmd("del susanin_ok_net %s\n", cidr) == 0)
+        return 0;
     argv[0] = (char *)tool_ipset();
     argv[1] = "-exist";
     argv[2] = "del";
