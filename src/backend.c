@@ -882,11 +882,24 @@ int backend_ready(const susanin_config *c)
     /* P5: если настроен вывод стороннего прокси через туннель — проверяем,
      * что метка по uid и ip rule на месте (NDM/перезагрузка могли снести). */
     if (c->proxy_uid[0] && c->proxy_egress[0]) {
-        struct passwd *pw = getpwnam(c->proxy_uid);
+        /* proxy_uid может быть числовым: на Keenetic /etc/passwd read-only и
+         * пользователя не добавить. iptables понимает числовой uid. */
+        unsigned proxy_uid_num = 0;
+        int numeric = (c->proxy_uid[0] >= '0' && c->proxy_uid[0] <= '9');
         char *pargv[6];
-        if (!pw)
-            return 0;           /* пользователя нет — правило не поставить */
-        snprintf(needle, sizeof(needle), "--uid-owner %u", (unsigned)pw->pw_uid);
+        if (numeric) {
+            char *endp = 0;
+            unsigned long v = strtoul(c->proxy_uid, &endp, 10);
+            if (!endp || *endp != '\0')
+                return 0;
+            proxy_uid_num = (unsigned)v;
+        } else {
+            struct passwd *pw = getpwnam(c->proxy_uid);
+            if (!pw)
+                return 0;       /* пользователя нет — правило не поставить */
+            proxy_uid_num = (unsigned)pw->pw_uid;
+        }
+        snprintf(needle, sizeof(needle), "--uid-owner %u", proxy_uid_num);
         pargv[0] = (char *)tool_iptables();
         pargv[1] = "-t"; pargv[2] = "mangle"; pargv[3] = "-S"; pargv[4] = "OUTPUT"; pargv[5] = NULL;
         rc = run_check(pargv, out, sizeof(out));
