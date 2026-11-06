@@ -139,6 +139,14 @@ typedef struct {
     int kernel_offload;
     char kernel_egress[64];
     int kernel_offload_max; /* макс. длина префикса для offload-маршрута */
+    /* P5: сторонние сервисы на самом роутере (MTProxy/Teleproxy и т.п.).
+     * Их исходящий трафик метится по uid владельца процесса и уходит в
+     * proxy_egress (обычно nwg*), не пересекаясь с LAN-маршрутизацией.
+     * proxy_uid пусто = выключено; proxy_egress пусто = тоже выключено. */
+    char proxy_uid[32];
+    char proxy_egress[64];
+    int proxy_table;            /* таблица маршрутизации для proxy_uid (0 = 110) */
+    unsigned long proxy_mark;   /* метка для proxy_uid (0 = 0x01000000) */
     /* N3: race-пробинг egress — параллельно замерить кандидатов
      * (кандидаты — все интерфейсы из egress_interface). */
     int egress_race;

@@ -279,6 +279,13 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
            cfg->kernel_egress[0] ? cfg->kernel_egress : "-",
            cfg->pin_reassert, cfg->xray_watchdog, cfg->auto_direct,
            cfg->media_enabled);
+    if (cfg->proxy_uid[0] && cfg->proxy_egress[0]) {
+        printf("proxy_egress: uid=%s -> %s (table=%d mark=0x%lx)\n",
+               cfg->proxy_uid, cfg->proxy_egress, cfg->proxy_table,
+               cfg->proxy_mark);
+    } else if (cfg->proxy_uid[0] || cfg->proxy_egress[0]) {
+        printf("proxy_egress: НЕ ВКЛЮЧЁН (нужны и proxy_uid, и proxy_egress)\n");
+    }
     if (cfg->port_aware)
         printf("port_aware=1 (экспериментально): ok/test — пары ip:port (матч dst,dst); "
                "ok_net/never/direct — по адресу. Наборы занимают больше памяти — "

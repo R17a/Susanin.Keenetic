@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pwd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
@@ -571,6 +572,12 @@ static void set_env(const susanin_config *c)
     /* Port-aware: datapath.sh создаст наборы hash:ip,port и правила dst,dst.
      * По умолчанию 0 — прежнее поведение (наборы hash:ip, матч dst). */
     setenv("SUSANIN_PORT_AWARE", c->port_aware ? "1" : "0", 1);
+    /* P5: сторонний прокси на роутере (Teleproxy/MTProxy): метка по uid и
+     * вывод в proxy_egress через отдельную таблицу. */
+    setenv("SUSANIN_PROXY_UID", c->proxy_uid, 1);
+    setenv("SUSANIN_PROXY_EGRESS", c->proxy_egress, 1);
+    setenv("SUSANIN_PROXY_TABLE", (snprintf(v, sizeof(v), "%d", c->proxy_table), v), 1);
+    setenv("SUSANIN_PROXY_MARK", (snprintf(v, sizeof(v), "0x%lx", c->proxy_mark), v), 1);
 }
 
 static int run_script(const susanin_config *c, const char *a1, const char *a2)
@@ -870,6 +877,33 @@ int backend_ready(const susanin_config *c)
             if (rc != 0)
                 return 0;
         }
+    }
+
+    /* P5: если настроен вывод стороннего прокси через туннель — проверяем,
+     * что метка по uid и ip rule на месте (NDM/перезагрузка могли снести). */
+    if (c->proxy_uid[0] && c->proxy_egress[0]) {
+        struct passwd *pw = getpwnam(c->proxy_uid);
+        char *pargv[6];
+        if (!pw)
+            return 0;           /* пользователя нет — правило не поставить */
+        snprintf(needle, sizeof(needle), "--uid-owner %u", (unsigned)pw->pw_uid);
+        pargv[0] = (char *)tool_iptables();
+        pargv[1] = "-t"; pargv[2] = "mangle"; pargv[3] = "-S"; pargv[4] = "OUTPUT"; pargv[5] = NULL;
+        rc = run_check(pargv, out, sizeof(out));
+        if (rc == XT_BUSY)
+            return 1;
+        if (rc != 0 || !strstr(out, needle))
+            return 0;
+
+        snprintf(needle, sizeof(needle), "fwmark 0x%lx/0x%lx lookup %d",
+                 c->proxy_mark, c->proxy_mark, c->proxy_table);
+        pargv[0] = (char *)tool_ip();
+        pargv[1] = "rule"; pargv[2] = "show"; pargv[3] = NULL;
+        rc = run_check(pargv, out, sizeof(out));
+        if (rc == XT_BUSY)
+            return 1;
+        if (rc != 0 || !strstr(out, needle))
+            return 0;
     }
     return 1;
 }

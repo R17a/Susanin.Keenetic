@@ -193,6 +193,11 @@ void config_set_defaults(susanin_config *c)
     c->pin_reassert = 1;
     c->kernel_offload = 0;
     c->kernel_offload_max = 24;
+    /* P5: proxy_uid/proxy_egress по умолчанию выключены. */
+    c->proxy_uid[0] = '\0';
+    c->proxy_egress[0] = '\0';
+    c->proxy_table = 110;
+    c->proxy_mark = 0x01000000UL;
     c->egress_race = 0;
     c->auto_direct = 1;
     c->direct_pref_ttl = 3600;
@@ -506,6 +511,14 @@ int config_load(const char *path, susanin_config *c)
             set_str(c->kernel_egress, sizeof(c->kernel_egress), val);
         else if (!strcmp(key, "kernel_offload_max"))
             c->kernel_offload_max = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "proxy_uid"))
+            set_str(c->proxy_uid, sizeof(c->proxy_uid), val);
+        else if (!strcmp(key, "proxy_egress"))
+            set_str(c->proxy_egress, sizeof(c->proxy_egress), val);
+        else if (!strcmp(key, "proxy_table"))
+            c->proxy_table = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "proxy_mark"))
+            c->proxy_mark = strtoul(val, NULL, 0);
         else if (!strcmp(key, "egress_race"))
             c->egress_race = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "auto_direct"))
@@ -784,6 +797,14 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "kernel_egress=%s\n", c->kernel_egress);
     fprintf(fp, "# N2: макс. длина префикса offload-маршрута (бит).\n");
     fprintf(fp, "kernel_offload_max=%d\n", c->kernel_offload_max);
+    fprintf(fp, "# P5: uid процесса-прокси на роутере (MTProxy/Teleproxy); пусто = выкл.\n");
+    fprintf(fp, "proxy_uid=%s\n", c->proxy_uid);
+    fprintf(fp, "# P5: интерфейс для трафика proxy_uid (напр. nwg0); пусто = выкл.\n");
+    fprintf(fp, "proxy_egress=%s\n", c->proxy_egress);
+    fprintf(fp, "# P5: таблица маршрутизации для proxy_uid.\n");
+    fprintf(fp, "proxy_table=%d\n", c->proxy_table);
+    fprintf(fp, "# P5: метка для трафика proxy_uid (hex).\n");
+    fprintf(fp, "proxy_mark=0x%lx\n", c->proxy_mark);
     fprintf(fp, "# N3: race-пробинг egress (выбор быстрейшего): 0 | 1.\n");
     fprintf(fp, "# Кандидаты — все интерфейсы из egress_interface.\n");
     fprintf(fp, "egress_race=%d\n", c->egress_race);
@@ -1033,6 +1054,10 @@ void config_print(const susanin_config *c)
     printf("kernel_offload=%d\n", c->kernel_offload);
     printf("kernel_egress=%s\n", c->kernel_egress);
     printf("kernel_offload_max=%d\n", c->kernel_offload_max);
+    printf("proxy_uid=%s\n", c->proxy_uid);
+    printf("proxy_egress=%s\n", c->proxy_egress);
+    printf("proxy_table=%d\n", c->proxy_table);
+    printf("proxy_mark=0x%lx\n", c->proxy_mark);
     printf("egress_race=%d\n", c->egress_race);
     printf("auto_direct=%d\n", c->auto_direct);
     printf("direct_pref_ttl=%d\n", out_dur(c->direct_pref_ttl, U_SEC));
