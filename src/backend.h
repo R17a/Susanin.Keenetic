@@ -8,6 +8,8 @@
 
 int backend_provision(const susanin_config *c);
 int backend_teardown(const susanin_config *c);
+int backend_p5_up(const susanin_config *c);
+int backend_p5_down(const susanin_config *c);
 int backend_ready(const susanin_config *c);
 
 /* iptables не смог взять общий xtables-lock (код 4, «Another app is currently

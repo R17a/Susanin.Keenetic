@@ -608,6 +608,23 @@ int backend_provision(const susanin_config *c)
     return rc;
 }
 
+/* P5 отдельно от датаплейна: правила «трафик стороннего прокси -> proxy_egress»
+ * не зависят от tproxy/Xray. Вызывается, когда датаплейн снят в fail-open
+ * (Xray умер), чтобы MTProxy продолжал ходить в туннель. */
+int backend_p5_up(const susanin_config *c)
+{
+    if (!c || !c->proxy_uid[0] || !c->proxy_egress[0])
+        return 0;
+    return run_script(c, "p5", NULL);
+}
+
+int backend_p5_down(const susanin_config *c)
+{
+    if (!c || !c->proxy_uid[0])
+        return 0;
+    return run_script(c, "p5-down", NULL);
+}
+
 /* Отметка о последнем ре-провижене (для наблюдаемости в status/diagnose). */
 #define DP_REPROV_FILE "/opt/susanin/var/dp-reprov"
 

@@ -799,7 +799,9 @@ command_down() {
     ipv6_block_clean || true
     quic_block_clean || true
     mss_clamp_clean || true
-    proxy_egress_clean || true
+    # P5 (трафик стороннего прокси -> proxy_egress) НЕ снимаем здесь: он не
+    # зависит от tproxy/Xray и должен переживать fail-open, когда Xray умер.
+    # Снимается явно командой `datapath.sh p5-down` (susanin stop / down).
     say "data plane DOWN"
 }
 
@@ -970,6 +972,8 @@ command_del() {
 
 case "${1:-}" in
     up) command_up ;;
+    p5) proxy_egress_rules ;;
+    p5-down) proxy_egress_clean ;;
     down) command_down ;;
     status) command_status ;;
     flush) command_flush ;;
@@ -977,7 +981,7 @@ case "${1:-}" in
     add) command_add "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
     del) command_del "${2:-}" "${3:-}" "${4:-}" ;;
     *)
-        echo "usage: $0 {up|down|status|flush|egress <iface>|add <ip> [<port>] <tcp|udp> <test|ok>|del <ip> [<port>] <tcp|udp>}" >&2
+        echo "usage: $0 {up|down|p5|p5-down|status|flush|egress <iface>|add <ip> [<port>] <tcp|udp> <test|ok>|del <ip> [<port>] <tcp|udp>}" >&2
         echo "  (порт обязателен при SUSANIN_PORT_AWARE=1; ok_net/never/direct всегда по адресу)" >&2
         exit 2 ;;
 esac

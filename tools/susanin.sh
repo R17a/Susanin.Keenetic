@@ -144,6 +144,7 @@ stop_daemon() {
     # не наступает). Агент поднимет правила заново при start/restart.
     if [ -f "$TOOLS/datapath.sh" ]; then
         sh "$TOOLS/datapath.sh" down >/dev/null 2>&1 || true
+    sh "$TOOLS/datapath.sh" p5-down >/dev/null 2>&1 || true
     fi
     sleep 1
     echo "[susanin] stopped"
@@ -289,7 +290,7 @@ case "${1:-}" in
     install) sh "$TOOLS/datapath.sh" up; "$BIN" setup ;;
     update) shift || true; sh "$TOOLS/update.sh" "$@" ;;
     uninstall) shift || true; sh "$TOOLS/uninstall.sh" "$@" ;;
-    down) sh "$TOOLS/datapath.sh" down ;;
+    down) sh "$TOOLS/datapath.sh" down; sh "$TOOLS/datapath.sh" p5-down ;;
     reset|forget) "$BIN" reset "$2" ;;
     add) sh "$TOOLS/datapath.sh" add "$2" "$3" "$4" ;;
     del) sh "$TOOLS/datapath.sh" del "$2" "$3" ;;

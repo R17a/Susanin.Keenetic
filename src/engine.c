@@ -1386,6 +1386,10 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                       cfg->tproxy_port);
                 backend_teardown(cfg);
                 backend_ct_flush_vpn(cfg);
+                /* P5 не зависит от Xray: возвращаем правила, чтобы прокси на
+                 * роутере продолжал ходить через proxy_egress (nwg0). */
+                if (backend_p5_up(cfg) == 0)
+                    slogf(SL_INFO, "tproxy: P5 (proxy_egress) оставлен активным при fail-open");
                 dp_ok = 0;
                 next_dp_try = now + 15;
             } else if (dp_ok && tunnel_up && !backend_ready(cfg)) {
