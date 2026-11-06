@@ -1149,6 +1149,21 @@ void backend_ipset_value(const susanin_config *c, const char *ip, int port,
         snprintf(out, n, "%s", ip ? ip : "");
 }
 
+/* Наборы могли быть снесены (fail-open, перезагрузка, NDM). Если `ipset add`
+ * вернул ошибку «set does not exist», пересоздаём наборы и повторяем один раз.
+ * Не чаще раза в 30 с, иначе получаем тот же шторм вызовов, что и раньше. */
+static int ensure_sets_throttled(const susanin_config *c)
+{
+    static time_t last;
+    time_t now = time(NULL);
+    if (last && now - last < 30)
+        return -1;
+    last = now;
+    if (!c)
+        return -1;
+    return run_script(c, "sets", NULL);
+}
+
 int backend_ipset_add_port(const susanin_config *c, int proto_udp, int phase_ok,
                            const char *ip, int port, int ttl)
 {
@@ -1174,7 +1189,15 @@ int backend_ipset_add_port(const susanin_config *c, int proto_udp, int phase_ok,
     argv[5] = "timeout";
     argv[6] = t;
     argv[7] = NULL;
-    return run_argv(argv);
+    {
+        int rc = run_argv(argv);
+        if (rc != 0) {
+            /* Набора нет (fail-open/NDM снёс) — пересоздаём и пробуем ещё раз. */
+            if (ensure_sets_throttled(c) == 0)
+                rc = run_argv(argv);
+        }
+        return rc;
+    }
 }
 
 int backend_ipset_del_port(const susanin_config *c, int proto_udp, int phase_ok,

@@ -761,6 +761,10 @@ proxy_egress_clean() {
 
 command_up() {
     backup
+    # P5 — первым и независимо от tproxy: если какая-то ступень ниже упадёт
+    # (нет xt_TPROXY, Xray не поднят, ipset занят), правила прокси обязаны встать,
+    # иначе MTProxy остаётся без маршрута в proxy_egress.
+    proxy_egress_rules || say "proxy_egress: правила не применены"
     ensure_sets
     ensure_chain
     rule_priv
@@ -773,7 +777,6 @@ command_up() {
     ipv6_block_rules
     quic_block_rules
     mss_clamp_rules
-    proxy_egress_rules
     say "data plane UP (table=$TABLE dev=$EGRESS mask=$MARK_MASK)"
 }
 
@@ -783,10 +786,10 @@ command_down() {
         "ipt" -t mangle -F "$CHAIN" 2>/dev/null || true
         "ipt" -t mangle -X "$CHAIN" 2>/dev/null || true
     fi
-    for s in $SETS; do set_exists "$s" && "$IPSET" destroy "$s" || true; done
-    set_exists "$NETSET" && "$IPSET" destroy "$NETSET" || true
-    set_exists "$NEVERSET" && "$IPSET" destroy "$NEVERSET" || true
-    set_exists "$DIRECTSET" && "$IPSET" destroy "$DIRECTSET" || true
+    # Наборы НЕ удаляем: агент продолжает обучение в fail-open, и если наборов
+    # нет, каждое обновление списков молотит поштучными `ipset add` в пустоту
+    # (сотни неудачных вызовов в минуту, общий netfilter-lock с NDM). Наборы
+    # живут до явного `datapath.sh sets-down` (uninstall/susanin down).
     iprule_fw_clean "$MARK_OK" "$PRI_OK"
     iprule_fw_clean "$MARK_TEST" "$PRI_TEST"
     "$IPCMD" rule del fwmark "$TPROXY_MARK" priority "$((PRI_OK + 2))" lookup "$TABLE" >/dev/null 2>&1 || true
@@ -974,6 +977,13 @@ case "${1:-}" in
     up) command_up ;;
     p5) proxy_egress_rules ;;
     p5-down) proxy_egress_clean ;;
+    sets) ensure_sets ;;
+    sets-down)
+        for _s in $SETS; do set_exists "$_s" && "$IPSET" destroy "$_s" || true; done
+        set_exists "$NETSET" && "$IPSET" destroy "$NETSET" || true
+        set_exists "$NEVERSET" && "$IPSET" destroy "$NEVERSET" || true
+        set_exists "$DIRECTSET" && "$IPSET" destroy "$DIRECTSET" || true
+        ;;
     down) command_down ;;
     status) command_status ;;
     flush) command_flush ;;

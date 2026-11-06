@@ -632,35 +632,59 @@ static int xray_proc_exists(void)
  *    `sh -c`-цикл по /proc: командная строка самого sh содержит путь к конфигу,
  *    поэтому прежний цикл находил САМ СЕБЯ, делал exit 0 и никогда не запускал
  *    Xray (замечание внешнего разбора — проверено экспериментом). */
+/* Прямой запуск Xray без shell: fork/execv. Раньше старт шёл через
+ * S93xray-tproxy, и на роутере он падал с "sh: -c requires an argument" —
+ * Xray не поднимался вообще. Теперь агент запускает бинарь сам. */
+static int spawn_xray_direct(void)
+{
+    pid_t pid;
+    int fd;
+
+    if (access("/opt/sbin/xray", X_OK) != 0)
+        return -1;
+    pid = fork();
+    if (pid < 0)
+        return -1;
+    if (pid == 0) {
+        setsid();
+        fd = open("/opt/susanin/var/xray.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd >= 0) {
+            dup2(fd, 1);
+            dup2(fd, 2);
+            if (fd > 2)
+                close(fd);
+        }
+        setenv("GOGC", "50", 1);
+        setenv("GOMEMLIMIT", "64MiB", 1);
+        execl("/opt/sbin/xray", "xray", "run", "-config",
+              "/opt/susanin/etc/xray-tproxy.json", (char *)NULL);
+        _exit(127);
+    }
+    return 0;
+}
+
 static void restart_xray_process(void)
 {
     if (xray_proc_exists()) {
         /* Процесс уже есть: второй экземпляр не поднимаем (накопление процессов
-         * вешало роутер). Освободить зависший — задача S93 restart/kill -9. */
+         * вешало роутер). Освободить зависший — restart_xray_forced(). */
         return;
     }
-    if (access("/opt/etc/init.d/S93xray-tproxy", X_OK) == 0) {
-        int rc = system("/opt/etc/init.d/S93xray-tproxy restart >/dev/null 2>&1 &");
-        (void)rc;
-        /* S93 мог завершиться с ошибкой (нет xray/конфига, сломанный shebang,
-         * "sh: -c requires an argument") и НЕ поднять процесс. Раньше функция
-         * возвращалась сразу, поэтому watchdog повторял попытки вечно, а Xray
-         * так и не появлялся. Ждём до 2 с и, если процесса нет, стартуем сами. */
-        {
-            int i;
-            for (i = 0; i < 10; i++) {
-                if (xray_proc_exists())
-                    return;
-                usleep(200000);
-            }
-        }
-        slogf(SL_WARN, "tproxy: S93xray-tproxy не поднял Xray — запускаю напрямую");
+    if (spawn_xray_direct() != 0) {
+        slogf(SL_WARN, "tproxy: не удалось запустить /opt/sbin/xray напрямую");
+        return;
     }
     {
-        int rc = system("(/opt/sbin/xray run -config /opt/susanin/etc/xray-tproxy.json "
-                        ">>/opt/susanin/var/xray.log 2>&1 &)");
-        (void)rc;
+        int i;
+        for (i = 0; i < 10; i++) {
+            if (xray_proc_exists()) {
+                slogf(SL_INFO, "tproxy: Xray запущен агентом (pid есть)");
+                return;
+            }
+            usleep(200000);
+        }
     }
+    slogf(SL_WARN, "tproxy: Xray не удержался после прямого запуска — смотрите /opt/susanin/var/xray.log");
 }
 
 
@@ -709,29 +733,6 @@ static int xray_kill_all(void)
  * init-скрипта снимаем процессы сами (xray_kill_all) и поднимаем заново. */
 static void restart_xray_forced(void)
 {
-    if (access("/opt/etc/init.d/S93xray-tproxy", X_OK) == 0) {
-        int rc = system("/opt/etc/init.d/S93xray-tproxy restart >/dev/null 2>&1 &");
-        (void)rc;
-        {
-            int i;
-            for (i = 0; i < 10; i++) {
-                if (xray_proc_exists())
-                    return;
-                usleep(200000);
-            }
-        }
-        slogf(SL_WARN, "tproxy: S93 не поднял Xray (forced) — снимаю процессы и стартую сами");
-        if (xray_kill_all() > 0) {
-            int w;
-            for (w = 0; w < 20 && xray_proc_exists(); w++)
-                usleep(100000);
-        }
-        restart_xray_process();
-        return;
-    }
-    /* Init-скрипта нет: снимаем зависшие процессы сами (kill из C) и поднимаем
-     * заново. restart_xray_process() стартует только если процессов не осталось,
-     * поэтому сначала дожидаемся, что /proc их больше не показывает. */
     if (xray_kill_all() > 0) {
         int w;
         for (w = 0; w < 20 && xray_proc_exists(); w++)
