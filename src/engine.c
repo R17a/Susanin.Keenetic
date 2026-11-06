@@ -642,7 +642,19 @@ static void restart_xray_process(void)
     if (access("/opt/etc/init.d/S93xray-tproxy", X_OK) == 0) {
         int rc = system("/opt/etc/init.d/S93xray-tproxy restart >/dev/null 2>&1 &");
         (void)rc;
-        return;
+        /* S93 мог завершиться с ошибкой (нет xray/конфига, сломанный shebang,
+         * "sh: -c requires an argument") и НЕ поднять процесс. Раньше функция
+         * возвращалась сразу, поэтому watchdog повторял попытки вечно, а Xray
+         * так и не появлялся. Ждём до 2 с и, если процесса нет, стартуем сами. */
+        {
+            int i;
+            for (i = 0; i < 10; i++) {
+                if (xray_proc_exists())
+                    return;
+                usleep(200000);
+            }
+        }
+        slogf(SL_WARN, "tproxy: S93xray-tproxy не поднял Xray — запускаю напрямую");
     }
     {
         int rc = system("(/opt/sbin/xray run -config /opt/susanin/etc/xray-tproxy.json "
@@ -700,6 +712,21 @@ static void restart_xray_forced(void)
     if (access("/opt/etc/init.d/S93xray-tproxy", X_OK) == 0) {
         int rc = system("/opt/etc/init.d/S93xray-tproxy restart >/dev/null 2>&1 &");
         (void)rc;
+        {
+            int i;
+            for (i = 0; i < 10; i++) {
+                if (xray_proc_exists())
+                    return;
+                usleep(200000);
+            }
+        }
+        slogf(SL_WARN, "tproxy: S93 не поднял Xray (forced) — снимаю процессы и стартую сами");
+        if (xray_kill_all() > 0) {
+            int w;
+            for (w = 0; w < 20 && xray_proc_exists(); w++)
+                usleep(100000);
+        }
+        restart_xray_process();
         return;
     }
     /* Init-скрипта нет: снимаем зависшие процессы сами (kill из C) и поднимаем
