@@ -70,7 +70,11 @@ PROXY_MARK=${SUSANIN_PROXY_MARK:-0x01000000}
 # iptables печатает метку без ведущих нулей (0x1000000) — для grep приводим
 # к каноническому виду.
 PROXY_MARK_HEX=$(printf '0x%x' "$((PROXY_MARK))")
-PRI_PROXY=${SUSANIN_PRI_PROXY:-$((PRI_OK + 3))}
+# ВАЖНО: NDM ставит rule по src-адресу WAN с приоритетом ~1170. Если наш rule
+# по метке окажется ниже (больше число), помеченные пакеты уйдут по src-правилу
+# в таблицу NDM и в туннель не попадут (соединения к DC висят в SYN_SENT).
+# Поэтому приоритет P5 — 1100, выше NDM-правил.
+PRI_PROXY=${SUSANIN_PRI_PROXY:-1100}
 
 # Ручной запуск (не из демона): значения берём из конфига; из демона всё
 # приходит через окружение (backend.c) — поведение не меняется.
@@ -741,6 +745,16 @@ proxy_egress_rules() {
         say "proxy_uid: не удалось поставить метку по uid (нет xt_owner?)"
         return 0
     fi
+    # Адрес источника сокет выбирает ДО метки — по main-таблице. Без SNAT пакеты
+    # уходят в туннель с адресом WAN, ответы возвращаются мимо туннеля, и
+    # соединения висят в SYN_SENT. Подменяем адрес на адрес интерфейса.
+    "ipt" -t nat -D POSTROUTING -o "$PROXY_EGRESS" -m mark \
+        --mark "$PROXY_MARK/$PROXY_MARK" -j MASQUERADE >/dev/null 2>&1 || true
+    if ! "ipt" -t nat -A POSTROUTING -o "$PROXY_EGRESS" -m mark \
+            --mark "$PROXY_MARK/$PROXY_MARK" -j MASQUERADE 2>/dev/null; then
+        say "proxy_uid: не удалось включить MASQUERADE на $PROXY_EGRESS"
+        return 0
+    fi
     say "proxy egress: uid=$PROXY_UID -> $PROXY_EGRESS (table=$PROXY_TABLE mark=$PROXY_MARK prio=$PRI_PROXY)"
 }
 
@@ -755,6 +769,8 @@ proxy_egress_mark_clean() {
 
 proxy_egress_clean() {
     proxy_egress_mark_clean
+    "ipt" -t nat -D POSTROUTING -o "$PROXY_EGRESS" -m mark \
+        --mark "$PROXY_MARK/$PROXY_MARK" -j MASQUERADE >/dev/null 2>&1 || true
     "$IPCMD" rule del fwmark "$PROXY_MARK/$PROXY_MARK" lookup "$PROXY_TABLE" >/dev/null 2>&1 || true
     "$IPCMD" route flush table "$PROXY_TABLE" >/dev/null 2>&1 || true
 }

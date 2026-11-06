@@ -30,6 +30,7 @@ tool    tools/profiles.sh
 tool    tools/xray-egress.sh
 tool    tools/soak.sh
 tool    tools/diag-watch.sh
+tool    tools/xray-socks.sh
 
 init    init/entware/S93xray-tproxy
 init    init/entware/S94susanin
