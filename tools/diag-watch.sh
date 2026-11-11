@@ -100,7 +100,7 @@ link_state() { # link_state <iface>: up | down | absent
 }
 
 port_state() { # слушает ли Xray tproxy-порт
-    if netstat -lnt 2>/dev/null | grep -q ":$TP_PORT[[:space:]]"; then echo up; else echo down; fi
+    if netstat -lnt 2>/dev/null | grep -q ":${TP_PORT}[[:space:]]"; then echo up; else echo down; fi
 }
 
 chain_state() { # цепочка SUSANIN на месте
