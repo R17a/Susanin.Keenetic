@@ -1,0 +1,61 @@
+{
+  "_comment": "Транспорт через CDN (Cloudflare): VLESS+WS+TLS. Использовать, когда IP сервера забанен целиком и прямой REALITY недоступен. mux ОБЯЗАТЕЛЕН: без него каждое соединение из LAN = отдельный TLS+WS хендшейк до края Cloudflare, и роутер захлёбывается (load 5-8, в логе operation was canceled). Перед запуском: ndmc -c \"ip host vpn.example.dev <IP_CDN>\" — чтобы имя не разрешалось в забаненный IP.",
+  "log": { "access": "none", "loglevel": "warning" },
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": 12345,
+      "protocol": "dokodemo-door",
+      "settings": { "network": "tcp", "followRedirect": true },
+      "streamSettings": { "sockopt": { "tproxy": "redirect" } },
+      "tag": "redirect"
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 1080,
+      "protocol": "socks",
+      "settings": { "auth": "noauth", "udp": true },
+      "tag": "socks-in"
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "cdn-ws",
+      "protocol": "vless",
+      "mux": { "enabled": true, "concurrency": 8 },
+      "settings": {
+        "vnext": [
+          {
+            "address": "vpn.example.dev",
+            "port": 443,
+            "users": [
+              { "id": "<UUID>", "encryption": "none" }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "vpn.example.dev",
+          "fingerprint": "chrome"
+        },
+        "wsSettings": {
+          "path": "/ws",
+          "headers": { "Host": "vpn.example.dev" }
+        }
+      }
+    }
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": ["redirect", "socks-in"],
+        "outboundTag": "cdn-ws"
+      }
+    ]
+  }
+}

@@ -98,6 +98,16 @@ start_daemon() {
         echo "[susanin] already running"
         return 0
     fi
+    # Если pidfile потерян/устарел, а процессы остались — добиваем их. Иначе
+    # после сбоя стартует второй агент: конфликт правил, дубли Xray и «тормоза».
+    _strays=$(ps | grep 'susanin-agent run' | grep -v grep | awk '{print $1}')
+    if [ -n "$_strays" ]; then
+        for p in $_strays; do kill -TERM "$p" 2>/dev/null || true; done
+        sleep 1
+        for p in $(ps | grep 'susanin-agent run' | grep -v grep | awk '{print $1}'); do
+            kill -9 "$p" 2>/dev/null || true
+        done
+    fi
     mkdir -p /opt/susanin/var
     rotate_log
     (

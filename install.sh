@@ -1034,6 +1034,14 @@ if [ -n "$_s95" ]; then
     chmod +x "$INITD/S95susanin-web"
 fi
 
+# Сторож единственности Xray (0.4.6): страховка от накопления процессов
+# `xray run`, когда watchdog поднимает второй экземпляр на медленном старте.
+_s95g=$(find_file S95xray-guard) || _s95g=""
+if [ -n "$_s95g" ]; then
+    cp "$_s95g" "$INITD/S95xray-guard"
+    chmod +x "$INITD/S95xray-guard"
+fi
+
 # Короткий вызов: `susanin status` вместо длинного пути. /opt/bin есть в PATH у
 # Entware; если имя уже занято (не нашим симлинком) — не трогаем.
 if [ -d /opt/bin ]; then
@@ -1073,6 +1081,8 @@ if [ "$NO_START" -ne 1 ]; then
     # не ронял панель). После подмены бинаря его нужно перезапустить принудительно,
     # иначе панель продолжит работать СТАРЫМ кодом из памяти.
     sh "$PREFIX/tools/susanin.sh" web restart || true
+    # Сторож Xray — после агента и Xray, чтобы он сразу увидел один процесс.
+    [ -x "$INITD/S95xray-guard" ] && sh "$INITD/S95xray-guard" start >/dev/null 2>&1 || true
 fi
 say "installed to $PREFIX (run: sh $PREFIX/tools/susanin.sh status)"
 

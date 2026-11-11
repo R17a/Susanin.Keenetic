@@ -1,0 +1,159 @@
+#!/bin/sh
+# S95xray-guard — сторож единственности Xray.
+#
+# Зачем: при медленном старте Xray (Go на MIPS) watchdog Susanin.Keenetic может
+# решить, что порт 12345 «не слушается», и запустить второй экземпляр. Второй
+# порт занять не может, но и не умирает — копии накапливаются, съедают память
+# (124 МБ без свопа) и роутер уходит в своп-шторм.
+#
+# Сторож раз в 30 с смотрит ТОЛЬКО наши процессы Xray (cmdline содержит
+# /opt/susanin/etc/xray-tproxy.json — как backend_is_our_xray_cmdline):
+#   * больше одного — оставляет того, кто слушает tproxy-порт (если слушающего
+#     ещё нет, самого старого по pid), остальные гасит;
+#   * ноль и Xray нужен — поднимает через S93xray-tproxy;
+#   * чужой Xray (XKeen и т.п.) не трогает никогда;
+#   * при egress_type=interface новый Xray не поднимает (там он не нужен), но
+#     лишние копии всё равно убирает.
+#
+# Слушателя определяем по /proc/net/tcp + /proc/<pid>/fd, без `netstat -p`
+# (в BusyBox его часто нет).
+#
+# Логи и pid — в /opt/var, как у остальных сторожей Teleproxy: этот путь читают
+# tp-health-report.sh и tp-postmortem.sh.
+#
+# Это страховка, а не лечение причины: когда гонка запуска уйдёт из engine.c,
+# сторож можно выключить (chmod -x или /opt/etc/init.d/S95xray-guard stop).
+
+CFG=/opt/susanin/etc/xray-tproxy.json
+CONF=/opt/susanin/etc/susanin.conf
+PIDFILE=/opt/var/run/xray-guard.pid
+LOG=/opt/var/log/xray-guard.log
+INTERVAL=30
+
+say() { echo "[xray-guard] $*"; }
+
+running() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; }
+
+# Нужен ли Xray: он не нужен только при явном egress_type=interface.
+xray_needed() {
+    _et=$(sed -n 's/^egress_type=[[:space:]]*//p' "$CONF" 2>/dev/null | tail -n1)
+    [ "$_et" != "interface" ]
+}
+
+# Порт tproxy из конфига (по умолчанию 12345); в /proc/net/tcp — hex.
+tproxy_port() {
+    _p=$(sed -n 's/^tproxy_port=[[:space:]]*//p' "$CONF" 2>/dev/null | tail -n1)
+    case "$_p" in ''|*[!0-9]*) _p=12345 ;; esac
+    echo "$_p"
+}
+
+# Наши процессы Xray: в cmdline есть и «xray», и путь нашего конфига.
+our_pids() {
+    for _d in /proc/[0-9]*; do
+        [ -r "$_d/cmdline" ] || continue
+        _cl=$(tr '\0' ' ' < "$_d/cmdline" 2>/dev/null) || continue
+        case "$_cl" in *xray*) ;; *) continue ;; esac
+        case "$_cl" in *"$CFG"*) ;; *) continue ;; esac
+        echo "${_d#/proc/}"
+    done
+}
+
+# inode слушающего сокета на tproxy-порту (состояние 0A = LISTEN).
+port_inode() {
+    _hex=$(printf '%04X' "$(tproxy_port)" 2>/dev/null)
+    case "$_hex" in ''|*[!0-9A-Fa-f]*) _hex=3039 ;; esac   # fallback: 12345
+    awk -v p=":$_hex" '$2 ~ (p "$") && $4 == "0A" {print $10; exit}' \
+        /proc/net/tcp 2>/dev/null
+}
+
+# pid, который держит слушающий сокет порта (среди наших).
+listener_pid() {
+    _ino=$(port_inode)
+    [ -n "$_ino" ] || return 0
+    for _p in $(our_pids); do
+        for _f in /proc/"$_p"/fd/*; do
+            [ -e "$_f" ] || continue
+            case "$(readlink "$_f" 2>/dev/null)" in
+                "socket:[$_ino]") echo "$_p"; return 0 ;;
+            esac
+        done
+    done
+}
+
+oldest_pid() { our_pids | sort -n | head -1; }
+count_our() { our_pids | wc -l | tr -d ' '; }
+count_all() { pidof xray 2>/dev/null | wc -w | tr -d ' '; }
+
+loop() {
+    _tick=0
+    while :; do
+        # раз в минуту (2 цикла) — снимок здоровья, если скрипт есть.
+        if [ "$_tick" -ge 2 ]; then
+            _tick=0
+            [ -x /opt/sbin/tp-health.sh ] && \
+                LOG=/opt/var/log/tp-health.log /opt/sbin/tp-health.sh >/dev/null 2>&1
+        fi
+        _tick=$((_tick + 1))
+
+        # раз в сутки в 03:00–03:04 — проверка носителя /opt (ext4 на флешке).
+        _h=$(date +%H); _m=$(date +%M); _day=$(date +%Y-%m-%d)
+        if [ "$_h" = "03" ] && [ "$_m" -lt 5 ] && \
+           [ "$_day" != "$(cat /opt/var/run/flash-check.date 2>/dev/null)" ]; then
+            echo "$_day" > /opt/var/run/flash-check.date 2>/dev/null || true
+            [ -x /opt/sbin/tp-flash-check.sh ] && /opt/sbin/tp-flash-check.sh >/dev/null 2>&1
+        fi
+
+        # Лишние наши копии убираем всегда (даже в interface-режиме — они просто
+        # занимают память), но новый Xray поднимаем только если он нужен.
+        _n=$(count_our)
+        if [ "$_n" -gt 1 ]; then
+            _keep=$(listener_pid)
+            [ -n "$_keep" ] || _keep=$(oldest_pid)
+            for _p in $(our_pids); do
+                [ "$_p" = "$_keep" ] && continue
+                echo "[$(date '+%F %T')] лишний xray pid=$_p убит (keep=${_keep:-none}, было $_n)" >>"$LOG"
+                kill -9 "$_p" 2>/dev/null
+            done
+            sleep 3
+            if [ "$(count_our)" -eq 0 ] && xray_needed; then
+                echo "[$(date '+%F %T')] слушающего не осталось — поднимаю S93" >>"$LOG"
+                /opt/etc/init.d/S93xray-tproxy start >>"$LOG" 2>&1
+            fi
+        elif [ "$_n" -eq 0 ] && xray_needed; then
+            echo "[$(date '+%F %T')] xray нет — поднимаю S93" >>"$LOG"
+            /opt/etc/init.d/S93xray-tproxy start >>"$LOG" 2>&1
+        fi
+        sleep "$INTERVAL"
+    done
+}
+
+case "${1:-start}" in
+    start)
+        mkdir -p "$(dirname "$PIDFILE")" "$(dirname "$LOG")" 2>/dev/null || true
+        if running; then say "уже запущен (pid $(cat "$PIDFILE"))"; exit 0; fi
+        nohup "$0" __loop >>"$LOG" 2>&1 &
+        echo $! > "$PIDFILE"
+        say "запущен (pid $(cat "$PIDFILE")), интервал ${INTERVAL}s"
+        ;;
+    __loop) loop ;;
+    stop)
+        if [ -f "$PIDFILE" ]; then
+            kill "$(cat "$PIDFILE")" 2>/dev/null || true
+            rm -f "$PIDFILE"
+        fi
+        say "остановлен"
+        ;;
+    restart) "$0" stop >/dev/null 2>&1; sleep 1; exec "$0" start ;;
+    status)
+        if running; then
+            echo "сторож: RUNNING pid $(cat "$PIDFILE")"
+        else
+            echo "сторож: STOPPED"
+        fi
+        echo "режим: $(xray_needed && echo tproxy || echo interface)"
+        echo "наших xray: $(count_our) (всего pidof xray: $(count_all))"
+        echo "порт $(tproxy_port) слушает: $(listener_pid)"
+        ;;
+    *)
+        echo "usage: $0 {start|stop|restart|status}" >&2; exit 1 ;;
+esac

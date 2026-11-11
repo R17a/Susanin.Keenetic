@@ -199,8 +199,10 @@ const char *choice_iface_kind(const char *name)
 {
     /* «awg» — AmneziaWG (userspace amneziawg-go поднимает awg0/wg0): для панели
      * это такой же тоннель, иначе он попадал в группу «Физические» и терялся
-     * среди eth/ra/lo. Ставим ДО «wg», чтобы правило читалось по порядку. */
-    static const char *tun[] = { "nwg", "wdtt", "awg", "wg", "tun", "ppp" };
+     * среди eth/ra/lo. Ставим ДО «wg», чтобы правило читалось по порядку.
+     * «nocli» — интерфейс клиента OpenConnect (nocli0), «occli» — OpenConnect
+     * клиент в некоторых сборках: тоже тоннели, иначе пропадали из списка. */
+    static const char *tun[] = { "nwg", "wdtt", "awg", "wg", "tun", "ppp", "nocli", "occli" };
     size_t i;
 
     if (!name || !name[0])

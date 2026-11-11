@@ -140,6 +140,12 @@ void config_set_defaults(susanin_config *c)
     snprintf(c->xray_gogc, sizeof(c->xray_gogc), "%s", "50");
     snprintf(c->xray_gomemlimit, sizeof(c->xray_gomemlimit), "%s", "64MiB");
     c->xray_watchdog = 1;
+    /* Порог свободной памяти для запуска Xray (КБ). Ниже этого на роутере
+     * 122 МБ без swap OOM-killer убивает Xray сразу после старта. */
+    c->xray_min_mem_kb = 12288;
+    /* Лог Xray перед запуском обрезаем до 2 МБ: при loglevel=debug он растёт
+     * на мегабайты, а в tmpfs это отнятая у системы память. */
+    c->xray_log_max_kb = 2048;
     snprintf(c->disk_mode, sizeof(c->disk_mode), "%s", "normal");
     c->soft_state_interval = 12 * 3600;   /* soft: сохранять состояние раз в 12 ч */
     /* Порты, которые не участвуют в автообучении (типовой скан-шум). */
@@ -433,6 +439,10 @@ int config_load(const char *path, susanin_config *c)
                 set_str(c->xray_gomemlimit, sizeof(c->xray_gomemlimit), val);
             else if (!strcmp(key, "xray_watchdog"))
                 c->xray_watchdog = (int)strtol(val, NULL, 0);
+            else if (!strcmp(key, "xray_min_mem_kb"))
+                c->xray_min_mem_kb = (int)strtol(val, NULL, 0);
+            else if (!strcmp(key, "xray_log_max_kb"))
+                c->xray_log_max_kb = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "disk_mode"))
             set_str(c->disk_mode, sizeof(c->disk_mode), val);
         else if (!strcmp(key, "soft_state_interval"))
@@ -763,6 +773,10 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "xray_gomemlimit=%s\n", c->xray_gomemlimit);
     fprintf(fp, "# Watchdog Xray: 1 = агент сам поднимает упавший Xray (tproxy).\n");
     fprintf(fp, "xray_watchdog=%d\n", c->xray_watchdog);
+    fprintf(fp, "# Порог свободной памяти для запуска Xray, КБ (0 = не проверять).\n");
+    fprintf(fp, "xray_min_mem_kb=%d\n", c->xray_min_mem_kb);
+    fprintf(fp, "# Обрезка xray.log перед запуском, КБ (0 = не обрезать).\n");
+    fprintf(fp, "xray_log_max_kb=%d\n", c->xray_log_max_kb);
     fprintf(fp, "# Режим носителя: normal | soft (минимум записей на NAND/flash).\n");
     fprintf(fp, "disk_mode=%s\n", c->disk_mode);
     fprintf(fp, "# Период сохранения состояния в soft-режиме, ч; 0 = никогда.\n");
@@ -1038,6 +1052,8 @@ void config_print(const susanin_config *c)
     printf("xray_gogc=%s\n", c->xray_gogc);
     printf("xray_gomemlimit=%s\n", c->xray_gomemlimit);
     printf("xray_watchdog=%d\n", c->xray_watchdog);
+    printf("xray_min_mem_kb=%d\n", c->xray_min_mem_kb);
+    printf("xray_log_max_kb=%d\n", c->xray_log_max_kb);
     printf("disk_mode=%s\n", c->disk_mode);
     printf("soft_state_interval=%d\n", out_dur(c->soft_state_interval, U_HOUR));
     printf("learn_exclude_ports=%s\n", c->learn_exclude_ports);

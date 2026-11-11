@@ -160,6 +160,71 @@ TCP/UDP проверяются безопасным тестом одного а
 > два механизма одновременно конфликтуют. Если очень нужен ручной «аварийный»
 > переключатель — он остаётся в репозитории как dev-инструмент.
 
+### Транспорт через CDN (Cloudflare): VLESS + WebSocket + TLS
+
+Когда IP сервера забанен целиком — с домашней линии не отвечает **ни один** порт
+(проверка: `curl -o /dev/null -w '%{http_code} connect=%{time_connect}\n' http://IP/`
+даёт `000 connect=0.000000`, при живом `https://ya.ru/` → `302`), — прямой
+VLESS/REALITY перестаёт работать, и смена порта не помогает. Обход: поставить перед
+сервером Cloudflare и ходить на IP Cloudflare, а не на адрес сервера.
+
+```
+роутер (VLESS+WS+TLS) -> Cloudflare edge :443 -> origin nginx :443 /ws -> Xray 127.0.0.1:10000
+```
+
+Origin-часть (на сервере): Xray слушает только `127.0.0.1:10000` (inbound
+`vless` + `network: ws`, `path: /ws`, `decryption: none`), nginx отдельным
+`server`-блоком по `server_name` проксирует `/ws` в него с `Upgrade`/`Connection`
+и `proxy_read_timeout 3600s`. Корень отдаётся `404`, чтобы не палить сайт.
+Режим SSL/TLS в Cloudflare — **Full** (origin-сертификат может быть самоподписанным).
+
+Четыре вещи, без которых схема не работает (проверено на живом инциденте):
+
+1. **`mux` обязателен.** Каждое TCP-соединение из LAN — это отдельный TLS+WS
+   хендшейк до края Cloudflare (RTT 150+ мс). Одна страница открывает 30–60
+   соединений, и MT7621 (2 ядра) не успевает: часть хендшейков отменяется.
+   Признаки: `cat /proc/loadavg` даёт 5–8 на простое, в
+   `/opt/susanin/var/xray.log` идёт поток `operation was canceled` и
+   `failed to find an available destination`, на ПК висит даже
+   `https://ifconfig.me`. Лечение — в outbound добавить
+   `"mux": {"enabled": true, "concurrency": 8}`.
+   Замер на канале 28 Мбит/с: без mux 14.6 Мбит/с, с mux 19.9 Мбит/с.
+
+2. **Имя CDN-фронта не должно разрешаться в забаненный IP.** Старый A-рекорд
+   живёт в кэше до 86400 с (сутки), и Xray уходит на мёртвый адрес
+   (`dial tcp <старый IP>:443: i/o timeout`). Надёжнее не править конфиг Xray,
+   а прибить имя статической записью Keenetic:
+   ```sh
+   ndmc -c "ip host vpn.example.dev 104.21.52.16"
+   nslookup vpn.example.dev        # должен вернуть адрес Cloudflare
+   ```
+   Тогда при смене адреса Cloudflare правится одна строка, Xray перезапускать не нужно.
+
+3. **UDP через Cloudflare не проходит** — он проксирует только TCP (HTTP/WS).
+   Звонки в Telegram и UDP-релей работать не будут; сообщения и веб — работают.
+   `quic_block=1` при этом обязателен, иначе браузер уходит в HTTP/3 мимо туннеля
+   и страница висит.
+
+4. **SSH через Cloudflare не проксируется.** Административный доступ к серверу —
+   только через консоль провайдера (или VPN). Планировать это заранее: без консоли
+   сервер после инцидента не починить.
+
+Диагностика по слоям (сверху вниз, каждая проверка отвечает на свой вопрос):
+```sh
+# 1) жив ли origin вообще
+curl -s -o /dev/null -w '%{http_code}\n' https://vpn.example.dev/     # 404 = блок nginx жив
+curl -s -o /dev/null -w '%{http_code}\n' https://vpn.example.dev/ws   # 400 = отвечает Xray
+# 2) проходит ли WebSocket (ожидается 101)
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Upgrade: websocket' -H 'Connection: Upgrade' \
+  -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  https://vpn.example.dev/ws
+# 3) работает ли egress Xray с самого роутера (не зависит от tproxy)
+curl -x socks5h://127.0.0.1:1080 -m25 -so /dev/null -w '%{http_code}\n' https://ifconfig.me
+# 4) только после (3) поднимать tproxy: susanin start
+```
+Если `(3)` даёт `000` — проблема в транспорте/сервере, и включать Susanin нельзя:
+он честно заворачивает LAN в нерабочий egress, и получается «интернета нет».
+
 ## Вместе с qWDTT_Server_Keenetic
 
 qWDTT поднимает серверные туннели `wdtt0`/`wdttraw0` и NAT-ит клиентов сетей

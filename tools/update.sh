@@ -176,6 +176,29 @@ if [ -n "${DIR:-}" ] && [ -d "$DIR/www" ]; then
     say "веб-панель обновлена: $PREFIX/www"
 fi
 
+# init-скрипты: раньше `susanin update` их вообще не обновлял (только .ipk), и
+# новые сервисы (например, сторож Xray из 0.4.6) до установленных систем не
+# доезжали. Раскладка архива бывает «плоской» и с каталогами — ищем оба вида.
+for _pair in "S95xray-guard:S95xray-guard" "S93xray-tproxy:S93xray-tproxy" \
+             "S94susanin:S94susanin" "S95susanin-web:S95susanin-web"; do
+    _name=${_pair%%:*}
+    _src=""
+    for _cand in "$DIR/$_name" "$DIR/init/$_name" "$DIR/init/entware/$_name" \
+                 "$DIR/etc/init.d/$_name"; do
+        [ -f "$_cand" ] && { _src="$_cand"; break; }
+    done
+    [ -n "$_src" ] || continue
+    if [ -d /opt/etc/init.d ] && cp "$_src" "/opt/etc/init.d/$_name" 2>/dev/null; then
+        chmod +x "/opt/etc/init.d/$_name" 2>/dev/null || true
+        say "init: /opt/etc/init.d/$_name обновлён"
+    fi
+done
+# Сторож Xray: перезапускаем, чтобы подхватил свежий скрипт (идемпотентно).
+if [ -x /opt/etc/init.d/S95xray-guard ]; then
+    /opt/etc/init.d/S95xray-guard stop >/dev/null 2>&1 || true
+    /opt/etc/init.d/S95xray-guard start >/dev/null 2>&1 || true
+fi
+
 # Короткий вызов `susanin …`: симлинк в /opt/bin (не трогаем чужой файл с этим именем).
 if [ -d /opt/bin ] && [ ! -e /opt/bin/susanin ]; then
     ln -s "$PREFIX/tools/susanin.sh" /opt/bin/susanin 2>/dev/null \

@@ -85,5 +85,11 @@ if [ -x /opt/etc/init.d/S95susanin-web ]; then
         /opt/etc/init.d/S95susanin-web restart >/dev/null 2>&1 || true
     fi
 fi
+# Сторож единственности Xray (0.4.6): приходит в пакете в /opt/etc/init.d и
+# стартует здесь, чтобы после обновления работал сразу, не дожидаясь ребута.
+if [ -x /opt/etc/init.d/S95xray-guard ]; then
+    /opt/etc/init.d/S95xray-guard stop >/dev/null 2>&1 || true
+    /opt/etc/init.d/S95xray-guard start >/dev/null 2>&1 || true
+fi
 echo "[susanin] установлено. Проверка: susanin status && susanin diagnose"
 exit 0

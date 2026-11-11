@@ -176,7 +176,20 @@ static void dns_parse(const uint8_t *p, int len)
                 ttl = ttlcap;
             snprintf(ip, sizeof(ip), "%u.%u.%u.%u",
                      p[off], p[off + 1], p[off + 2], p[off + 3]);
-            dns_store(aname[0] ? aname : qname, ip, ttl);
+            /* Пиним ИМЯ, КОТОРОЕ СПРОСИЛ КЛИЕНТ, а не только владельца
+             * A-записи. У CDN-хостов (EdgeOne, CloudFront, Fastly и т.п.)
+             * ответ приходит как CNAME: aname — это каноническое имя
+             * (*.eo.dnse3.com, *.cloudfront.net), и списки vpn_always/
+             * vpn_never по нужному домену с ним не совпадают. Из-за этого
+             * www.tencentcloud.com, api.deepseek.com и подобные не пинились
+             * вообще, и решение по каждому адресу принимало автообучение
+             * (CONFIRMED -> D1 -> soft-direct) — то есть маршрут «плавал»
+             * от соединения к соединению. Каноническое имя тоже сохраняем:
+             * если в списке указана сама CDN-зона, пин по ней должен работать. */
+            if (qname[0])
+                dns_store(qname, ip, ttl);
+            if (aname[0] && strcasecmp(aname, qname) != 0)
+                dns_store(aname, ip, ttl);
         }
         off += rdlen;
     }

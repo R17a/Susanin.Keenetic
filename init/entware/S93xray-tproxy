@@ -40,6 +40,33 @@ xray_pid() {
 start() {
     [ -x "$XRAY" ] && [ -f "$XCFG" ] || { echo "xray-tproxy: нет Xray/конфига — пропуск"; return 0; }
     mkdir -p /opt/susanin/var
+    # Лог Xray в tmpfs (/tmp) — это отнятая у системы память: 2026-11-11
+    # /tmp/xray.log вырос до 15 МБ, свободная память ушла ниже watermark, и
+    # OOM-killer убил сам Xray (интернет встал при свободном процессоре).
+    # Ранние версии скриптов и ручные запуски писали именно туда — подчищаем.
+    rm -f /tmp/xray.log 2>/dev/null || true
+    # Обрезка штатного лога: при loglevel=debug он растёт на мегабайты.
+    _logkb=$(sed -n 's/^xray_log_max_kb=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
+    [ -n "$_logkb" ] || _logkb=2048
+    if [ "$_logkb" -gt 0 ] 2>/dev/null && [ -f "$LOGF" ]; then
+        _sz=$(wc -c < "$LOGF" 2>/dev/null || echo 0)
+        if [ "$_sz" -gt $((_logkb * 1024)) ] 2>/dev/null; then
+            : > "$LOGF"
+            echo "xray-tproxy: лог обрезан (был $_sz байт, лимит ${_logkb}КБ)"
+        fi
+    fi
+    # Нехватка памяти: запуск только приблизит OOM — ядро убьёт Xray через
+    # секунды, а watchdog начнёт цикл «убило — подняли — снова убили».
+    _memmin=$(sed -n 's/^xray_min_mem_kb=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
+    [ -n "$_memmin" ] || _memmin=12288
+    if [ "$_memmin" -gt 0 ] 2>/dev/null; then
+        _av=$(awk '/MemAvailable:/ {print $2; exit}' /proc/meminfo 2>/dev/null)
+        if [ -n "$_av" ] && [ "$_av" -lt "$_memmin" ] 2>/dev/null; then
+            echo "xray-tproxy: НЕ запускаю — мало памяти (MemAvailable=${_av}КБ < ${_memmin}КБ)"
+            echo "xray-tproxy: освободите память или снизьте xray_min_mem_kb в susanin.conf"
+            return 0
+        fi
+    fi
     # Уровень логов Xray (независимо от log_level Susanin.Keenetic) — из susanin.conf.
     # Xray читает уровень только при старте, поэтому применяем его до запуска,
     # а для уже запущенного процесса нужен restart.

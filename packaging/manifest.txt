@@ -35,6 +35,7 @@ tool    tools/xray-socks.sh
 init    init/entware/S93xray-tproxy
 init    init/entware/S94susanin
 init    init/entware/S95susanin-web
+init    init/entware/S95xray-guard
 
 doc     README.md
 doc     TECHNICAL.RU.md
@@ -50,6 +51,7 @@ share   cdn_ranges.txt
 share   vpn_always.txt
 share   vpn_never.txt
 share   xray-tproxy.json.example
+share   xray-tproxy-cdn.json.example
 
 www     www
 

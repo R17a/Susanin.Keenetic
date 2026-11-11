@@ -740,9 +740,18 @@ proxy_egress_rules() {
         return 0
     fi
     proxy_egress_mark_clean
+    # Помечаем только соединения, ИНИЦИИРОВАННЫЕ процессом (ctstate NEW):
+    # слепая метка всех пакетов uid отправляла в туннель и ответы входящим
+    # клиентам (Teleproxy слушает 8443), из-за чего они не доходили.
     if ! "ipt" -t mangle -A OUTPUT -m owner --uid-owner "$PROXY_UID" \
+            -m conntrack --ctstate NEW \
+            -j CONNMARK --set-xmark "$PROXY_MARK/$PROXY_MARK" 2>/dev/null; then
+        say "proxy_uid: не удалось поставить CONNMARK по uid (нет xt_owner/xt_connmark?)"
+        return 0
+    fi
+    if ! "ipt" -t mangle -A OUTPUT -m connmark --mark "$PROXY_MARK/$PROXY_MARK" \
             -j MARK --set-xmark "$PROXY_MARK/$PROXY_MARK" 2>/dev/null; then
-        say "proxy_uid: не удалось поставить метку по uid (нет xt_owner?)"
+        say "proxy_uid: не удалось восстановить MARK из conntrack"
         return 0
     fi
     # Адрес источника сокет выбирает ДО метки — по main-таблице. Без SNAT пакеты

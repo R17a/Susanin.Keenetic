@@ -386,12 +386,12 @@ grep 172.16.5 /proc/net/nf_conntrack | head -3     # mark=0x20000000/0x10000000
 Сначала понять, **где** рвётся. На роутере для проблемного имени:
 
 ```sh
-nslookup px1.rapo.dev                       # какой IP
-curl -v --max-time 10 https://px1.rapo.dev 2>&1 | tail -20     # напрямую
-curl -v --max-time 10 --interface nwg1 https://px1.rapo.dev 2>&1 | tail -20  # через VPN
-grep 193.233.218.166 /proc/net/nf_conntrack | head -3          # какая метка у потока
-ipset test susanin_never 193.233.218.166                       # не в «напрямую» ли
-ipset test susanin_ok_tcp 193.233.218.166                       # не выучен ли в VPN
+nslookup vpn.example.com                       # какой IP
+curl -v --max-time 10 https://vpn.example.com 2>&1 | tail -20     # напрямую
+curl -v --max-time 10 --interface nwg1 https://vpn.example.com 2>&1 | tail -20  # через VPN
+grep <IP-VDS> /proc/net/nf_conntrack | head -3          # какая метка у потока
+ipset test susanin_never <IP-VDS>                       # не в «напрямую» ли
+ipset test susanin_ok_tcp <IP-VDS>                       # не выучен ли в VPN
 ```
 
 Что означает вывод:
@@ -516,6 +516,58 @@ fail-open DIRECT`.
   регулярно, смотрите память.
 - Диагностика: `sh /opt/susanin/tools/diagnose.sh` — покажет `free`, swap, топ
   по RSS и случаи OOM из `dmesg`.
+
+## OOM-killer убил Xray: лог растёт в оперативной памяти
+
+Симптом (2026-11-11): интернет встаёт, хотя `top` показывает свободный процессор
+и `load average` 1–2. Панель `:8087` и SSH не отвечают (ядро принимает `TCP:22`,
+но баннер не приходит — процесс не может отфоркаться). В `dmesg`:
+
+```
+Out of memory: Kill process 984 (xray) total-vm:562620kB, anon-rss:10104kB
+```
+
+в `susanin.log` — `tproxy: Xray :12345 пропал … fail-open DIRECT`, затем подъём
+заново. В `/opt/var/log/tp-health.log` видно `MemAvailable` в единицы мегабайт.
+
+Причина: `/tmp` на Keenetic — это `tmpfs`, то есть **оперативная память**.
+Debug-лог Xray (`xray_loglevel=debug`) вырос до 15 МБ в `/tmp/xray.log`,
+`MemAvailable` упал до 5 МБ — ниже порога ядра (`Normal free:3548kB min:3556kB`),
+и OOM-killer убил Xray. Свопа на роутере нет, поэтому «переждать» нечем.
+
+Проверка:
+
+```sh
+df -h /tmp
+du -sk /tmp/* | sort -n | tail
+dmesg | grep -iE "Out of memory|Killed process"
+dmesg | grep -A3 "Mem-Info"
+```
+
+`shmem` в `Mem-Info` — это и есть содержимое `/tmp`. Если `shmem` сопоставим с
+размером лога, причина найдена.
+
+Что делать:
+
+- убрать лог из RAM: `rm -f /tmp/xray.log`; если файл держит открытым живой
+  процесс, место вернётся только после его остановки (`/opt/etc/init.d/S93xray-tproxy restart`);
+- держать `xray_loglevel=none` (или `warning`): debug на 122 МБ роутере
+  недопустим;
+- с 0.4.6 действуют `xray_log_max_kb=2048` (обрезка
+  `/opt/susanin/var/xray.log` перед запуском) и `xray_min_mem_kb=12288`
+  (при меньшей свободной памяти Xray не поднимается, правила остаются
+  fail-open DIRECT) — watchdog не зацикливается «убило — подняли — снова убили»;
+- `S93xray-tproxy` при старте сам удаляет `/tmp/xray.log` и обрезает свой лог.
+
+Убедиться, куда пишет живой процесс:
+
+```sh
+ls -l /proc/$(pidof xray)/fd | grep log
+```
+
+Невыгружаемый slab (`slab_unreclaimable` в `Mem-Info`, у нас 17,7 МБ) — это
+структуры ядра (`kmalloc-*`, `kmalloc-node`); они не освобождаются, но и не
+текут: если значение стабильно, это не причина.
 
 ## Роутер «зависает»: в top много процессов xray
 

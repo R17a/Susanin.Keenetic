@@ -12,6 +12,8 @@
 # build intermediates (release binaries ARE committed, see build/)
 *.o
 susanin-agent
+# копии кросс-бинарников в корне (build/susanin-agent.* — коммитятся)
+/susanin-agent.*
 # скомпилированные host-тесты (исходники .c/.sh — на месте)
 /tests/test_*
 !/tests/test_*.c
@@ -19,6 +21,8 @@ susanin-agent
 *.ipk
 /dist/
 /dist-ipk/
+# локальные каталоги релизных сборок (dist-v0.4.6, dist-test и т.п.)
+/dist-*/
 
 # runtime state / logs (never commit secrets)
 *.log

@@ -64,6 +64,13 @@ typedef struct {
     char xray_gogc[16];      /* GOGC Xray (память; читает init/xray-egress.sh) */
     char xray_gomemlimit[16];/* GOMEMLIMIT Xray (память) */
     int xray_watchdog;       /* 1 = агент сам поднимает упавший Xray (tproxy) */
+    /* Порог свободной памяти (КБ) для запуска Xray агентом: при меньшем значении
+     * запуск пропускается — иначе на 122 МБ без swap OOM-killer убивает Xray
+     * через секунды после старта (2026-11-11). 0 = не проверять. */
+    int xray_min_mem_kb;
+    /* Обрезка лога Xray (/opt/susanin/var/xray.log) перед запуском, КБ.
+     * 0 = не обрезать. Лог в tmpfs на таком роутере — прямая потеря памяти. */
+    int xray_log_max_kb;
     char disk_mode[8];      /* normal | soft: soft = минимум записей на диск */
     int soft_state_interval; /* soft: как часто сохранять состояние (сек; 0=никогда) */
     char learn_exclude_ports[CFG_PATH_MAX]; /* порты, которые не учим (скан-шум) */

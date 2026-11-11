@@ -75,6 +75,12 @@
           f('socks_addr', 'Адрес Xray SOCKS', '', 'text', { kind: 'ip' }),
           f('socks_port', 'Порт Xray SOCKS', '', 'number', { kind: 'int' })
         ]},
+        { title: 'P5: сторонний прокси (MTProxy/Teleproxy)', fields: [
+          f('proxy_uid', 'UID/пользователь прокси', 'трафик этого процесса уходит в proxy_egress; пусто = выключено', 'text'),
+          f('proxy_egress', 'Интерфейс для прокси', 'например nwg0/nocli0; пусто = выключено', 'text', { kind: 'iface' }),
+          f('proxy_table', 'Таблица маршрутизации', 'по умолчанию 110; при down очищается', 'number', { kind: 'int' }),
+          f('proxy_mark', 'Метка (hex)', 'не должна пересекаться с mark_ok/mark_test/профилями', 'text')
+        ]},
         { title: 'Отказоустойчивость (Master/Slave)', fields: [
           f('egress_failback', 'Возврат на приоритетный VPN', 'первый в egress_interface — основной; после его восстановления трафик возвращается на него', 'bool'),
           f('egress_failback_debounce', 'Пауза до возврата', 'сек; сколько основной должен держаться, прежде чем вернуться', 'text', { kind: 'duration' }),
@@ -309,8 +315,8 @@
     cidrlist: /[0-9./, ]/,
     intlist: /[0-9, ]/,
     ident: /[a-z0-9_]/,
-    iface: /[A-Za-z0-9._-]/,
-    ifacelist: /[A-Za-z0-9._, -]/,
+    iface: /[A-Za-z0-9._+-]/,
+    ifacelist: /[A-Za-z0-9._+, -]/,
     table: /[0-9]/,
     mark: /[0-9a-fA-Fx]/,
     path: /[A-Za-z0-9._/-]/
@@ -388,8 +394,12 @@
     return out;
   }
 
-  /* Имя сетевого интерфейса: буквы/цифры/._- (nwg0, br-lan, ppp1.1). */
-  function isIfaceName(s) { return /^[A-Za-z0-9._-]{1,31}$/.test(s); }
+  /* Имя сетевого интерфейса: буквы/цифры/._+- (nwg0, br-lan, ppp1.1, oc+).
+   * Плюс нужен для шаблонов Keenetic: `oc+` (клиенты OpenConnect) и `wdtt+`.
+   * Раньше `+` не разрешался, и при наличии `oc+` в lan_interfaces сохранение
+   * раздела LAN отменялось целиком — «добавляю интерфейсы, сохраняю, а после
+   * перезагрузки страницы всё как было» (разбор 2026-11-09). */
+  function isIfaceName(s) { return /^[A-Za-z0-9._+-]{1,31}$/.test(s); }
 
   function isValidFormat(fld, value) {
     if (!value) return true;

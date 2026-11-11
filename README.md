@@ -90,6 +90,12 @@ susanin version && susanin status && susanin diagnose
 - [XRAY.md](XRAY.md) — XRay/VLESS-REALITY: совместимость, конфликты, XKeen;
 - [CHANGELOG.md](CHANGELOG.md) — что нового по версиям.
 
+Описание релиза на GitHub собирается при публикации тега: `.github/workflows/release.yml`
+берёт `.github/release-body.template.md` и вытаскивает из `CHANGELOG.md` раздел
+текущей версии. Отдельных файлов `release-notes-v*.md`, как в
+[Teleproxy.Keenetic](https://github.com/R17a/Teleproxy.Keenetic), здесь нет —
+там они нужны, потому что `CHANGELOG.md` апстримовый.
+
 <hr>
 
 ## 🇬🇧 English
