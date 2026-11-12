@@ -639,6 +639,7 @@ static int xray_proc_exists(void)
  * запустить», без причины: разбор 2026-11-07 показал, что по такому логу
  * нельзя отличить отсутствие бинаря от нехватки ресурсов на fork(). */
 static char xray_spawn_err[160];
+static char g_agentlog[256];   /* путь файла лога агента ('' = soft/no file) */
 
 /* Свободная память ядра, КБ (из /proc/meminfo); -1 — не прочитать. */
 static long mem_available_kb(void)
@@ -1043,6 +1044,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     time_t last_cdn = 0;
     time_t last_release = 0;
     time_t next_xray_try = 0;
+    time_t last_logrot = 0;
     int xray_tries = 0;
     int stuck_tries = 0;      /* подряд «процесс есть, но порт не слушается» */
     time_t last_dnssniff = 0;
@@ -1063,11 +1065,16 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 dup2(fd, 2);
                 if (fd > 2)
                     close(fd);
+                snprintf(g_agentlog, sizeof(g_agentlog), "%s", lf);
             }
         }
     }
     slog_init(cfg->log_level);
     backend_batch_enable(cfg->ipset_batch);
+    if (g_agentlog[0] && path_on_tmpfs(g_agentlog))
+        slogf(SL_WARN, "log: %s лежит на tmpfs (это RAM!): рост логов отнимает память, "
+                       "при reboot улики исчезают. Держите лог на flash (так дешевле "
+                       "для носителя, чем кажется) или disk_mode=soft", g_agentlog);
     if (strcmp(cfg->disk_mode, "soft") == 0)
         slogf(SL_INFO, "disk_mode=soft: log file off, state not saved, no backups");
     if (cfg->ok_ttl == 0)
@@ -1654,6 +1661,19 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 never_state_clean(cfg, &st, now);
             if (never_pending)
                 last_never = prev;
+        }
+
+        /* Ротация логов по размеру в рантайме (2026-11-12): раньше — только
+         * при старте службы; долгий аптайм + INFO/debug = раздутый файл
+         * (в tmpfs — прямая потеря RAM). Агент чистит и свой лог, и web-лог:
+         * писатели с O_APPEND продолжают с нового EOF. */
+        if (now - last_logrot >= 300) {
+            last_logrot = now;
+            if (strcmp(cfg->disk_mode, "soft") != 0) {
+                if (g_agentlog[0])
+                    log_rotate_if_big(g_agentlog, 4096, 1024);
+                log_rotate_if_big("/opt/susanin/var/susanin-web.log", 2048, 512);
+            }
         }
 
         usleep(200000);

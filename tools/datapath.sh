@@ -273,10 +273,15 @@ rule_mark() {
         mangle "$CHAIN" -i "$i" -m set --match-set "$DIRECTSET" dst -j RETURN
         # Порты, которые ВСЕГДА идут напрямую (не в VPN и не в udp-relay):
         #   53/853 — DNS / DNS-over-TLS (иначе ломается резолв);
-        #   500/4500 — IPsec (IKE/NAT-T); 8567 — UDP-мессенджер Битрикс24.
+        #   500/4500 — IPsec (IKE/NAT-T).
         # RETURN стоит ДО правил наборов, поэтому действует, даже если адрес уже
         # выучен в susanin_ok_*/ok_net.
-        for _p in 53 853 500 4500 8567; do
+        # 8567 (UDP-мессенджер Битрикс24) был в этом списке до 0.4.5(r3): прямой
+        # путь к серверам Bitrix (NL/AWS) стал теряться, и исключение мешало
+        # увести мессенджер в туннель — теперь он управляется списками
+        # vpn_always/vpn_never на общих основаниях. Дополнительные порты:
+        # SUSANIN_DIRECT_PORTS="53 853 500 4500 1234" (через пробел).
+        for _p in ${SUSANIN_DIRECT_PORTS:-53 853 500 4500}; do
             for _t in tcp udp; do
                 mangle "$CHAIN" -i "$i" -p "$_t" --dport "$_p" -j RETURN
                 mangle "$CHAIN" -i "$i" -p "$_t" --sport "$_p" -j RETURN

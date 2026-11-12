@@ -258,6 +258,14 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
     printf("susanin-agent %s\n", SUSANIN_VERSION);
     printf("config file: %s (%s)\n", conf_path,
            access(conf_path, R_OK) == 0 ? "present" : "absent");
+    {
+        const char *lp = getenv("SUSANIN_LOG");
+        if (!lp || !*lp)
+            lp = "/opt/susanin/var/susanin.log";
+        printf("log: %s%s\n", lp,
+               strcmp(cfg->disk_mode, "soft") == 0 ? " (disk_mode=soft: файл не ведётся)"
+               : path_on_tmpfs(lp) ? "  (! tmpfs = RAM: риск OOM и утраты логов при reboot)" : "");
+    }
     printf("egress=%s table=%d lan=%s\n", cfg->egress_interface,
            cfg->routing_table, cfg->lan_interfaces);
     cfg_tp = strcmp(cfg->egress_type, "tproxy") == 0;
