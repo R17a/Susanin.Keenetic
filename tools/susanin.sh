@@ -302,6 +302,7 @@ case "${1:-}" in
     uninstall) shift || true; sh "$TOOLS/uninstall.sh" "$@" ;;
     down) sh "$TOOLS/datapath.sh" down; sh "$TOOLS/datapath.sh" p5-down ;;
     reset|forget) "$BIN" reset "$2" ;;
+    why) "$BIN" why "$2" ;;
     add) sh "$TOOLS/datapath.sh" add "$2" "$3" "$4" ;;
     del) sh "$TOOLS/datapath.sh" del "$2" "$3" ;;
     profiles) SUSANIN_CONF="$CONF" sh "$TOOLS/profiles.sh" "${2:-status}" ;;

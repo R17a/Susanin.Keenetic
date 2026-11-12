@@ -7,6 +7,7 @@
 #include "release.h"
 #include "state.h"
 #include "vpn_always.h"
+#include "vpn_never.h"
 #include "version.h"
 
 #include <arpa/inet.h>
@@ -508,6 +509,97 @@ int ops_reset(const susanin_config *cfg, const char *arg)
     }
     state_save(path, &st);
     state_free(&st);
+    return 0;
+}
+
+/* `susanin why <ip|domain>` — почему адрес маршрутизируется так, а не иначе:
+ * какая запись списка его накрывает, в каких наборах и кэшах он лежит.
+ * (2026-11-12: поиск «почему dnevnik не учится» занял два часа, потому что
+ * накрывающий CIDR в vpn_never нигде не было видно.) */
+int ops_why(const susanin_config *cfg, const char *arg)
+{
+    char ip[16];
+    char entry[256];
+    struct in_addr a;
+    susanin_state st;
+    const char *spath = "/opt/susanin/var/susanin.state";
+    time_t now = time(NULL);
+    int udp, in_never = 0, in_direct = 0, in_ok = 0, in_test = 0, in_oknet = 0;
+    int stv_never = 0, stv_ok = 0;
+
+    if (!arg || !arg[0]) {
+        fprintf(stderr, "usage: susanin-agent why <ip|domain>\n");
+        return 2;
+    }
+    ip[0] = '\0';
+    if (inet_pton(AF_INET, arg, &a) == 1) {
+        snprintf(ip, sizeof(ip), "%.15s", arg);
+    } else {
+        char server[64];
+        char names[2][300];
+        char ips[16][16];
+        int nn = 0, k, m;
+        va_pick_resolver(cfg, server, sizeof(server));
+        snprintf(names[nn++], sizeof(names[0]), "%.200s", arg);
+        snprintf(names[nn++], sizeof(names[0]), "www.%.200s", arg);
+        for (k = 0; k < nn && !ip[0]; k++) {
+            m = va_dns_query(server, names[k], ips, 16, 1500);
+            if (m > 0)
+                snprintf(ip, sizeof(ip), "%s", ips[0]);
+        }
+        if (!ip[0]) {
+            fprintf(stderr, "[susanin] why %s: адрес не разрешился\n", arg);
+            return 1;
+        }
+        printf("why %s -> %s\n", arg, ip);
+    }
+    if (!cfg->vpn_never_file[0])
+        printf("  vpn_never: (файл списка не задан)\n");
+    else if (vn_match_file(cfg->vpn_never_file, ip, entry, sizeof(entry))) {
+        printf("  vpn_never: запись \"%s\" накрывает адрес -> ВСЕГДА напрямую\n", entry);
+        in_never = 1;
+    } else
+        printf("  vpn_never: накрывающей записи нет\n");
+    if (cfg->vpn_always_file[0] &&
+        vn_match_file(cfg->vpn_always_file, ip, entry, sizeof(entry)))
+        printf("  vpn_always: явная запись \"%s\" (IP/CIDR)\n", entry);
+
+    in_never  = in_never  || backend_set_test(cfg, "susanin_never", ip) == 0;
+    in_direct = backend_set_test(cfg, "susanin_direct", ip) == 0;
+    in_oknet  = backend_set_test(cfg, "susanin_ok_net", ip) == 0;
+    printf("  ipset never/direct/ok_net : %s/%s/%s\n",
+           backend_set_test(cfg, "susanin_never", ip) == 0 ? "ЕСТЬ" : "нет",
+           in_direct ? "ЕСТЬ" : "нет",
+           in_oknet ? "ЕСТЬ (VPN, префикс)" : "нет");
+    for (udp = 0; udp < 2; udp++) {
+        const char *set = udp ? "susanin_ok_udp" : "susanin_ok_tcp";
+        const char *tset = udp ? "susanin_test_udp" : "susanin_test_tcp";
+        int o = backend_set_test(cfg, set, ip) == 0;
+        int t = backend_set_test(cfg, tset, ip) == 0;
+        in_ok = in_ok || o;
+        in_test = in_test || t;
+        printf("  ipset %-17s: %s   %-17s: %s\n", set, o ? "ЕСТЬ (VPN)" : "нет",
+               tset, t ? "ЕСТЬ (проба VPN)" : "нет");
+    }
+
+    state_init(&st);
+    state_load(spath, &st);
+    stv_ok = state_has(st_ok(&st, 0), ip, now) || state_has(st_ok(&st, 1), ip, now);
+    stv_never = state_has(&st.never, ip, now);
+    state_free(&st);
+    printf("  state ok/never: %s/%s\n", stv_ok ? "ЕСТЬ" : "нет", stv_never ? "ЕСТЬ" : "нет");
+
+    printf("  вывод: ");
+    if (in_never || in_direct || stv_never)
+        printf("напрямую (vpn_never/direct) — обучение в VPN заблокировано;"
+               " чтобы пустить через VPN, удалите накрывающую запись из vpn_never\n");
+    else if (in_ok || in_oknet || stv_ok)
+        printf("через VPN (ok)\n");
+    else if (in_test)
+        printf("проба через VPN (test)\n");
+    else
+        printf("не выучен -> прямой путь; при деградации прямого FAST-детект"
+               " завернёт в VPN в течение ~1 мин\n");
     return 0;
 }
 

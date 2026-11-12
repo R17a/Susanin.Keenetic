@@ -30,4 +30,8 @@ int vn_is_recently_never(const char *ip, time_t now);
  * из списка). Дешёвая проверка в памяти — для классификатора и sweep_direct. */
 int vn_has(const char *ip);
 
+/* Для `susanin why <ip>`: накрывает ли ФАЙЛ vpn_never адрес (IP или CIDR).
+ * Возврат 1, в out — строка списка. Читает файл напрямую (CLI-процесс). */
+int vn_match_file(const char *path, const char *ip, char *out, size_t n);
+
 #endif

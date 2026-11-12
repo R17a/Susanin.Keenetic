@@ -631,6 +631,20 @@ static const char *pair_key(char *buf, size_t n, const susanin_config *cfg,
     return buf;
 }
 
+/* Пропуск обучения — INFO, но не чаще раза в 10 минут на адрес: на DEBUG
+ * вопрос «почему адрес не заворачивается в VPN» был неразбираем
+ * (2026-11-12, случай dnevnik.ru). */
+static void skip_note(const char *ip, unsigned port, time_t now, const char *why)
+{
+    static char last_ip[64];
+    static time_t last_at;
+    if (strcmp(last_ip, ip) != 0 || now - last_at >= 600) {
+        snprintf(last_ip, sizeof(last_ip), "%.63s", ip);
+        last_at = now;
+        slogf(SL_INFO, "AUTO-SUSANIN: skip %s:%u (%s)", ip, port, why);
+    }
+}
+
 static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
                          const char *stage, const char *reason)
 {
@@ -643,14 +657,14 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
      * vn_refresh/ipset и наш state расходятся, и sweep_direct рвёт его потоки).
      * Учитываем и список vpn_never, и пины DNS-снифинга (st.never). */
     if (vn_has(f->dst) || state_has(&ctx->st->never, f->dst, now)) {
-        slogf(SL_DEBUG, "AUTO-SUSANIN: skip %s:%u (vpn_never)", f->dst, f->dport);
+        skip_note(f->dst, f->dport, now, "vpn_never");
         return;
     }
     /* Не учим в VPN адрес, недавно бывший в vpn_never: он должен идти напрямую,
-     * иначе возможен «прыжок» direct <-> VPN (план п.8.3). */
+     * иначе возможен «прыжок» direct <-> VPN (план п.8.3). Осознанно удалённые
+     * из списка записи кулдаун НЕ получают (см. doms_reconcile). */
     if (vn_is_recently_never(f->dst, now)) {
-        slogf(SL_DEBUG, "AUTO-SUSANIN: skip %s:%u (recently vpn_never)",
-              f->dst, f->dport);
+        skip_note(f->dst, f->dport, now, "recently vpn_never");
         return;
     }
     /* Прямая проба — только для «SYN ушёл без ответа»: там свежий connect
@@ -661,16 +675,14 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
      * запрещать обучение по сигналам SNI (DPI-RST/CLOSE). */
     if (f->l4proto == 6 && f->dport > 0 && syn) {
         if (dok_has(f->dst, now)) {
-            slogf(SL_DEBUG, "AUTO-SUSANIN: skip %s:%u (недавно проверено: прямой жив)",
-                  f->dst, f->dport);
+            skip_note(f->dst, f->dport, now, "недавно проверено: прямой жив");
             return;
         }
         if (!direct_probe_budget_ok(now)) {
             /* Бюджет проб исчерпан: осознанно НЕ заворачиваем (короткая отметка),
              * иначе защита отключалась бы ровно под нагрузкой. */
             dok_add(f->dst, now, DOK_TTL_BUDGET);
-            slogf(SL_DEBUG, "AUTO-SUSANIN: %s skip %s:%u (бюджет проб исчерпан)",
-                  stage, f->dst, f->dport);
+            skip_note(f->dst, f->dport, now, "бюджет проб исчерпан");
             return;
         }
         if (!direct_probe_sec_ok(now))

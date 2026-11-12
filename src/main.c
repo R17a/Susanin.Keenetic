@@ -38,6 +38,7 @@ static void usage(void)
         "  susanin-agent install\n"
         "  susanin-agent uninstall\n"
         "  susanin-agent reset <ip|domain>   (forget — синоним)\n"
+        "  susanin-agent why <ip|domain>     (почему адрес идёт так: списки/наборы/кэш)\n"
         "  susanin-agent diag errors         (ERROR/WARN из лога агента)\n",
         SUSANIN_VERSION);
 }
@@ -195,6 +196,10 @@ int main(int argc, char **argv)
     /* reset <ip|domain> — сброс из кэша/ipsets/conntrack (forget — синоним). */
     if (!strcmp(cmd, "reset") || !strcmp(cmd, "forget"))
         return ops_reset(&cfg, argc > 2 ? argv[2] : NULL);
+
+    /* why <ip|domain> — диагностика маршрутизации адреса. */
+    if (!strcmp(cmd, "why"))
+        return ops_why(&cfg, argc > 2 ? argv[2] : NULL);
 
     if (!strcmp(cmd, "uninstall")) {
         printf("removing Susanin.Keenetic data plane ...\n");

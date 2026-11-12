@@ -538,6 +538,23 @@ void dns_sniff_reset_pins(void)
     }
 }
 
+/* Другая живая запись с тем же IP всё ещё покрывается списком (slot 0=always,
+ * 1=never) — тогда пин снимать нельзя, только сбросить флаг у нашей записи. */
+static int other_entry_matches(time_t now, int skip, int slot,
+                               const susanin_config *cfg, const char *ip)
+{
+    int i;
+    for (i = 0; i < DNS_MAX_ENTRIES; i++) {
+        dns_entry *e = &g_tab[i];
+        if (i == skip || !e->domain[0] || e->expire <= now || strcmp(e->ip, ip) != 0)
+            continue;
+        if (slot == 0 ? (e->pinned && list_match(0, cfg->vpn_always_file, e->domain))
+                      : (e->pinned_never && list_match(1, cfg->vpn_never_file, e->domain)))
+            return 1;
+    }
+    return 0;
+}
+
 void dns_sniff_reconcile(const susanin_config *cfg)
 {
     int i;
@@ -592,6 +609,34 @@ void dns_sniff_reconcile(const susanin_config *cfg)
                 }
             }
             slogf(SL_INFO, "dns-sniff: %s -> %s (vpn_never)", e->domain, e->ip);
+        }
+        /* Снятие пина, когда записи УЖЕ НЕТ в списке: раньше dns_sniff-пин
+         * переживал удаление строки (never — бессрочно, always — до ok_ttl),
+         * и пользователь не мог «отпустить» адрес правкой списка
+         * (2026-11-12, случай dnevnik.ru). Флаг сбрасываем в любом случае;
+         * сам пин — только если его не держит другая живая запись. */
+        if (e->pinned && !list_match(0, cfg->vpn_always_file, e->domain)) {
+            e->pinned = 0;
+            if (!other_entry_matches(now, i, 0, cfg, e->ip)) {
+                backend_ok_pin_del(cfg, e->ip);
+                if (g_state) {
+                    state_remove(st_ok(g_state, 0), e->ip);
+                    state_remove(st_ok(g_state, 1), e->ip);
+                }
+                slogf(SL_INFO, "dns-sniff: %s -> %s unpinned (нет в vpn_always)",
+                      e->domain, e->ip);
+            }
+        }
+        if (e->pinned_never && !list_match(1, cfg->vpn_never_file, e->domain)) {
+            e->pinned_never = 0;
+            if (!other_entry_matches(now, i, 1, cfg, e->ip)) {
+                backend_set_del(cfg, "susanin_never", e->ip);
+                if (g_state)
+                    state_remove(&g_state->never, e->ip);
+                backend_ct_flush_ip(e->ip);
+                slogf(SL_INFO, "dns-sniff: %s -> %s unpinned (нет в vpn_never)",
+                      e->domain, e->ip);
+            }
         }
     }
     backend_batch_end();

@@ -270,10 +270,13 @@ static vn_dom *dom_find(vpn_never *v, const char *name)
     return NULL;
 }
 
-static void doms_reconcile(vpn_never *v, char names[][256], int wilds[], int n)
+static void tracked_remove(vpn_never *v, const char *val);   /* fwd (определено ниже) */
+
+static void doms_reconcile(vpn_never *v, const susanin_config *cfg,
+                           char names[][256], int wilds[], int n)
 {
     vn_dom keep[VN_MAXDOM];
-    int nk = 0, i;
+    int nk = 0, i, j, k;
     for (i = 0; i < n && i < VN_MAXDOM; i++) {
         vn_dom *old = dom_find(v, names[i]);
         vn_dom *d = &keep[nk++];
@@ -290,6 +293,35 @@ static void doms_reconcile(vpn_never *v, char names[][256], int wilds[], int n)
             d->is_net = strchr(d->name, '/') ? 1 : 0;
             d->wild = wilds[i];
             d->next_try = 0;
+        }
+    }
+    /* Запись УДАЛЕНА из файла (имени нет в новом списке) — снимаем её адреса
+     * немедленно и БЕЗ кулдауна «recently_never»: пользователь убрал запись
+     * именно для того, чтобы адрес снова начался учиться (2026-11-12, случай
+     * dnevnik.ru: кулдаун 3600 с блокировал обучение час после правки, а
+     * гистерезис 2 цикла — ещё ~10 минут). Кулдаун остаётся только для
+     * «временных» изъятий (имя в списке, но резолв не дал ответов) — их
+     * снимает общий цикл removal ниже, намеренно с защитой от прыжков. */
+    for (j = 0; j < v->nd; j++) {
+        int still = 0;
+        for (i = 0; i < nk; i++) {
+            if (!strcmp(keep[i].name, v->dom[j].name)) {
+                still = 1;
+                break;
+            }
+        }
+        if (still)
+            continue;
+        if (v->dom[j].is_net) {
+            backend_set_del(cfg, VN_SET, v->dom[j].name);
+            tracked_remove(v, v->dom[j].name);
+            slogf(SL_INFO, "vpn_never: unpin %s (удалено из списка)", v->dom[j].name);
+        }
+        for (k = 0; k < v->dom[j].nips; k++) {
+            backend_set_del(cfg, VN_SET, v->dom[j].ips[k]);
+            tracked_remove(v, v->dom[j].ips[k]);
+            backend_ct_flush_ip(v->dom[j].ips[k]);
+            slogf(SL_INFO, "vpn_never: unpin %s (удалено из списка)", v->dom[j].ips[k]);
         }
     }
     memcpy(v->dom, keep, (size_t)nk * sizeof(vn_dom));
@@ -503,7 +535,7 @@ int vn_refresh2(vpn_never *v, const susanin_config *cfg, int *changed)
         v->seen_size != st.st_size) {
         int nf = file_load(cfg->vpn_never_file, names, wilds, VN_MAXDOM);
         if (nf >= 0) {
-            doms_reconcile(v, names, wilds, nf);
+            doms_reconcile(v, cfg, names, wilds, nf);
             for (i = 0; i < v->nd; i++)
                 if (zone_in_always(cfg, v->dom[i].name, v->dom[i].wild))
                     slogf(SL_WARN,
@@ -673,4 +705,27 @@ int vn_refresh2(vpn_never *v, const susanin_config *cfg, int *changed)
 int vn_refresh(vpn_never *v, const susanin_config *cfg)
 {
     return vn_refresh2(v, cfg, NULL);
+}
+
+/* Для `susanin why <ip>`: лежит ли в ФАЙЛЕ vpn_never запись, накрывающая
+ * адрес (точное совпадение IP или CIDR). Возврат 1, в out — строка списка. */
+int vn_match_file(const char *path, const char *ip, char *out, size_t n)
+{
+    static char names[VN_MAXDOM][256];
+    static int wilds[VN_MAXDOM];
+    int nf, i;
+    if (out && n)
+        out[0] = '\0';
+    if (!path || !path[0] || !ip || !ip[0])
+        return 0;
+    nf = file_load(path, names, wilds, VN_MAXDOM);
+    for (i = 0; i < nf; i++) {
+        const char *e = names[i];
+        if (!strcmp(e, ip) || (strchr(e, '/') && ipv4_in_cidr(ip, e))) {
+            if (out && n)
+                snprintf(out, n, "%s", e);
+            return 1;
+        }
+    }
+    return 0;
 }

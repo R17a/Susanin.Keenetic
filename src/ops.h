@@ -10,6 +10,9 @@ int ops_apply(const susanin_config *cfg, const char *conf_path, int dry_run);
 /* Сбросить адрес (IP или домен) из кэша/ipsets и conntrack — «забыть» для
  * повторного обучения. `forget <ip>` — синоним. */
 int ops_reset(const susanin_config *cfg, const char *arg);
+/* `why <ip|domain>` — почему адрес маршрутизируется так: накрывающие записи
+ * списков, членство в ipset-наборах, кэш state. */
+int ops_why(const susanin_config *cfg, const char *arg);
 const char *ops_default_conf_path(void);
 
 /* Read-only JSON snapshot for the built-in web panel (`/api/status`). */
