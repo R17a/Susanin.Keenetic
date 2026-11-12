@@ -548,6 +548,11 @@ void dns_sniff_reconcile(const susanin_config *cfg)
      * нельзя привязать напрямую (if_nametoindex("oc+") == 0): дооткрываем
      * появившиеся интерфейсы здесь, не дожидаясь перезапуска агента. */
     sniff_sync(cfg);
+    /* Пины этого прохода — одним батчем (ipset restore): без него каждый пин
+     * это отдельный fork ipset, а с 0.4.6 dns_store пишет и qname, и CNAME —
+     * записей вдвое больше. Вне batch буфер копит и nothing-операции — конец
+     * обязан быть строго после begin. */
+    backend_batch_begin();
     for (i = 0; i < DNS_MAX_ENTRIES; i++) {
         dns_entry *e = &g_tab[i];
         if (!e->domain[0] || e->expire <= now)
@@ -589,6 +594,7 @@ void dns_sniff_reconcile(const susanin_config *cfg)
             slogf(SL_INFO, "dns-sniff: %s -> %s (vpn_never)", e->domain, e->ip);
         }
     }
+    backend_batch_end();
 }
 
 int dns_sniff_count(void)

@@ -57,8 +57,11 @@ start() {
     fi
     # Нехватка памяти: запуск только приблизит OOM — ядро убьёт Xray через
     # секунды, а watchdog начнёт цикл «убило — подняли — снова убили».
+    # Порог включается ТОЛЬКО явным xray_min_mem_kb>0 в susanin.conf: по
+    # умолчанию 0 (выключено), как в 0.4.4. Зашитый 12288 блокировал подъём
+    # Xray на 122 МБ роутерах (регресс 0.4.6, откатан в 0.4.5-redo).
     _memmin=$(sed -n 's/^xray_min_mem_kb=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
-    [ -n "$_memmin" ] || _memmin=12288
+    [ -n "$_memmin" ] || _memmin=0
     if [ "$_memmin" -gt 0 ] 2>/dev/null; then
         _av=$(awk '/MemAvailable:/ {print $2; exit}' /proc/meminfo 2>/dev/null)
         if [ -n "$_av" ] && [ "$_av" -lt "$_memmin" ] 2>/dev/null; then

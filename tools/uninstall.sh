@@ -25,6 +25,12 @@ fi
 if [ -x "$PREFIX/tools/datapath.sh" ]; then
     sh "$PREFIX/tools/datapath.sh" down || true
 fi
+# Остатки сторожа 0.4.6: иначе он переживёт удаление и будет поднимать Xray.
+if [ -f /opt/etc/init.d/S95xray-guard ]; then
+    sh /opt/etc/init.d/S95xray-guard stop >/dev/null 2>&1 || true
+    rm -f /opt/etc/init.d/S95xray-guard /opt/var/run/xray-guard.pid 2>/dev/null || true
+    say "removed S95xray-guard (остаток 0.4.6)"
+fi
 [ -f "$INITD" ] && rm -f "$INITD" && say "removed $INITD"
 
 # Симлинк короткого вызова убираем только если он ведёт на НАШ скрипт.

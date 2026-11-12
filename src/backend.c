@@ -897,8 +897,17 @@ int backend_ready(const susanin_config *c)
     }
 
     /* P5: если настроен вывод стороннего прокси через туннель — проверяем,
-     * что метка по uid и ip rule на месте (NDM/перезагрузка могли снести). */
+     * что метка по uid и ip rule на месте (NDM/перезагрузка могли снести).
+     * Кэш 30 с: backend_ready вызывается каждые 5 с (fast check), а здесь два
+     * форка (iptables -S OUTPUT, ip rule show) — на MIPS это лишний xtables-lock
+     * и CPU. Просрочка кэша — ровно прежняя проверка. */
     if (c->proxy_uid[0] && c->proxy_egress[0]) {
+        static time_t p5_ok_at;
+        time_t p5now = time(NULL);
+        if (p5_ok_at && p5now - p5_ok_at < 30)
+            goto p5_cached;
+        p5_ok_at = 0;
+        {
         /* proxy_uid может быть числовым: на Keenetic /etc/passwd read-only и
          * пользователя не добавить. iptables понимает числовой uid. */
         unsigned proxy_uid_num = 0;
@@ -934,7 +943,10 @@ int backend_ready(const susanin_config *c)
             return 1;
         if (rc != 0 || !strstr(out, needle))
             return 0;
+        p5_ok_at = p5now;
+        }
     }
+p5_cached:
     return 1;
 }
 

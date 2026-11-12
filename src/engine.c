@@ -698,9 +698,58 @@ static int xray_mem_ok(const susanin_config *cfg)
     return avail >= cfg->xray_min_mem_kb;
 }
 
-/* Прямой запуск Xray без shell: fork/execv. Раньше старт шёл через
- * S93xray-tproxy, и на роутере он падал с "sh: -c requires an argument" —
- * Xray не поднимался вообще. Теперь агент запускает бинарь сам.
+/* Дети, которых агент породил сам (прямой старт xray, shell S93): их надо
+ * пожинать, иначе после каждого падения Xray в /proc копятся зомби.
+ * Массив маленький — дольше 2–3 процессов живой породы за раз не бывает. */
+static pid_t g_xray_kids[4];
+
+static void kid_track(pid_t p)
+{
+    int i;
+    if (p <= 0)
+        return;
+    for (i = 0; i < 4; i++)
+        if (g_xray_kids[i] == p)
+            return;
+    for (i = 0; i < 4; i++) {
+        if (g_xray_kids[i] <= 0) {
+            g_xray_kids[i] = p;
+            return;
+        }
+    }
+    g_xray_kids[0] = p;     /* кольцо: самый старый слот освобождаем новым */
+}
+
+/* Вызывается из главного цикла: собираем завершившихся детей без блокировки.
+ * waitpid только по нашим pid — чужих (probe_job) не трогаем. */
+static void kids_poll(void)
+{
+    int i;
+    for (i = 0; i < 4; i++) {
+        pid_t p = g_xray_kids[i];
+        if (p > 0) {
+            int st;
+            pid_t r = waitpid(p, &st, WNOHANG);
+            if (r == p || (r < 0 && errno != EINTR))
+                g_xray_kids[i] = 0;
+        }
+    }
+}
+
+/* Записать pid нашего Xray туда же, куда пишет S93xray-tproxy: тогда
+ * `S93 status/stop` видят процесс, поднятый агентом (в 0.4.5 pidfile терялся). */
+static void write_xray_pidfile(pid_t pid)
+{
+    FILE *f = fopen("/opt/susanin/var/xray.pid", "w");
+    if (f) {
+        fprintf(f, "%d\n", (int)pid);
+        fclose(f);
+    }
+}
+
+/* Прямой запуск Xray без shell: fork/execl. Это FALLBACK: на роутере
+ * S93xray-tproxy падал с "sh: -c requires an argument", и Xray не поднимался
+ * вообще. Штатный путь — S93 (см. restart_xray_process).
  * Возврат: 0 — процесс создан, -1 — не удалось (причина в xray_spawn_err). */
 static int spawn_xray_direct(const susanin_config *cfg)
 {
@@ -743,20 +792,26 @@ static int spawn_xray_direct(const susanin_config *cfg)
               "/opt/susanin/etc/xray-tproxy.json", (char *)NULL);
         _exit(127);
     }
+    kid_track(pid);
+    write_xray_pidfile(pid);
     return 0;
 }
 
-/* Запуск Xray штатным init-скриптом: свой pid-файл, ожидание старта и повтор.
- * Нужен как fallback, когда прямой fork/exec не удался: один сбой fork() без
- * него превращался в часы fail-open DIRECT (разбор 2026-11-07: 39 попыток
- * «поднимаю» за 2 часа и ни одного запуска Xray). */
-static void spawn_xray_init(void)
+/* Асинхронный запуск штатного init-скрипта (S93xray-tproxy restart|start):
+ * без shell -c (тот и падал «sh: -c requires an argument» через system()),
+ * ребёнок пишет лог Xray и сам ведёт pidfile/loglevel. Главный цикл НЕ
+ * блокируется: успех проверяется следующим витком по порту. */
+static void spawn_xray_init(const char *action)
 {
     pid_t pid;
 
     pid = fork();
-    if (pid != 0)
+    if (pid < 0)
         return;
+    if (pid != 0) {
+        kid_track(pid);
+        return;
+    }
     setsid();
     {
         int fd = open("/opt/susanin/var/xray.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
@@ -767,7 +822,7 @@ static void spawn_xray_init(void)
                 close(fd);
         }
     }
-    execl("/bin/sh", "sh", "/opt/etc/init.d/S93xray-tproxy", "start", (char *)NULL);
+    execl("/bin/sh", "sh", "/opt/etc/init.d/S93xray-tproxy", action, (char *)NULL);
     _exit(127);
 }
 
@@ -785,14 +840,20 @@ static int wait_xray_port(const susanin_config *cfg, int secs)
     return -1;
 }
 
-/* Поднять Xray: сначала напрямую, при неудаче — через S93.
- * Возврат: 0 — процесс есть, -1 — поднять не удалось. */
+/* Поднять Xray. Штатный путь — S93xray-tproxy (асинхронно: свой pidfile,
+ * loglevel/GOGC/GOMEMLIMIT, проверка «удержался»). Прямой fork — только если
+ * S93 нет/не исполняется (fallback для окружений, где S93 падал).
+ * НИЧЕГО НЕ ЖДЁТ ВНУТРИ: главный цикл однопоточный, и ожидание порта здесь
+ * останавливал бы dns_sniff и обучение (регресс watchdog в 0.4.6: блокировка
+ * до ~30 с на попытку при backoff 60 с). Успех проверяет следующий виток
+ * reconcile (dp_check_interval).
+ * Возврат: 0 — породили запуск / процесс уже есть; -1 — поднять не можем. */
 static int restart_xray_process(const susanin_config *cfg)
 {
-    int i;
-
-    /* Не гоняем цикл «убило OOM — подняли — снова убили»: при нехватке памяти
-     * запуск пропускаем, правила остаются fail-open (DIRECT), в логе — причина. */
+    /* Памятный гейт активен только при явном xray_min_mem_kb>0 (по умолчанию
+     * 0 = выключен, как в 0.4.4): на 122 МБ роутере с порогом 12288 КБ Xray
+     * почти никогда не поднимался после падения — долгий fail-open DIRECT и
+     * «сайты грузятся медленно» (регрессия 0.4.6). */
     if (!xray_mem_ok(cfg)) {
         slogf(SL_WARN,
               "tproxy: Xray не поднимаю — мало памяти (MemAvailable=%ld КБ, порог %d КБ)",
@@ -806,29 +867,17 @@ static int restart_xray_process(const susanin_config *cfg)
         return 0;
     }
 
-    (void)spawn_xray_direct(cfg);
-    if (xray_spawn_err[0] == '\0') {
-        for (i = 0; i < 25 && !xray_proc_exists(); i++)   /* до 5 c */
-            usleep(200000);
-    }
-    if (xray_spawn_err[0] == '\0' && xray_proc_exists()) {
-        slogf(SL_INFO, "tproxy: Xray запущен агентом (pid есть)");
+    xray_log_trim(cfg->xray_log_max_kb);
+    if (access("/opt/etc/init.d/S93xray-tproxy", X_OK) == 0) {
+        spawn_xray_init("restart");
+        slogf(SL_INFO, "tproxy: запуск Xray через S93xray-tproxy restart (асинхронно)");
         return 0;
     }
-    if (xray_spawn_err[0] == '\0')
-        snprintf(xray_spawn_err, sizeof(xray_spawn_err), "процесс не появился");
-
-    slogf(SL_WARN, "tproxy: прямой запуск Xray не удался (%s) — пробую S93xray-tproxy",
-          xray_spawn_err);
-    spawn_xray_init();
-    for (i = 0; i < 50 && !xray_proc_exists(); i++)   /* до 10 c */
-        usleep(200000);
-    if (xray_proc_exists()) {
-        slogf(SL_INFO, "tproxy: Xray поднят через S93xray-tproxy (fallback)");
+    if (spawn_xray_direct(cfg) == 0) {
+        slogf(SL_WARN, "tproxy: S93xray-tproxy недоступен — подняли Xray напрямую (fallback)");
         return 0;
     }
-    slogf(SL_ERROR, "tproxy: Xray не запустился ни напрямую, ни через S93 (%s)",
-          xray_spawn_err);
+    slogf(SL_ERROR, "tproxy: Xray не запустить: %s", xray_spawn_err);
     return -1;
 }
 
@@ -1130,6 +1179,8 @@ int engine_run(susanin_config *cfg, const char *conf_path)
 
     while (!g_stop) {
         time_t now = time(NULL);
+
+        kids_poll();     /* пожинать детей прямого запуска Xray/S93 (без зомби) */
 
         if (cfg->dns_sniff)
             dns_sniff_poll();
@@ -1485,15 +1536,10 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                                        "принудительный restart", cfg->tproxy_port, stuck_tries);
                         restart_xray_forced(cfg);
                         stuck_tries = 0;
-                        tp_ok = (wait_xray_port(cfg, 15) == 0);
-                        if (tp_ok) {
-                            slogf(SL_INFO, "tproxy: Xray поднят watchdog'ом (forced)");
-                            next_xray_try = 0;
-                        } else {
-                            /* 60 c, а не 300: 5 минут DIRECT на каждую неудачу —
-                             * это и был «плохо работающий Telegram» (разбор 2026-11-07). */
-                            next_xray_try = time(NULL) + 60;
-                        }
+                        /* Ждать порт здесь нельзя: запуск асинхронный, а sleep
+                         * в цикле останавливает dns_sniff и обучение. Следующий
+                         * виток reconcile увидит слушателя и сбросит счётчики. */
+                        next_xray_try = time(NULL) + 30;
                     } else {
                         slogf(SL_WARN, "tproxy: процесс Xray есть, но :%d не слушает — "
                                        "повторный запуск пропускаю (проверка %d из %d)",
@@ -1502,27 +1548,21 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                     }
                 } else {
                     xray_tries++;
-                    /* Backoff 15/30/60 c, потолок 60 c. Раньше потолок был 240 c:
-                     * одна неудача fork() держала весь трафик в DIRECT четыре
-                     * минуты, а сброс счётчика рестартом агента — ещё и дёргала
-                     * Xray каждые 30 c (разбор 2026-11-07). */
+                    /* Backoff 15/30/60 c, потолок 60 c — безопасен, когда попытка
+                     * асинхронная: в 0.4.6 при потолке 60 с подъём блокировал
+                     * главный цикл до ~30 с, и полцикла dns_sniff/обучение стояли. */
                     back = 15 << (xray_tries > 3 ? 2 : (xray_tries - 1));
                     if (back > 60)
                         back = 60;
-                    slogf(SL_WARN, "tproxy: Xray :%d не слушает — поднимаю (try %d, пауза %d c)",
+                    slogf(SL_WARN, "tproxy: Xray :%d не слушает — поднимаю (try %d, повтор через %d c)",
                           cfg->tproxy_port, xray_tries, back);
-                    if (restart_xray_process(cfg) == 0 && wait_xray_port(cfg, 15) == 0) {
-                        tp_ok = 1;
-                        slogf(SL_INFO, "tproxy: Xray поднят watchdog'ом");
-                        xray_tries = 0;
-                        next_xray_try = 0;
-                    } else {
-                        tp_ok = 0;
-                        next_xray_try = time(NULL) + back;
+                    if (restart_xray_process(cfg) != 0)
                         slogf(SL_ERROR, "tproxy: Xray не поднялся (try %d) — трафик DIRECT, "
                                         "следующая попытка через %d c",
                               xray_tries, back);
-                    }
+                    /* Успех («порт слушает») и сброс счётчиков — на следующем
+                     * витке reconcile: там же, где вычисляется tp_ok. */
+                    next_xray_try = time(NULL) + back;
                 }
             }
             if (dp_ok && tproxy && !tp_ok) {

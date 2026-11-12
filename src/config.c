@@ -140,9 +140,12 @@ void config_set_defaults(susanin_config *c)
     snprintf(c->xray_gogc, sizeof(c->xray_gogc), "%s", "50");
     snprintf(c->xray_gomemlimit, sizeof(c->xray_gomemlimit), "%s", "64MiB");
     c->xray_watchdog = 1;
-    /* Порог свободной памяти для запуска Xray (КБ). Ниже этого на роутере
-     * 122 МБ без swap OOM-killer убивает Xray сразу после старта. */
-    c->xray_min_mem_kb = 12288;
+    /* Порог свободной памяти для запуска Xray (КБ): ниже порога старт
+     * пропускается (защита от OOM-петли). По умолчанию 0 = ВЫКЛЮЧЕНО:
+     * активный порог 12288 в 0.4.6 на 122 МБ роутере почти всегда блокировал
+     * подъём Xray после падения (долгий fail-open DIRECT, «сайты грузятся
+     * медленно»). Включать осознанно, напр. xray_min_mem_kb=6144. */
+    c->xray_min_mem_kb = 0;
     /* Лог Xray перед запуском обрезаем до 2 МБ: при loglevel=debug он растёт
      * на мегабайты, а в tmpfs это отнятая у системы память. */
     c->xray_log_max_kb = 2048;
