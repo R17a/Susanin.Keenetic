@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "release.h"
+#include "backend.h"
 #include "log.h"
 #include "version.h"
 
@@ -257,11 +258,37 @@ static int fetch_to_file(char *const argv[], const char *path)
     return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
 
-static int fetch_payload(void)
+static int fetch_payload(const susanin_config *c)
 {
+    char *curl_socks_argv[10];
+    char socks_url[128];
     char *wget_argv[8];
     char *curl_argv[8];
     int rc;
+
+    /* 2026-11-12: прямой запрос api.github.com с роутера душат провайдеры/ТСПУ —
+     * проверка релизов молча падала, а панель часами показывала отозванную
+     * версию. В tproxy-режиме, когда SOCKS Xray жив, спрашиваем GitHub через
+     * него (тот же путь, что работает для загрузки обновлений). Прямые
+     * wget/curl остаются фолбэком (interface-режим, отсутствие curl/SOCKS). */
+    if (c && strcmp(c->egress_type, "tproxy") == 0 &&
+        backend_local_listen(c->socks_port > 0 ? c->socks_port : 1080)) {
+        snprintf(socks_url, sizeof(socks_url), "socks5h://%.60s:%d",
+                 c->socks_addr[0] ? c->socks_addr : "127.0.0.1",
+                 c->socks_port > 0 ? c->socks_port : 1080);
+        curl_socks_argv[0] = "curl";
+        curl_socks_argv[1] = "-fsS";
+        curl_socks_argv[2] = "--max-time";
+        curl_socks_argv[3] = "15";
+        curl_socks_argv[4] = "-x";
+        curl_socks_argv[5] = socks_url;
+        curl_socks_argv[6] = "-o";
+        curl_socks_argv[7] = (char *)RELEASE_TMP;
+        curl_socks_argv[8] = (char *)RELEASE_API;
+        curl_socks_argv[9] = NULL;
+        if (fetch_to_file(curl_socks_argv, RELEASE_TMP) == 0)
+            return 0;
+    }
 
     wget_argv[0] = "wget";
     wget_argv[1] = "-q";
@@ -325,9 +352,11 @@ int release_check_now(const susanin_config *c)
         return -1;
     g_last_attempt = now;
 
-    if (fetch_payload() != 0) {
-        g_info.checked = now;
-        slogf(SL_DEBUG, "release: GitHub недоступен, проверка отложена");
+    if (fetch_payload(c) != 0) {
+        /* НЕ помечаем проверку выполненной (g_info.checked): иначе неудача из-за
+         * блокировки сети «замораживает» устаревший бейдж на целый интервал.
+         * Повтор не чаще раза в 60 с — по g_last_attempt. */
+        slogf(SL_DEBUG, "release: GitHub недоступен, повтор через 60 с");
         unlink(RELEASE_TMP);
         return -1;
     }
@@ -340,7 +369,7 @@ int release_check_now(const susanin_config *c)
         release_parse_payload(buf, tag, sizeof(tag), url, sizeof(url)) != 0) {
         free(buf);
         unlink(RELEASE_TMP);
-        g_info.checked = now;
+        /* как выше: не замораживаем кэш неудачей; ретрай по g_last_attempt */
         slogf(SL_WARN, "release: не удалось разобрать ответ GitHub");
         return -1;
     }

@@ -5,6 +5,11 @@
 #include <stdio.h>
 #include <string.h>
 
+/* release.c теперь спрашивает «SOCKS жив?» (проверка релизов через Xray).
+ * В host-тесте сети нет — считаем всегда «не слушает»: путь fetch через
+ * socks не выбирается, проверяется разбор/сравнение. */
+int backend_local_listen(int port) { (void)port; return 0; }
+
 static int failures = 0;
 #define CHECK(cond, msg) do { if (cond) printf("ok  %s\n", msg); \
     else { printf("FAIL %s\n", msg); failures++; } } while (0)
