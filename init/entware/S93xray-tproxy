@@ -94,6 +94,29 @@ start() {
     [ -n "$_gogc" ] || _gogc=50
     _gomem=$(sed -n 's/^xray_gomemlimit=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
     [ -n "$_gomem" ] || _gomem=64MiB
+    # r7.7: pidfile мог потеряться (носитель был read-only / сбой журнала) —
+    # ищем наши процессы по cmdline (-config наш XCFG), усыновляем первого,
+    # дубликаты гасим. Без этого каждый 'S93 start' плодил новый экземпляр:
+    # на Viva накопилось 9 xray (2026-11-13), туннель деградировал.
+    _ours=""
+    for _q in $(pidof xray 2>/dev/null || true); do
+        [ -r "/proc/$_q/cmdline" ] || continue
+        tr '\0' ' ' < "/proc/$_q/cmdline" 2>/dev/null | grep -q -- '-config' || continue
+        tr '\0' ' ' < "/proc/$_q/cmdline" 2>/dev/null | grep -q "$XCFG" && _ours="$_ours $_q"
+    done
+    if [ -n "$(echo $_ours | wc -w)" ] && [ "$(echo $_ours | wc -w)" -gt 1 ]; then
+        _keep=$(echo $_ours | awk '{print $1}')
+        for _q in $_ours; do
+            [ "$_q" = "$_keep" ] && continue
+            kill -TERM "$_q" 2>/dev/null || true
+            echo "xray-tproxy: дубликат pid=$_q снят (был потерян pidfile)"
+        done
+        _ours="$_keep"
+    fi
+    if [ -n "$_ours" ] && [ -z "$(xray_pid || true)" ]; then
+        echo "$_ours" > "$PIDF" 2>/dev/null || true
+        echo "xray-tproxy: усыновлен работающий pid=$_ours (pidfile был потерян)"
+    fi
     _run=$(xray_pid || true)
     if [ -z "$_run" ]; then
         GOGC="$_gogc" GOMEMLIMIT="$_gomem" "$XRAY" run -config "$XCFG" >>"$LOGF" 2>&1 &

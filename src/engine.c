@@ -805,6 +805,11 @@ static int spawn_xray_direct(const susanin_config *cfg)
     int fd;
 
     xray_spawn_err[0] = '\0';
+    /* r7.7: порт уже слушается — Xray жив. Потеря pidfile (read-only носитель,
+     * сбой журнала) не повод плодить второй экземпляр: на Viva накопилось 9
+     * процессов xray, туннель дышал на ладан (2026-11-13). */
+    if (backend_local_listen(cfg->tproxy_port))
+        return 0;
     if (!xray_mem_ok(cfg)) {
         snprintf(xray_spawn_err, sizeof(xray_spawn_err),
                  "мало свободной памяти: MemAvailable=%ld КБ < xray_min_mem_kb=%d",
