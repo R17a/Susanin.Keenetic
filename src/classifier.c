@@ -877,28 +877,30 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                             }
                         }
                     } else if (dop > 0 && drp > 0 && drb < 256 &&
-                               dob >= lmin_bytes(cfg) && candidate_ok(ctx, f, now)) {
+                               dob >= lmin_bytes(cfg)) {
                         /* C1: starvation — поток жив, но ответ идёт «по капле»
-                         * (ТСПУ шейпит, а не рвёт). Узко для CDN, чтобы не шуметь. */
+                         * (ТСПУ шейпит, а не рвёт). Для CDN — немедленный
+                         * promote. Для прочих сетей (r4.1, заморозка хостингов
+                         * habr 1104904) — строгая форма (>=16 КБ отправлено за
+                         * окно, <128 байт получено) и подтверждение через watch,
+                         * как late-stall: второе окно подряд -> VPN. */
                         char cidr[64];
-                        if (cdn_match(cfg, f->dst, cidr, sizeof(cidr)))
+                        int is_cdn = cdn_match(cfg, f->dst, cidr, sizeof(cidr));
+                        if (is_cdn && candidate_ok(ctx, f, now)) {
                             promote_test(ctx, f, now, "SOFT", "CDN-STARVATION");
-                    } else if (dop > 0 && drp > 0 && drb < 128 && dob >= 16384UL) {
-                        /* r4.1: «по капле» НЕ только у CDN: заморозка/шейпинг
-                         * хостинговых сетей даёт ту же форму (отправили >=16 КБ
-                         * за окно, получили <128 байт). Подтверждение через watch,
-                         * как late-stall: одно окно — наблюдение, второе — VPN. */
-                        char wk2[64];
-                        pair_key(wk2, sizeof(wk2), cfg, f);
-                        if (!state_has(st_watch(ctx->st, 0), wk2, now)) {
-                            if (candidate_ok(ctx, f, now))
-                                state_add(st_watch(ctx->st, 0), wk2, now, cfg->watch_ttl, 0);
-                        } else {
-                            time_t at = state_at(st_watch(ctx->st, 0), wk2, now);
-                            if (at && (int)(at - now) <= cfg->watch_retry_below) {
-                                if (candidate_ok(ctx, f, now)) {
-                                    state_remove(st_watch(ctx->st, 0), wk2);
-                                    promote_test(ctx, f, now, "SOFT", "TCP-STARVE");
+                        } else if (!is_cdn && drb < 128 && dob >= 16384UL) {
+                            char wk2[64];
+                            pair_key(wk2, sizeof(wk2), cfg, f);
+                            if (!state_has(st_watch(ctx->st, 0), wk2, now)) {
+                                if (candidate_ok(ctx, f, now))
+                                    state_add(st_watch(ctx->st, 0), wk2, now, cfg->watch_ttl, 0);
+                            } else {
+                                time_t at = state_at(st_watch(ctx->st, 0), wk2, now);
+                                if (at && (int)(at - now) <= cfg->watch_retry_below) {
+                                    if (candidate_ok(ctx, f, now)) {
+                                        state_remove(st_watch(ctx->st, 0), wk2);
+                                        promote_test(ctx, f, now, "SOFT", "TCP-STARVE");
+                                    }
                                 }
                             }
                         }
