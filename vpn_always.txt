@@ -389,3 +389,6 @@ lampa.mx
 *.twitchcdn.net
 *.twitchsvc.net
 *.twitchext.net
+# PubNub: fallback-транспорт чата Twitch (тоже в реестре блокировок) (2026-11-13)
+*.pubnub.com
+*.pubnub.net
