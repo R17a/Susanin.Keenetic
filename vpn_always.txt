@@ -360,3 +360,20 @@ qwen.com
 
 *.godaddy.com
 199.232.0.0/16
+# === 1С-Битрикс24: ВЕСЬ облачный набор через VPN (2026-11-13) ===
+# Прямые маршруты МТС-Иркутск -> облако Битрикса теряются (im/cdn/accounts timeout),
+# портал через туннель работает; антифрод к собственному порталу не применяется.
+bitrix24.ru
+bitrix24.com
+cdn.bitrix24.ru
+static.bitrix24.ru
+cloud.bitrix24.ru
+dl.bitrix24.ru
+files.bitrix24.ru
+push.bitrix24.ru
+46.235.53.0/24
+178.132.201.0/24
+im.bitrix24.ru
+pull.bitrix24.ru
+im.bitrix24.com
+video.bitrix24.com

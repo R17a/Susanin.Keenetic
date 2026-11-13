@@ -18,18 +18,8 @@
 # случайных поддоменов, поэтому для сервисов с обычным DNS надёжнее явные имена
 
 # заворота. Пулы CDN меняют адреса, поэтому перечислены имена и сети. Если
-bitrix24.ru
-bitrix24.com
 1c-bitrix.ru
 bitrix.info
-cdn.bitrix24.ru
-static.bitrix24.ru
-cloud.bitrix24.ru
-dl.bitrix24.ru
-files.bitrix24.ru
-push.bitrix24.ru
-46.235.53.0/24
-178.132.201.0/24
 
 # --- MAX / Oneme: API и внутренние сервисы приложения ---
 a.oneme.ru
@@ -128,10 +118,6 @@ qcloud.com
 23.216.134.0/24
 131.107.255.255
 
-im.bitrix24.ru
-pull.bitrix24.ru
-im.bitrix24.com
-video.bitrix24.com
 # === Альфа-Банк: банк отклоняет с иностранного выхода (антифрод), только прямо (2026-11-13) ===
 alfabank.ru
 *.alfabank.ru
