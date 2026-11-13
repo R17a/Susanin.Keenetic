@@ -392,3 +392,6 @@ lampa.mx
 # PubNub: fallback-транспорт чата Twitch (тоже в реестре блокировок)
 *.pubnub.com
 *.pubnub.net
+# CloudTips: прямые соединения с линии к CF-хосту зависают (probe-ложка до r6)
+cloudtips.ru
+*.cloudtips.ru
