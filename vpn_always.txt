@@ -402,3 +402,5 @@ cloudtips.ru
 13.32.22.0/24
 pochta.ru
 *.pochta.ru
+russianpost.ru
+*.russianpost.ru
