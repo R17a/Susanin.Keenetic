@@ -1,4 +1,4 @@
-# Susanin.Keenetic — установка, обновление и удаление (0.4.0)
+# Susanin.Keenetic — установка, обновление и удаление (0.4.6)
 
 Установка на Keenetic с Entware: пакетом `.ipk` (рекомендуется), установщиком
 одной строкой (`bootstrap.sh`) или вручную из архива. Обновление — `opkg` или
@@ -25,7 +25,7 @@ Xray/VLESS+REALITY — [XRAY.md](XRAY.md).
 ### 1. Пакетом Entware `.ipk` (рекомендуется)
 
 Архитектура определяется автоматически, файл берётся из последнего релиза
-(`v0.4.0`), SHA256 сверяется по `SHA256SUMS`, установка — штатным `opkg`
+(`v0.4.6`), SHA256 сверяется по `SHA256SUMS`, установка — штатным `opkg`
 (учёт пакета, `opkg remove`, конфиг и списки не перезаписываются):
 
 ```sh
@@ -44,12 +44,12 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.s
 
 ```sh
 mkdir -p /opt/tmp && cd /opt/tmp
-wget -O susanin-keenetic_0.4.0_mipsel-3.4.ipk \
-  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0/susanin-keenetic_0.4.0_mipsel-3.4.ipk
+wget -O susanin-keenetic_0.4.6_mipsel-3.4.ipk \
+  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.6/susanin-keenetic_0.4.6_mipsel-3.4.ipk
 wget -O SHA256SUMS \
-  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0/SHA256SUMS
+  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.6/SHA256SUMS
 sha256sum -c SHA256SUMS 2>/dev/null | grep mipsel-3.4     # ожидаем: ...: OK
-opkg install susanin-keenetic_0.4.0_mipsel-3.4.ipk
+opkg install susanin-keenetic_0.4.6_mipsel-3.4.ipk
 ```
 
 ### 2. Установщик одной строкой
@@ -71,7 +71,7 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap
 ```sh
 mkdir -p /opt/tmp/sus-dist && cd /opt/tmp/sus-dist
 wget -O susanin.tar.gz \
-  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0/susanin-keenetic-deploy-mipsel.tar.gz
+  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.6/susanin-keenetic-deploy-mipsel.tar.gz
 tar -xzf susanin.tar.gz
 sh install.sh --yes
 ```
@@ -89,13 +89,13 @@ sh install.sh --yes
 
 ```sh
 # .ipk:
-opkg install /opt/tmp/susanin-keenetic_0.4.0_mipsel-3.4.ipk
+opkg install /opt/tmp/susanin-keenetic_0.4.6_mipsel-3.4.ipk
 
 # tar-архив:
-sh /opt/susanin/tools/susanin.sh update 0.4.0     # или latest
+sh /opt/susanin/tools/susanin.sh update 0.4.6     # или latest
 
 # без автодополнения списков (vpn_always.txt / vpn_never.txt не трогаются):
-sh /opt/susanin/tools/susanin.sh update 0.4.1 --keep-lists
+sh /opt/susanin/tools/susanin.sh update 0.4.6 --keep-lists
 ```
 
 `susanin.sh update` определяет установленную версию и архитектуру, скачивает

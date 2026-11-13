@@ -431,7 +431,7 @@ opkg update && opkg install ca-certificates wget-ssl
 wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh -s -- --ipk
 ```
 
-> Пакет установщик берёт из последнего релиза (`v0.4.0`) и сверяет SHA256 по
+> Пакет установщик берёт из последнего релиза (`v0.4.6`) и сверяет SHA256 по
 > `SHA256SUMS` из релиза. Ответ `ERROR: unknown arg: --ipk` означает, что взят
 > старый скрипт (кэш или ветка до 0.4.0).
 
@@ -440,7 +440,7 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.s
 `susanin-keenetic_<версия>_<arch>.ipk` из релиза в `/opt/tmp`, сверяет SHA256 по
 `SHA256SUMS` из этого же релиза (не совпало — установка отменяется) и выполняет
 `opkg install` (с `--force` — `opkg install --force-reinstall`).
-Флаги: `--version v0.4.0` (без него — последний релиз), `--force`
+Флаги: `--version v0.4.6` (без него — последний релиз), `--force`
 (переустановить), `--yes` (без вопросов), `--arch mipsel|mips|aarch64|armv7|x86_64`
 (если автоопределение не сработало), `--with-xray-tproxy` — режим VLESS/REALITY:
 скачает Xray в `/opt/sbin/xray`, сверит SHA256 и положит шаблон tproxy-конфига
@@ -462,29 +462,29 @@ opkg print-architecture | awk '{print $2}'
 
 | Архитектура Entware | Файл из релиза |
 |---|---|
-| `mipsel-3.4` (MT7621: Viva, Giga, Ultra и т.п.) | `susanin-keenetic_0.4.0_mipsel-3.4.ipk` |
-| `mips-3.4` | `susanin-keenetic_0.4.0_mips-3.4.ipk` |
-| `aarch64-3.10` | `susanin-keenetic_0.4.0_aarch64-3.10.ipk` |
-| `armv7sf-k3.2` | `susanin-keenetic_0.4.0_armv7sf-k3.2.ipk` |
-| `x86-64` | `susanin-keenetic_0.4.0_x86-64.ipk` |
+| `mipsel-3.4` (MT7621: Viva, Giga, Ultra и т.п.) | `susanin-keenetic_0.4.6_mipsel-3.4.ipk` |
+| `mips-3.4` | `susanin-keenetic_0.4.6_mips-3.4.ipk` |
+| `aarch64-3.10` | `susanin-keenetic_0.4.6_aarch64-3.10.ipk` |
+| `armv7sf-k3.2` | `susanin-keenetic_0.4.6_armv7sf-k3.2.ipk` |
+| `x86-64` | `susanin-keenetic_0.4.6_x86-64.ipk` |
 
 Скачивание, **проверка суммы и только потом установка** (подставьте свой файл из
 таблицы; в имени и в URL — одна и та же версия):
 
 ```sh
 mkdir -p /opt/tmp && cd /opt/tmp
-wget -O susanin-keenetic_0.4.0_mipsel-3.4.ipk \
-  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0/susanin-keenetic_0.4.0_mipsel-3.4.ipk
+wget -O susanin-keenetic_0.4.6_mipsel-3.4.ipk \
+  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.6/susanin-keenetic_0.4.6_mipsel-3.4.ipk
 wget -O SHA256SUMS \
-  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0/SHA256SUMS
+  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.6/SHA256SUMS
 sha256sum -c SHA256SUMS 2>/dev/null | grep mipsel-3.4   # ожидаем: ...: OK
-opkg install susanin-keenetic_0.4.0_mipsel-3.4.ipk
+opkg install susanin-keenetic_0.4.6_mipsel-3.4.ipk
 susanin version && susanin status && susanin diagnose
 ```
 
 Если `wget` без HTTPS (BusyBox) — вместо `wget -O …` используйте
-`curl -fL -o …` с тем же адресом. Для новой версии замените `0.4.0`
-(и `v0.4.0` в URL) на её номер.
+`curl -fL -o …` с тем же адресом. Для новой версии замените `0.4.6`
+(и `v0.4.6` в URL) на её номер.
 
 Пакет ставит демон, скрипты, init-скрипты Entware, веб-панель и документацию в
 `/opt/susanin`. Конфиг (`susanin.conf`), списки `vpn_always`/`vpn_never`,
@@ -564,7 +564,7 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap
 # tar-архив + Xray:  sh -s -- --yes --with-xray
 ```
 По умолчанию берётся **последний релиз** (`--channel stable`), сейчас это
-`v0.4.0`; конкретную версию задаёт `--version v0.4.0`. dev-канал отключён —
+`v0.4.6`; конкретную версию задаёт `--version v0.4.6`. dev-канал отключён —
 тестовые архивы больше не публикуются.
 
 Флаги: `--channel stable|dev`, `--version`, `--file`, `--url`, `--check`,
@@ -578,7 +578,7 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap
 обновление не касалось списков вообще, добавьте флаг `--keep-lists`:
 
 ```sh
-sh /opt/susanin/tools/susanin.sh update v0.4.1 --keep-lists
+sh /opt/susanin/tools/susanin.sh update v0.4.6 --keep-lists
 sh install.sh --keep-lists          # то же для установки
 ```
 
@@ -593,13 +593,13 @@ sh install.sh --keep-lists          # то же для установки
 
 ```sh
 # пакетом (если ставили .ipk):
-opkg install /opt/tmp/susanin-keenetic_0.4.0_mipsel-3.4.ipk   # или opkg upgrade при включённом фиде
+opkg install /opt/tmp/susanin-keenetic_0.4.6_mipsel-3.4.ipk   # или opkg upgrade при включённом фиде
 
 # скриптом (tar-архив):
-sh /opt/susanin/tools/susanin.sh update 0.4.0    # или `susanin update 0.4.0`; latest = последний релиз
+sh /opt/susanin/tools/susanin.sh update 0.4.6    # или `susanin update 0.4.6`; latest = последний релиз
 
 # то же, но списки vpn_always.txt / vpn_never.txt не трогать вообще:
-sh /opt/susanin/tools/susanin.sh update 0.4.1 --keep-lists
+sh /opt/susanin/tools/susanin.sh update 0.4.6 --keep-lists
 ```
 
 > `susanin.sh update` сам определяет установленную версию и архитектуру, скачивает
@@ -644,7 +644,7 @@ sh /opt/susanin/tools/susanin.sh install    # datapath up + setup
 | Версия | `sh /opt/susanin/tools/susanin.sh version` (то же, что `susanin-agent version`) |
 | Снять правила | `sh /opt/susanin/tools/susanin.sh down` |
 | Убрать IP/домен из кэша | `sh /opt/susanin/tools/susanin.sh reset <ip|домен>` (синоним `forget`) |
-| Обновление | `sh /opt/susanin/tools/susanin.sh update 0.4.0` (или `latest`); без правки списков — `… update 0.4.1 --keep-lists` |
+| Обновление | `sh /opt/susanin/tools/susanin.sh update 0.4.6` (или `latest`); без правки списков — `… update 0.4.6 --keep-lists` |
 | Удаление | `sh /opt/susanin/tools/susanin.sh uninstall [--purge]` |
 | Добавить IP в VPN вручную | `sh /opt/susanin/tools/susanin.sh add <ip> tcp test` |
 
@@ -717,6 +717,11 @@ docker build -f Dockerfile.cross -t susanin-build .
 | `ok_max_entries` | предел числа записей кэша на протокол (0 = без предела) | `4096` |
 | `ok_evict_misses` | сколько подряд «сбоев» до снятия адреса из `ok` (гистерезис; 1 = сразу) | `3` |
 | `dns_sniff` / `dns_sniff_iface` | зеркальный захват DNS (домен → IP); пусто = все LAN-интерфейсы | `0` / (пусто) |
+| `frozen_net_enabled` | наследование вердикта по сети (r4): N разных IP /24 подтверждены в VPN → весь префикс идёт в VPN без проб; `vpn_never` приоритетнее | `1` |
+| `frozen_net_min_ips` / `frozen_net_prefix` / `frozen_net_ttl` | сколько IP сети подтвердить / длина префикса наследования / TTL префикса, сек | `3` / `24` / `86400` |
+| `ru_guard` / `ru_guard_tlds` | автообучение не заворачивает в VPN домены из списка суффиксов (антифрод банков/маркетплейсов режет чужой выход); ручной `vpn_always` сильнее; требует `dns_sniff=1` | `1` / `.ru,.su,.рф,.xn--p1ai,.moscow,.xn--80adxhks,.tatar,.xn--80asehdb` |
+| `udp_relay` / `udp_relay_port` | SOCKS-UDP-релей: QUIC/DNS (UDP 443 и др.) через туннель; слушает `127.0.0.1:port` | `0` / `1081` |
+| `xray_min_mem_kb` | не поднимать Xray, если свободно меньше, КБ; `0` = выключено (порог 12288 на 122 МБ-роутерах блокировал подъём — регрессия 0.4.6) | `0` |
 | `dns_hijack` / `dns_hijack_target` | DNAT 53 для клиентов серверных VPN (`oc+`/`wdtt+`); `br0`/`br1` не трогаются; цель пусто = LAN-адрес роутера | `0` / (пусто) |
 | `ipv6_block` | блокировать IPv6 из LAN, чтобы клиенты шли по IPv4 под Susanin | `1` |
 | `quic_block` | запретить QUIC (UDP 443) из LAN — приложения идут по TCP через туннель | `1` |

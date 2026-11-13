@@ -152,8 +152,8 @@ VPN, без обучения.
 Чтобы обновление не трогало списки вообще, запускайте его с флагом:
 
 ```sh
-sh /opt/susanin/tools/susanin.sh update 0.4.1 --keep-lists
-# или напрямую: sh /opt/susanin/tools/update.sh --version v0.4.1 --keep-lists
+sh /opt/susanin/tools/susanin.sh update 0.4.6 --keep-lists
+# или напрямую: sh /opt/susanin/tools/update.sh --version v0.4.6 --keep-lists
 ```
 
 В выводе будет строка `--keep-lists: списки vpn_always/vpn_never не трогаем`, а

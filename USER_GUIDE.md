@@ -237,7 +237,7 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.s
 ## Обновление и удаление
 
 ```sh
-sh /opt/susanin/tools/susanin.sh update 0.4.0     # или latest — последний релиз
+sh /opt/susanin/tools/susanin.sh update 0.4.6     # или latest — последний релиз
 sh /opt/susanin/tools/susanin.sh uninstall        # снять, конфиг сохранить
 sh /opt/susanin/tools/susanin.sh uninstall --purge # удалить всё
 ```
@@ -249,14 +249,14 @@ sh /opt/susanin/tools/susanin.sh uninstall --purge # удалить всё
 wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh -s -- --ipk
 ```
 
-Флаги: `--version v0.4.0`, `--force` (переустановить), `--yes` (без вопросов),
+Флаги: `--version v0.4.6`, `--force` (переустановить), `--yes` (без вопросов),
 `--with-xray-tproxy` (плюс Xray). Вручную то же самое:
 
 ```sh
 mkdir -p /opt/tmp
-wget -O /opt/tmp/susanin-keenetic_0.4.0_mipsel-3.4.ipk \
-  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0/susanin-keenetic_0.4.0_mipsel-3.4.ipk
-opkg install /opt/tmp/susanin-keenetic_0.4.0_mipsel-3.4.ipk
+wget -O /opt/tmp/susanin-keenetic_0.4.6_mipsel-3.4.ipk \
+  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.6/susanin-keenetic_0.4.6_mipsel-3.4.ipk
+opkg install /opt/tmp/susanin-keenetic_0.4.6_mipsel-3.4.ipk
 ```
 
 Файл под свою архитектуру (её показывает `opkg print-architecture`) выбирайте по
