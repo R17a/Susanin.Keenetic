@@ -379,3 +379,6 @@ im.bitrix24.com
 video.bitrix24.com
 # === Taobao-медиас стек Qwen (cloud.video и пр.) (2026-11-13) ===
 *.taobao.com
+# === Lampa (ТВ-плеер): хост за Cloudflare, прямой TLS с линии не проходит (2026-11-13) ===
+lampa.mx
+*.lampa.mx
