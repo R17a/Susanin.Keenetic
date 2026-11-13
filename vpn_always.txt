@@ -382,3 +382,10 @@ video.bitrix24.com
 # === Lampa (ТВ-плеер): хост за Cloudflare, прямой TLS с линии не проходит (2026-11-13) ===
 lampa.mx
 *.lampa.mx
+# === Twitch заблокирован ТСПУ целиком (2026-11-13): usher/ttvnw RST, чат twitchsvc ===
+*.twitch.tv
+*.ttvnw.net
+*.jtvnw.net
+*.twitchcdn.net
+*.twitchsvc.net
+*.twitchext.net
