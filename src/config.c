@@ -174,6 +174,10 @@ void config_set_defaults(susanin_config *c)
     c->cdn_prefix_learn = 1;
     c->cdn_prefix_ttl = 3600;
     c->aggregate_confirm = 2;
+    c->frozen_net_enabled = 1;
+    c->frozen_net_min_ips = 3;
+    c->frozen_net_prefix = 24;
+    c->frozen_net_ttl = 86400;
     c->cdn_prefix_max = 24;
     c->ipv6_block = 1;
     c->quic_block = 1;
@@ -490,6 +494,14 @@ int config_load(const char *path, susanin_config *c)
             c->cdn_prefix_ttl = parse_dur(val, U_SEC);
         else if (!strcmp(key, "aggregate_confirm"))
             c->aggregate_confirm = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "frozen_net_enabled"))
+            c->frozen_net_enabled = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "frozen_net_min_ips"))
+            c->frozen_net_min_ips = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "frozen_net_prefix"))
+            c->frozen_net_prefix = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "frozen_net_ttl"))
+            c->frozen_net_ttl = parse_dur(val, U_SEC);
         else if (!strcmp(key, "cdn_prefix_max"))
             c->cdn_prefix_max = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "ipv6_block"))
@@ -877,6 +889,17 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "# Сколько РАЗНЫХ адресов подтвердить до агрегации префикса (>=1;\n");
     fprintf(fp, "# 1 = агрегировать по первому подтверждению).\n");
     fprintf(fp, "aggregate_confirm=%d\n", c->aggregate_confirm);
+    fprintf(fp, "# Наследование заморозки ТСПУ на сеть (r4): N разных IP сети\n");
+    fprintf(fp, "# подтверждены в VPN -> весь префикс идёт в VPN без дальнейших\n");
+    fprintf(fp, "# проб (замораживают сети целиком: Hetzner/OVH/DO/Vultr...).\n");
+    fprintf(fp, "frozen_net_enabled=%d\n", c->frozen_net_enabled);
+    fprintf(fp, "# Сколько разных IP префикса подтвердить (>=1).\n");
+    fprintf(fp, "frozen_net_min_ips=%d\n", c->frozen_net_min_ips);
+    fprintf(fp, "# Длина префикса наследования (бит, 8..32).\n");
+    fprintf(fp, "frozen_net_prefix=%d\n", c->frozen_net_prefix);
+    fprintf(fp, "# TTL наследованного префикса, сек (продлевается при новых\n");
+    fprintf(fp, "# подтверждениях сети; истёк — сеть снова учится по IP).\n");
+    fprintf(fp, "frozen_net_ttl=%d\n", out_dur(c->frozen_net_ttl, U_SEC));
     fprintf(fp, "# Блокировать IPv6 из LAN (клиенты уходят на IPv4): 0 | 1.\n");
     fprintf(fp, "ipv6_block=%d\n", c->ipv6_block);
     fprintf(fp, "# Блокировать QUIC (UDP/443) из LAN: 0 | 1.\n");
@@ -1107,6 +1130,10 @@ void config_print(const susanin_config *c)
     printf("cdn_prefix_ttl=%d\n", out_dur(c->cdn_prefix_ttl, U_SEC));
     printf("cdn_prefix_max=%d\n", c->cdn_prefix_max);
     printf("aggregate_confirm=%d\n", c->aggregate_confirm);
+    printf("frozen_net_enabled=%d\n", c->frozen_net_enabled);
+    printf("frozen_net_min_ips=%d\n", c->frozen_net_min_ips);
+    printf("frozen_net_prefix=%d\n", c->frozen_net_prefix);
+    printf("frozen_net_ttl=%d\n", out_dur(c->frozen_net_ttl, U_SEC));
     printf("ipv6_block=%d\n", c->ipv6_block);
     printf("quic_block=%d\n", c->quic_block);
     printf("mss_clamp=%s\n", c->mss_clamp);

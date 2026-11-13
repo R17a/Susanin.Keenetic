@@ -389,10 +389,12 @@ static unsigned long cmin_bytes(const susanin_config *c)
 typedef struct { char cidr[64]; char last[AG_HIST][64]; int n; time_t at; } agslot;
 static agslot ag[AG_CONF];
 
-static int ag_confirm(const susanin_config *cfg, const char *cidr, const char *addr)
+/* Вариант с явным порогом (frozen-наследию нужен свой, выше media/CDN). */
+static int ag_confirm_n(int want, const char *cidr, const char *addr)
 {
-    int want = cfg->aggregate_confirm > 1 ? cfg->aggregate_confirm : 1;
     int i, k, free_i = -1, oldest = 0;
+    if (want < 1)
+        want = 1;
     time_t now = time(NULL);
     for (i = 0; i < AG_CONF; i++) {
         if (ag[i].cidr[0] && !strcmp(ag[i].cidr, cidr)) {
@@ -426,6 +428,62 @@ static int ag_confirm(const susanin_config *cfg, const char *cidr, const char *a
     ag[i].n = 1;
     ag[i].at = now;
     return want <= 1;
+}
+
+static int ag_confirm(const susanin_config *cfg, const char *cidr, const char *addr)
+{
+    return ag_confirm_n(cfg->aggregate_confirm > 1 ? cfg->aggregate_confirm : 1,
+                        cidr, addr);
+}
+
+/* r4.2 (2026-11-13, разбор habr 1104904): ТСПУ замораживает не адреса, а целые
+ * сети хостингов (Hetzner/OVH/DO/Vultr/M247...). Если N РАЗНЫХ IP одного
+ * префикса подтвердились как «нужен VPN» — заморозка сетевая: заносим префикс
+ * в susanin_ok_net, новые IP сети уедут в VPN сразу, без проб и бюджета.
+ * vpn_never приоритетнее (соседи «напрямую» не уезжают), как в cdn/media. */
+static void frozen_net_aggregate(classifier_ctx *ctx, const ct_flow *f)
+{
+    const susanin_config *cfg = ctx->cfg;
+    struct in_addr a, b;
+    char ab[INET_ADDRSTRLEN];
+    char cidr[64];
+    uint32_t ah, mask;
+    int pre, want;
+    time_t now = time(NULL);
+    if (!cfg->frozen_net_enabled)
+        return;
+    if (backend_set_test(cfg, "susanin_never", f->dst) == 0) {
+        slogf(SL_DEBUG, "FROZEN-NET: не агрегирую %s — адрес в vpn_never", f->dst);
+        return;
+    }
+    if (inet_pton(AF_INET, f->dst, &a) != 1)
+        return;
+    pre = cfg->frozen_net_prefix > 0 ? cfg->frozen_net_prefix : 24;
+    if (pre < 8)
+        pre = 8;
+    if (pre > 32)
+        pre = 32;
+    ah = ntohl(a.s_addr);
+    mask = pre == 0 ? 0 : (0xffffffffu << (32 - pre));
+    b.s_addr = htonl(ah & mask);
+    if (!inet_ntop(AF_INET, &b, ab, sizeof(ab)))
+        return;
+    snprintf(cidr, sizeof(cidr), "%s/%d", ab, pre);
+    want = cfg->frozen_net_min_ips >= 1 ? cfg->frozen_net_min_ips : 3;
+    if (!ag_confirm_n(want, cidr, f->dst)) {
+        slogf(SL_DEBUG, "FROZEN-NET: %s копит подтверждения (нужно %d разных IP)",
+              cidr, want);
+        return;
+    }
+    if (state_has(&ctx->st->net, cidr, now)) {
+        backend_net_add(cfg, cidr, cfg->frozen_net_ttl);
+        state_touch(&ctx->st->net, cidr, now, cfg->frozen_net_ttl);
+        return;
+    }
+    backend_net_add(cfg, cidr, cfg->frozen_net_ttl);
+    state_touch(&ctx->st->net, cidr, now, cfg->frozen_net_ttl);
+    slogf(SL_INFO, "FROZEN-NET: %s -> vpn (%d подтверждений, последний %s, ttl=%ds)",
+          cidr, want, f->dst, cfg->frozen_net_ttl);
 }
 
 /* C1/C4: при подтверждении адреса из CDN-диапазона закрепить ближайший префикс
@@ -736,6 +794,15 @@ void clr_fast(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
             else if (strcmp(f->tcp_state, "CLOSE") == 0 && f->op >= lmin_op(cfg) &&
                      f->ob >= lmin_bytes(cfg) && f->rp == 0 && f->rb < 128)
                 promote_test(ctx, f, now, "FAST", "TCP-CLOSE");
+            else if (strcmp(f->tcp_state, "CLOSE") == 0 && f->rp >= 5 &&
+                     f->rb >= 2048 && f->rb <= 98304 &&
+                     f->ob >= 16384 && f->ob >= 2 * f->rb)
+                /* r4.1 (habr 1104904): ТСПУ-заморозка — соединение живое,
+                 * первые ~16-33 КБ (25 пакетов) прошли, дальше поток молча
+                 * встал в обе стороны. Клиент захлебнулся ретрансмитами:
+                 * sent >= 2x от полученного. Обычный TCP-CLOSE (rb<128) тут
+                 * слеп: ответ-то был, просто оборвался на пороге. */
+                promote_test(ctx, f, now, "FAST", "TCP-FREEZE");
             else if (f->dport == 443 && f->ob >= lmin_bytes(cfg) && f->rb < 128 &&
                      f->rp <= 1 && strcmp(f->tcp_state, "CLOSE") == 0)
                 /* DPI/ТСПУ по SNI: TCP-рукопожатие прошло и отправлен ClientHello
@@ -816,6 +883,25 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                         char cidr[64];
                         if (cdn_match(cfg, f->dst, cidr, sizeof(cidr)))
                             promote_test(ctx, f, now, "SOFT", "CDN-STARVATION");
+                    } else if (dop > 0 && drp > 0 && drb < 128 && dob >= 16384UL) {
+                        /* r4.1: «по капле» НЕ только у CDN: заморозка/шейпинг
+                         * хостинговых сетей даёт ту же форму (отправили >=16 КБ
+                         * за окно, получили <128 байт). Подтверждение через watch,
+                         * как late-stall: одно окно — наблюдение, второе — VPN. */
+                        char wk2[64];
+                        pair_key(wk2, sizeof(wk2), cfg, f);
+                        if (!state_has(st_watch(ctx->st, 0), wk2, now)) {
+                            if (candidate_ok(ctx, f, now))
+                                state_add(st_watch(ctx->st, 0), wk2, now, cfg->watch_ttl, 0);
+                        } else {
+                            time_t at = state_at(st_watch(ctx->st, 0), wk2, now);
+                            if (at && (int)(at - now) <= cfg->watch_retry_below) {
+                                if (candidate_ok(ctx, f, now)) {
+                                    state_remove(st_watch(ctx->st, 0), wk2);
+                                    promote_test(ctx, f, now, "SOFT", "TCP-STARVE");
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -924,6 +1010,7 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 backend_ipset_del_port(cfg, udp, 0, f->dst, flow_port(cfg, f));
                 slogf(SL_INFO, "AUTO-SUSANIN: CONFIRMED %s:%u", f->dst, f->dport);
                 cdn_aggregate(ctx, f);
+                frozen_net_aggregate(ctx, f);
                 profile_auto_learn(ctx->cfg, f->dst);
             } else if (failed) {
                 state_remove(st_test(ctx->st, udp), kf);
