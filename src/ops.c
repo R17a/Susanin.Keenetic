@@ -827,6 +827,30 @@ int ops_status_json(const susanin_config *cfg, const char *conf_path,
              rcnt, esc);
     }
 
+    /* r7.4b: аудит клиентов (пишет движок в var/clients.txt). */
+    japp(buf, n, &used, "\"clients\":[");
+    {
+        FILE *cf = fopen("/opt/susanin/var/clients.txt", "r");
+        char line[128];
+        int any = 0;
+        esc[0] = '\0';
+        if (cf) {
+            while (fgets(line, sizeof(line), cf)) {
+                char cip[64];
+                int t, v, d;
+                if (sscanf(line, "%63s %d %d %d", cip, &t, &v, &d) == 4 && t > 0) {
+                    json_str(esc, sizeof(esc), cip);
+                    japp(buf, n, &used,
+                         "%s{\"ip\":\"%s\",\"flows\":%d,\"vpn\":%d,\"direct\":%d}",
+                         any ? "," : "", esc, t, v, d);
+                    any = 1;
+                }
+            }
+            fclose(cf);
+        }
+        japp(buf, n, &used, "],");
+    }
+
     japp(buf, n, &used, "\"profiles\":[");
     for (k = 0; k < cfg->n_profiles; k++) {
         char ne[128], ge[128];

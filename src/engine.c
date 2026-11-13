@@ -151,6 +151,53 @@ static void resync_sets(const susanin_config *cfg, susanin_state *st)
     dns_sniff_reset_pins();
 }
 
+/* r7.4b: аудит клиентов — «кто запросил» по LAN-хостам: потоки всего /
+ * в туннеле (помеченные) / прямых. Пишется в var/clients.txt (веб-процесс
+ * читает для панели; движок и панель — разные процессы). Не чаще 15 с,
+ * файл перезаписывается только при изменении. */
+static void clients_audit(const susanin_config *cfg, const ct_flow *flows, int n,
+                          time_t now)
+{
+    static time_t last;
+    static char lastbody[1024];
+    char body[1024];
+    char ips[16][64];
+    int tot[16], vpn[16], dir[16];
+    int cnt = 0, i, j, used = 0;
+    FILE *f;
+    if (now - last < 15)
+        return;
+    last = now;
+    for (i = 0; i < n; i++) {
+        const ct_flow *fl = &flows[i];
+        int k = -1;
+        if (fl->l4proto != 6 && fl->l4proto != 17) continue;
+        if (!from_lan(cfg, fl->src)) continue;
+        if (clf_is_private_dst(fl->dst)) continue;
+        for (j = 0; j < cnt; j++)
+            if (!strcmp(ips[j], fl->src)) { k = j; break; }
+        if (k < 0) {
+            if (cnt >= 16) continue;
+            k = cnt++;
+            snprintf(ips[k], sizeof(ips[k]), "%s", fl->src);
+            tot[k] = vpn[k] = dir[k] = 0;
+        }
+        tot[k]++;
+        if (fl->ctmark != 0) vpn[k]++; else dir[k]++;
+    }
+    for (j = 0; j < cnt && used < (int)sizeof(body) - 80; j++)
+        used += snprintf(body + used, sizeof(body) - used,
+                         "%s %d %d %d\n", ips[j], tot[j], vpn[j], dir[j]);
+    if (!strcmp(body, lastbody))
+        return;
+    snprintf(lastbody, sizeof(lastbody), "%s", body);
+    if ((f = fopen("/opt/susanin/var/clients.txt.tmp", "w")) != NULL) {
+        fputs(body, f);
+        fclose(f);
+        rename("/opt/susanin/var/clients.txt.tmp", "/opt/susanin/var/clients.txt");
+    }
+}
+
 static void sweep_direct(const susanin_config *cfg, susanin_state *st,
                          const ct_flow *flows, int n)
 {
@@ -1279,6 +1326,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             if (now - last[0] >= cfg->fast_interval) { last[0] = now; clr_fast(&ctx, L.v, L.n, now); }
             if (now - last[1] >= cfg->soft_interval) { last[1] = now; clr_soft(&ctx, L.v, L.n, now); }
             if (now - last[2] >= cfg->judge_interval) { last[2] = now; clr_judge(&ctx, L.v, L.n, now); }
+            clients_audit(cfg, L.v, L.n, now);
         }
 
         /* Периодически сбрасываем «залипшие» прямые потоки (mark=0) по адресам

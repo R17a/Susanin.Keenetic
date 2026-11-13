@@ -166,6 +166,15 @@
       tb.insertAdjacentHTML('beforeend',
         '<tr><td>' + esc(k) + '</td><td>' + esc(ipsets[k]) + '</td></tr>');
     });
+    var cb = document.querySelector('#clients tbody');
+    if (cb) {
+      cb.innerHTML = '';
+      (d.clients || []).forEach(function (c) {
+        cb.insertAdjacentHTML('beforeend',
+          '<tr><td>' + esc(c.ip) + '</td><td>' + esc(c.flows) + '</td><td>' +
+          esc(c.vpn) + '</td><td>' + esc(c.direct) + '</td></tr>');
+      });
+    }
     var rv = d.ru_in_vpn || null;
     var rvel = document.getElementById('ru-in-vpn');
     if (rvel) {

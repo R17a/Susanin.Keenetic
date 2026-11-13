@@ -672,7 +672,7 @@ static void media_aggregate(classifier_ctx *ctx, const ct_flow *f)
     }
     backend_net_add(cfg, cidr, cfg->media_ttl);
     state_touch(&ctx->st->net, cidr, time(NULL), cfg->media_ttl);
-    slogf(SL_INFO, "MEDIA: %s -> vpn (rb=%lu, ob=%lu)", cidr,
+    slogf(SL_INFO, "MEDIA: %s -> vpn из %s (rb=%lu, ob=%lu)", cidr, f->src,
           (unsigned long)f->rb, (unsigned long)f->ob);
 }
 
@@ -692,17 +692,18 @@ static const char *pair_key(char *buf, size_t n, const susanin_config *cfg,
     return buf;
 }
 
-/* Пропуск обучения — INFO, но не чаще раза в 10 минут на адрес: на DEBUG
- * вопрос «почему адрес не заворачивается в VPN» был неразбираем
- * (2026-11-12, случай dnevnik.ru). */
-static void skip_note(const char *ip, unsigned port, time_t now, const char *why)
+/* Пропуск обучения — INFO, но не чаще раза в 10 минут на адрес. С r7.4a
+ * виден и LAN-источник («кто запросил») — без него диагностика ТВ/приложений
+ * вслепую (запрос владельца). */
+static void skip_note(const char *src, const char *ip, unsigned port,
+                      time_t now, const char *why)
 {
     static char last_ip[64];
     static time_t last_at;
     if (strcmp(last_ip, ip) != 0 || now - last_at >= 600) {
         snprintf(last_ip, sizeof(last_ip), "%.63s", ip);
         last_at = now;
-        slogf(SL_INFO, "AUTO-SUSANIN: skip %s:%u (%s)", ip, port, why);
+        slogf(SL_INFO, "AUTO-SUSANIN: skip %s -> %s:%u (%s)", src, ip, port, why);
     }
 }
 
@@ -718,14 +719,14 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
      * vn_refresh/ipset и наш state расходятся, и sweep_direct рвёт его потоки).
      * Учитываем и список vpn_never, и пины DNS-снифинга (st.never). */
     if (vn_has(f->dst) || state_has(&ctx->st->never, f->dst, now)) {
-        skip_note(f->dst, f->dport, now, "vpn_never");
+        skip_note(f->src, f->dst, f->dport, now, "vpn_never");
         return;
     }
     /* Не учим в VPN адрес, недавно бывший в vpn_never: он должен идти напрямую,
      * иначе возможен «прыжок» direct <-> VPN (план п.8.3). Осознанно удалённые
      * из списка записи кулдаун НЕ получают (см. doms_reconcile). */
     if (vn_is_recently_never(f->dst, now)) {
-        skip_note(f->dst, f->dport, now, "recently vpn_never");
+        skip_note(f->src, f->dst, f->dport, now, "recently vpn_never");
         return;
     }
     /* r5.2 RU-guard: российские домены в VPN автоматически НЕ заворачиваем.
@@ -739,7 +740,7 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
         rgd[0] = '\0';
         if (dns_sniff_domain_of(f->dst, rgd, sizeof(rgd)) && rgd[0] &&
             dns_sniff_is_ru_domain(cfg, rgd)) {
-            skip_note(f->dst, f->dport, now, "ru-guard");
+            skip_note(f->src, f->dst, f->dport, now, "ru-guard");
             return;
         }
     }
@@ -751,22 +752,22 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
      * запрещать обучение по сигналам SNI (DPI-RST/CLOSE). */
     if (f->l4proto == 6 && f->dport > 0 && syn) {
         if (dok_has(f->dst, now)) {
-            skip_note(f->dst, f->dport, now, "недавно проверено: прямой жив");
+            skip_note(f->src, f->dst, f->dport, now, "недавно проверено: прямой жив");
             return;
         }
         if (!direct_probe_budget_ok(now)) {
             /* Бюджет проб исчерпан: осознанно НЕ заворачиваем (короткая отметка),
              * иначе защита отключалась бы ровно под нагрузкой. */
             dok_add(f->dst, now, DOK_TTL_BUDGET);
-            skip_note(f->dst, f->dport, now, "бюджет проб исчерпан");
+            skip_note(f->src, f->dst, f->dport, now, "бюджет проб исчерпан");
             return;
         }
         if (!direct_probe_sec_ok(now))
             return;   /* лимит на секунду: решим в следующий проход, не заворачиваем */
         if (health_probe_tcp_direct(f->dst, f->dport, DIRECT_PROBE_MS)) {
             dok_add(f->dst, now, DOK_TTL_OK);
-            slogf(SL_INFO, "AUTO-SUSANIN: %s skip %s:%u (прямой путь отвечает)",
-                  stage, f->dst, f->dport);
+            slogf(SL_INFO, "AUTO-SUSANIN: %s skip %s -> %s:%u (прямой путь отвечает)",
+                  stage, f->src, f->dst, f->dport);
             return;
         }
     }
@@ -786,11 +787,11 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
         dm[0] = '\0';
         dns_sniff_domain_of(f->dst, dm, sizeof(dm));
         if (dm[0])
-            slogf(SL_INFO, "AUTO-SUSANIN: %s %s %s:%u (%s)",
-                  stage, reason, f->dst, f->dport, dm);
+            slogf(SL_INFO, "AUTO-SUSANIN: %s %s %s -> %s:%u (%s)",
+                  stage, reason, f->src, f->dst, f->dport, dm);
         else
-            slogf(SL_INFO, "AUTO-SUSANIN: %s %s %s:%u",
-                  stage, reason, f->dst, f->dport);
+            slogf(SL_INFO, "AUTO-SUSANIN: %s %s %s -> %s:%u",
+                  stage, reason, f->src, f->dst, f->dport);
     }
     backend_ct_delete(f);
 }
@@ -1056,11 +1057,11 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                     dm2[0] = '\0';
                     dns_sniff_domain_of(f->dst, dm2, sizeof(dm2));
                     if (dm2[0])
-                        slogf(SL_INFO, "AUTO-SUSANIN: CONFIRMED %s:%u (%s)",
-                              f->dst, f->dport, dm2);
+                        slogf(SL_INFO, "AUTO-SUSANIN: CONFIRMED %s -> %s:%u (%s)",
+                              f->src, f->dst, f->dport, dm2);
                     else
-                        slogf(SL_INFO, "AUTO-SUSANIN: CONFIRMED %s:%u",
-                              f->dst, f->dport);
+                        slogf(SL_INFO, "AUTO-SUSANIN: CONFIRMED %s -> %s:%u",
+                              f->src, f->dst, f->dport);
                 }
                 cdn_aggregate(ctx, f);
                 frozen_net_aggregate(ctx, f);
