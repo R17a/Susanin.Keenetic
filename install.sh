@@ -44,11 +44,37 @@ say() { echo "[susanin] $*"; }
 die() { echo "[susanin] ERROR: $*" >&2; exit 1; }
 
 # Скачивание: curl или wget-ssl (у BusyBox-wget нет HTTPS).
+# r7.2: при неудаче прямой загрузки — одна проба через локальный SOCKS-туннель
+# (только egress_type=tproxy и слушающийся socks-in 127.0.0.1:1080; у
+# пользователя без Xray fallback выключен и честная ошибка).
+CONF_FOR_FETCH="$PREFIX/etc/susanin.conf"
+# r7.2: локальный SOCKS доступен? Только tproxy-конфиг и слушающийся socks-in
+# (127.0.0.1:1080 = 0x0438, состояние LISTEN 0A в /proc/net/tcp).
+susanin_socks_avail() {
+    _et=$(sed -n 's/^egress_type=//p' "$CONF_FOR_FETCH" 2>/dev/null | head -n1)
+    [ "$_et" = "tproxy" ] || return 1
+    awk '$2 ~ /:0438$/ && $4 == "0A" { f=1 } END { exit !f }' /proc/net/tcp 2>/dev/null
+}
+
 pick_fetch() {
     if command -v curl >/dev/null 2>&1; then
-        fetch() { curl -fsSL "$1" -o "$2"; }
+        fetch() {
+            curl -fsSL --connect-timeout 6 --max-time 240 "$1" -o "$2" && return 0
+            if susanin_socks_avail; then
+                say "прямая загрузка не удалась — проба через локальный туннель (SOCKS)"
+                curl -fsSL --connect-timeout 6 --max-time 300 -x socks5h://127.0.0.1:1080 "$1" -o "$2" && return 0
+            fi
+            return 1
+        }
     elif command -v wget >/dev/null 2>&1; then
-        fetch() { wget -qO "$2" "$1"; }
+        fetch() {
+            wget -q -T 30 -O "$2" "$1" && return 0
+            if susanin_socks_avail; then
+                say "прямая загрузка не удалась — проба через локальный туннель (SOCKS)"
+                wget -q -T 60 --tries=2 -e use_proxy=yes -e https_proxy=127.0.0.1:1080 -O "$2" "$1" && return 0
+            fi
+            return 1
+        }
     else
         die "need curl or wget-ssl (Entware: opkg update && opkg install ca-certificates wget-ssl; либо 'opkg install curl')"
     fi

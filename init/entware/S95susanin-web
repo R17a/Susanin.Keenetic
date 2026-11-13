@@ -4,6 +4,9 @@
 # Runs `susanin-agent web` only when web_enable=1 in susanin.conf.
 # Test: /opt/etc/init.d/S95susanin-web start|stop|restart
 
+# r7.1: локальное время логов (POSIX-пояс из конфига, напр. IST-8)
+_tz=$(sed -n "s/^tz=//p" /opt/susanin/etc/susanin.conf 2>/dev/null | head -n1)
+[ -n "$_tz" ] && export TZ="$_tz"
 AGENT=/opt/susanin/bin/susanin-agent
 CONF=/opt/susanin/etc/susanin.conf
 PIDFILE=/opt/susanin/var/susanin-web.pid

@@ -181,6 +181,7 @@ void config_set_defaults(susanin_config *c)
     c->ru_guard = 1;
     snprintf(c->ru_guard_tlds, sizeof(c->ru_guard_tlds), "%s",
              ".ru,.su,.рф,.xn--p1ai,.moscow,.xn--80adxhks,.tatar,.xn--80asehdb");
+    c->tz[0] = '\0';
     c->cdn_prefix_max = 24;
     c->ipv6_block = 1;
     c->quic_block = 1;
@@ -509,6 +510,8 @@ int config_load(const char *path, susanin_config *c)
             c->ru_guard = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "ru_guard_tlds"))
             set_str(c->ru_guard_tlds, sizeof(c->ru_guard_tlds), val);
+        else if (!strcmp(key, "tz"))
+            set_str(c->tz, sizeof(c->tz), val);
         else if (!strcmp(key, "cdn_prefix_max"))
             c->cdn_prefix_max = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "ipv6_block"))
@@ -913,6 +916,10 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "ru_guard=%d\n", c->ru_guard);
     fprintf(fp, "# Суффиксы «российских» доменов через запятую.\n");
     fprintf(fp, "ru_guard_tlds=%s\n", c->ru_guard_tlds);
+    fprintf(fp, "# Часовой пояс логов в POSIX-форме (Иркутск: IST-8, МСК: MSK-3).\n");
+    fprintf(fp, "# Пусто = системный (на Entware обычно UTC). Влияет на время в логах\n");
+    fprintf(fp, "# агента, панели и xray (init-скрипты экспортируют его в TZ).\n");
+    fprintf(fp, "tz=%s\n", c->tz);
     fprintf(fp, "# Блокировать IPv6 из LAN (клиенты уходят на IPv4): 0 | 1.\n");
     fprintf(fp, "ipv6_block=%d\n", c->ipv6_block);
     fprintf(fp, "# Блокировать QUIC (UDP/443) из LAN: 0 | 1.\n");
@@ -1149,6 +1156,7 @@ void config_print(const susanin_config *c)
     printf("frozen_net_ttl=%d\n", out_dur(c->frozen_net_ttl, U_SEC));
     printf("ru_guard=%d\n", c->ru_guard);
     printf("ru_guard_tlds=%s\n", c->ru_guard_tlds);
+    printf("tz=%s\n", c->tz);
     printf("ipv6_block=%d\n", c->ipv6_block);
     printf("quic_block=%d\n", c->quic_block);
     printf("mss_clamp=%s\n", c->mss_clamp);

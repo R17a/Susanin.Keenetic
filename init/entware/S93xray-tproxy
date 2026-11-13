@@ -7,6 +7,9 @@
 # Установка: /opt/etc/init.d/S93xray-tproxy (chmod +x).
 # Управление: S93xray-tproxy start|stop|restart
 
+# r7.1: локальное время логов (POSIX-пояс из конфига, напр. IST-8)
+_tz=$(sed -n "s/^tz=//p" /opt/susanin/etc/susanin.conf 2>/dev/null | head -n1)
+[ -n "$_tz" ] && export TZ="$_tz"
 XRAY=/opt/sbin/xray
 XCFG=/opt/susanin/etc/xray-tproxy.json
 LOGF=/opt/susanin/var/xray.log

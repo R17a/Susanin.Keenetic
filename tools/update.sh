@@ -108,10 +108,34 @@ if [ -z "$ARCH" ]; then
     fi
 fi
 
+# r7.2: fallback через локальный SOCKS (только tproxy + живой socks-in 1080).
+CONF_FOR_FETCH="$PREFIX/etc/susanin.conf"
+# r7.2: локальный SOCKS доступен? Только tproxy-конфиг и слушающийся socks-in
+# (127.0.0.1:1080 = 0x0438, состояние LISTEN 0A в /proc/net/tcp).
+susanin_socks_avail() {
+    _et=$(sed -n 's/^egress_type=//p' "$CONF_FOR_FETCH" 2>/dev/null | head -n1)
+    [ "$_et" = "tproxy" ] || return 1
+    awk '$2 ~ /:0438$/ && $4 == "0A" { f=1 } END { exit !f }' /proc/net/tcp 2>/dev/null
+}
+
 if command -v curl >/dev/null 2>&1; then
-    fetch() { curl -fsSL "$1" -o "$2"; }
+    fetch() {
+        curl -fsSL --connect-timeout 6 --max-time 240 "$1" -o "$2" && return 0
+        if susanin_socks_avail; then
+            say "прямая загрузка не удалась — проба через локальный туннель (SOCKS)"
+            curl -fsSL --connect-timeout 6 --max-time 300 -x socks5h://127.0.0.1:1080 "$1" -o "$2" && return 0
+        fi
+        return 1
+    }
 elif command -v wget >/dev/null 2>&1; then
-    fetch() { wget -qO "$2" "$1"; }
+    fetch() {
+        wget -q -T 30 -O "$2" "$1" && return 0
+        if susanin_socks_avail; then
+            say "прямая загрузка не удалась — проба через локальный туннель (SOCKS)"
+            wget -q -T 60 --tries=2 -e use_proxy=yes -e https_proxy=127.0.0.1:1080 -O "$2" "$1" && return 0
+        fi
+        return 1
+    }
 else
     die "need curl or wget (Entware: opkg update && opkg install ca-certificates)"
 fi

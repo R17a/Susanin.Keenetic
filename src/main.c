@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "config.h"
 #include "conntrack.h"
 #include "backend.h"
@@ -11,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 static const char *cfg_path(void)
@@ -138,6 +140,12 @@ int main(int argc, char **argv)
     if (config_load(cfg_path(), &cfg) != 0) {
         fprintf(stderr, "warning: cannot read config %s; using defaults\n", cfg_path());
         config_set_defaults(&cfg);
+    }
+
+    /* r7.1: локальное время в логах (tz=POSIX, напр. IST-8). Пусто = как есть. */
+    if (cfg.tz[0]) {
+        setenv("TZ", cfg.tz, 1);
+        tzset();
     }
 
     if (!strcmp(cmd, "config")) {
