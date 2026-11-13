@@ -719,7 +719,7 @@ docker build -f Dockerfile.cross -t susanin-build .
 | `dns_sniff` / `dns_sniff_iface` | зеркальный захват DNS (домен → IP); пусто = все LAN-интерфейсы | `0` / (пусто) |
 | `frozen_net_enabled` | наследование вердикта по сети (r4): N разных IP /24 подтверждены в VPN → весь префикс идёт в VPN без проб; `vpn_never` приоритетнее | `1` |
 | `frozen_net_min_ips` / `frozen_net_prefix` / `frozen_net_ttl` | сколько IP сети подтвердить / длина префикса наследования / TTL префикса, сек | `3` / `24` / `86400` |
-| `ru_guard` / `ru_guard_tlds` | автообучение не заворачивает в VPN домены из списка суффиксов (антифрод банков/маркетплейсов режет чужой выход); ручной `vpn_always` сильнее; требует `dns_sniff=1` | `1` / `.ru,.su,.рф,.xn--p1ai,.moscow,.xn--80adxhks,.tatar,.xn--80asehdb` |
+| `ru_guard` / `ru_guard_direct` / `ru_guard_tlds` | автообучение не заворачивает в VPN домены из списка суффиксов (антифрод банков/маркетплейсов режет чужой выход); `ru_guard_direct=1` активно держит их напрямую (пин в never, снятие чужого VPN-пина с общего IP); ручной `vpn_always` сильнее; требует `dns_sniff=1` | `1` / `1` / `.ru,.su,.рф,.xn--p1ai,.moscow,.xn--80adxhks,.tatar,.xn--80asehdb` |
 | `udp_relay` / `udp_relay_port` | SOCKS-UDP-релей: QUIC/DNS (UDP 443 и др.) через туннель; слушает `127.0.0.1:port` | `0` / `1081` |
 | `xray_min_mem_kb` | не поднимать Xray, если свободно меньше, КБ; `0` = выключено (порог 12288 на 122 МБ-роутерах блокировал подъём — регрессия 0.4.6) | `0` |
 | `dns_hijack` / `dns_hijack_target` | DNAT 53 для клиентов серверных VPN (`oc+`/`wdtt+`); `br0`/`br1` не трогаются; цель пусто = LAN-адрес роутера | `0` / (пусто) |

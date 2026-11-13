@@ -179,6 +179,7 @@ void config_set_defaults(susanin_config *c)
     c->frozen_net_prefix = 24;
     c->frozen_net_ttl = 86400;
     c->ru_guard = 1;
+    c->ru_guard_direct = 1;
     snprintf(c->ru_guard_tlds, sizeof(c->ru_guard_tlds), "%s",
              ".ru,.su,.рф,.xn--p1ai,.moscow,.xn--80adxhks,.tatar,.xn--80asehdb");
     c->tz[0] = '\0';
@@ -508,6 +509,8 @@ int config_load(const char *path, susanin_config *c)
             c->frozen_net_ttl = parse_dur(val, U_SEC);
         else if (!strcmp(key, "ru_guard"))
             c->ru_guard = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "ru_guard_direct"))
+            c->ru_guard_direct = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "ru_guard_tlds"))
             set_str(c->ru_guard_tlds, sizeof(c->ru_guard_tlds), val);
         else if (!strcmp(key, "tz"))
@@ -914,6 +917,9 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "# автоматически — антифрод банков/OZON рвёт с чужого выхода.\n");
     fprintf(fp, "# Ручной vpn_always сильнее; работает при dns_sniff=1. 0|1.\n");
     fprintf(fp, "ru_guard=%d\n", c->ru_guard);
+    fprintf(fp, "# 1 = RU-домены активно держать напрямую (пин в susanin_never,\n");
+    fprintf(fp, "# снятие уже выученного VPN-пина); ручной vpn_always сильнее.\n");
+    fprintf(fp, "ru_guard_direct=%d\n", c->ru_guard_direct);
     fprintf(fp, "# Суффиксы «российских» доменов через запятую.\n");
     fprintf(fp, "ru_guard_tlds=%s\n", c->ru_guard_tlds);
     fprintf(fp, "# Часовой пояс логов в POSIX-форме (Иркутск: IST-8, МСК: MSK-3).\n");
@@ -1155,6 +1161,7 @@ void config_print(const susanin_config *c)
     printf("frozen_net_prefix=%d\n", c->frozen_net_prefix);
     printf("frozen_net_ttl=%d\n", out_dur(c->frozen_net_ttl, U_SEC));
     printf("ru_guard=%d\n", c->ru_guard);
+    printf("ru_guard_direct=%d\n", c->ru_guard_direct);
     printf("ru_guard_tlds=%s\n", c->ru_guard_tlds);
     printf("tz=%s\n", c->tz);
     printf("ipv6_block=%d\n", c->ipv6_block);

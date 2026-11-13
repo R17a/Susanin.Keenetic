@@ -32,6 +32,8 @@ typedef struct {
 } dns_entry;
 
 static dns_entry g_tab[DNS_MAX_ENTRIES];
+
+int dns_sniff_is_ru_domain(const susanin_config *cfg, const char *dom);
 /* T4: слушаем ВСЕ LAN-интерфейсы (br0, br1, oc+ клиенты и т.п.), а не только
  * первый: DNS клиента OpenConnect (oc0) иначе не виден, и его адреса не
  * пинятся в vpn_always. Один сокет AF_PACKET на интерфейс. */
@@ -585,7 +587,14 @@ void dns_sniff_reconcile(const susanin_config *cfg)
             }
             slogf(SL_INFO, "dns-sniff: %s -> %s pinned (vpn_always)", e->domain, e->ip);
         }
-        if (!e->pinned_never && list_match(1, cfg->vpn_never_file, e->domain)) {
+        /* r7.8: RU-домены — активный direct (пин в never), а не только
+         * «не учить»: IP .рф-сайта может совпадать с выученным VPN-адресом
+         * чужого сервиса (общий CDN/хостинг) и уезжать в туннель вместе с
+         * ним. Ручной vpn_always для конкретного домена сильнее guard'а. */
+        int ru_force = cfg->ru_guard && cfg->ru_guard_direct &&
+                       dns_sniff_is_ru_domain(cfg, e->domain) &&
+                       !list_match(0, cfg->vpn_always_file, e->domain);
+        if (!e->pinned_never && (list_match(1, cfg->vpn_never_file, e->domain) || ru_force)) {
             backend_set_add(cfg, "susanin_never", e->ip, 0);
             e->pinned_never = 1;
             if (g_state)
@@ -608,7 +617,8 @@ void dns_sniff_reconcile(const susanin_config *cfg)
                           e->domain, e->ip);
                 }
             }
-            slogf(SL_INFO, "dns-sniff: %s -> %s (vpn_never)", e->domain, e->ip);
+            slogf(SL_INFO, "dns-sniff: %s -> %s (%s)", e->domain, e->ip,
+                  list_match(1, cfg->vpn_never_file, e->domain) ? "vpn_never" : "ru-guard");
         }
         /* Снятие пина, когда записи УЖЕ НЕТ в списке: раньше dns_sniff-пин
          * переживал удаление строки (never — бессрочно, always — до ok_ttl),
@@ -627,7 +637,8 @@ void dns_sniff_reconcile(const susanin_config *cfg)
                       e->domain, e->ip);
             }
         }
-        if (e->pinned_never && !list_match(1, cfg->vpn_never_file, e->domain)) {
+        if (e->pinned_never && !list_match(1, cfg->vpn_never_file, e->domain) &&
+            !ru_force) {
             e->pinned_never = 0;
             if (!other_entry_matches(now, i, 1, cfg, e->ip)) {
                 backend_set_del(cfg, "susanin_never", e->ip);
