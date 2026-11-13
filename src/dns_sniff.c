@@ -736,7 +736,7 @@ void dns_sniff_ru_audit(const susanin_config *cfg)
             if (!strcmp(seen[j], e->domain)) { dup = 1; break; }
         if (dup || cnt >= 16)
             continue;
-        snprintf(seen[cnt++], DNS_DOMAIN_MAX, "%s", e->domain);
+        snprintf(seen[cnt++], DNS_DOMAIN_MAX, "%.*s", DNS_DOMAIN_MAX - 1, e->domain);
     }
     used = snprintf(line, sizeof(line), "%d", cnt);
     for (i = 0; i < cnt && used < (int)sizeof(line) - DNS_DOMAIN_MAX - 1; i++)
@@ -746,7 +746,7 @@ void dns_sniff_ru_audit(const susanin_config *cfg)
     snprintf(last, sizeof(last), "%s", line);
     snprintf(tmp, sizeof(tmp), "/opt/susanin/var/ru-in-vpn");
     {
-        char wp[544];
+        char wp[560];
         FILE *f;
         snprintf(wp, sizeof(wp), "%s.tmp", tmp);
         f = fopen(wp, "w");
