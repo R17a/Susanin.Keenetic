@@ -74,6 +74,18 @@ int vn_is_recently_never(const char *ip, time_t now)
     return 0;
 }
 
+/* r4.3: правка vpn_never — явное намерение пользователя; кулдаун «recently
+ * never», накопленный прежними перестроениями набора, не должен блокировать
+ * переобучение (случай dnevnik.ru 2026-11-12: запись удалена, а IP сидел в
+ * cooldown ещё час). Сбрасываем весь кэш при каждой перезагрузке файла. */
+static void recent_clear(void)
+{
+    int i;
+    for (i = 0; i < vn_recent_n; i++)
+        vn_recent[i].ip[0] = '\0';
+    vn_recent_n = 0;
+}
+
 struct vpn_never {
     vn_dom dom[VN_MAXDOM];
     int nd;
@@ -522,6 +534,8 @@ int vn_refresh2(vpn_never *v, const susanin_config *cfg, int *changed)
                 recent_note(v->track[0], time(NULL));
                 tracked_remove(v, v->track[0]);
             }
+            /* r4.3: списка больше нет — кулдаун не за чем держать. */
+            recent_clear();
         } else if (!v->warned) {
             v->warned = 1;
             slogf(SL_INFO, "vpn_never: %s absent (disabled)",
@@ -536,6 +550,8 @@ int vn_refresh2(vpn_never *v, const susanin_config *cfg, int *changed)
         int nf = file_load(cfg->vpn_never_file, names, wilds, VN_MAXDOM);
         if (nf >= 0) {
             doms_reconcile(v, cfg, names, wilds, nf);
+            /* r4.3: файл списка менялся — снимаем кулдаун прошлых перестроений. */
+            recent_clear();
             for (i = 0; i < v->nd; i++)
                 if (zone_in_always(cfg, v->dom[i].name, v->dom[i].wild))
                     slogf(SL_WARN,
