@@ -757,20 +757,35 @@ int va_changed(vpn_always *v, const susanin_config *cfg)
 
 static int resolve_dom(const char *server, va_dom *d, int timeout)
 {
-    int n, total = 0, k;
+    static const char *sub[] = {
+        "www", "api", "cdn", "static", "img", "assets", "s", "i", "m", "g"
+    };
+    const int NSUB = (int)(sizeof(sub) / sizeof(sub[0]));
+    static unsigned rr;
+    int n, total = 0, k, probes;
     char tmp[VA_MAXIP][16];
     char probe[300];
     n = dns_query_a(server, d->name, d->ips, VA_MAXIP, timeout);
     if (n > 0)
         total = n;
     /* *.domain — всегда зона; обычный домен без A на apex — возможно, это
-     * тоже зона/CDN, поэтому пробуем пару случайных поддоменов. */
+     * тоже зона/CDN. r7.4c: пре-резолв словарём частых поддоменов
+     * (round-robin, 2 за проход для зон) + случайная wildcard-проба.
+     * Случайные имена ловят только зоны с wildcard-DNS, а реальные edges
+     * (img./g./api.) резолвятся только словарём — иначе IP не запинен до
+     * первого клиентского DNS-ответа и «первый заход висит» (Qwen/Twitch). */
     if (!d->wild && total > 0)
         return total;
-    for (k = 0; k < 2 && total < VA_MAXIP; k++) {
+    probes = d->wild ? 3 : 2;
+    for (k = 0; k < probes && total < VA_MAXIP; k++) {
         int m, j, x, dup;
-        snprintf(probe, sizeof(probe), "susanin-%08lx%d.%s",
-                 (unsigned long)(time(NULL) ^ (getpid() << 8)), k, d->name);
+        if (k < probes - 1) {
+            int si = (int)((rr + (unsigned)k) % (unsigned)NSUB);
+            snprintf(probe, sizeof(probe), "%s.%s", sub[si], d->name);
+        } else {
+            snprintf(probe, sizeof(probe), "susanin-%08lx%d.%s",
+                     (unsigned long)(time(NULL) ^ (getpid() << 8)), k, d->name);
+        }
         m = dns_query_a(server, probe, tmp, VA_MAXIP, timeout);
         for (j = 0; j < m && total < VA_MAXIP; j++) {
             dup = 0;
@@ -789,6 +804,7 @@ static int resolve_dom(const char *server, va_dom *d, int timeout)
             }
         }
     }
+    rr += (unsigned)(probes - 1);
     return total;
 }
 
