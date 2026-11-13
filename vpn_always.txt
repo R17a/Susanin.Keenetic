@@ -377,3 +377,5 @@ im.bitrix24.ru
 pull.bitrix24.ru
 im.bitrix24.com
 video.bitrix24.com
+# === Taobao-медиас стек Qwen (cloud.video и пр.) (2026-11-13) ===
+*.taobao.com
