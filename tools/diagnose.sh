@@ -281,7 +281,7 @@ if command -v ip >/dev/null 2>&1; then
         fi
     done
     # Чужие правила на НАШЕЙ таблице: иначе диагностика пишет «ok» при том, что
-    # наши правила сняты, а на таблицу смотрит кто-то другой (замечание 2026-10-10).
+    # наши правила сняты, а на таблицу смотрит кто-то другой.
     _foreign=$(ip rule show 2>/dev/null | grep "lookup $TBL" 2>/dev/null | \
                grep -v "fwmark $MT" | grep -v "fwmark $MO" | \
                grep -vE 'fwmark 0xffffa' | head -n3)
@@ -464,7 +464,7 @@ if [ -z "$DNS_CFG" ] && [ -z "$DNS" ]; then
 fi
 
 # -------------------------------------------------- OpenConnect (серверный VPN)
-# Регрессия 2026-10-14: клиенты OpenConnect не обрабатывались, потому что `oc*`
+# Регрессия: клиенты OpenConnect не обрабатывались, потому что `oc*`
 # не было в lan_interfaces (tun создаётся по требованию клиента и теряется при
 # «rescan» с отключённым телефоном). Диагностика обязана это показывать.
 sec "OpenConnect (серверный VPN на этом роутере)"
@@ -634,7 +634,7 @@ if command -v ip >/dev/null 2>&1; then
     _wan=$(ip route show default 2>/dev/null | awk '/default/{print $5; exit}')
     # MSS vs MTU: значение mss_clamp не должно превышать MTU egress минус 40
     # (20 IP + 20 TCP). Иначе на каждом соединении фрагментация/PMTU-пауза —
-    # «страница открывается 1–2 с» через профильный туннель (стенд 2026-10-12).
+    # «страница открывается 1–2 с» через профильный туннель.
     _msscfg=$(cfg mss_clamp)
     _egfirst=$(printf '%s' "$EGR" | cut -d, -f1 | tr -d ' \t')
     case "$_msscfg" in

@@ -82,7 +82,7 @@ run() { echo "----- $* -----"; "$@" 2>&1; }
     fi
 
     # Клиенты серверного VPN: без этих снимков причина «с телефона по
-    # OpenConnect часть сайтов висит» в отчёте не видна (разбор 2026-10-14).
+    # OpenConnect часть сайтов висит» в отчёте не видна.
     sec "OPENCONNECT (ocserv)"
     if [ -f /var/run/ocserv/ocserv.conf ] || \
        iptables -t mangle -S _NDM_OCSRVVPN_MARK >/dev/null 2>&1; then

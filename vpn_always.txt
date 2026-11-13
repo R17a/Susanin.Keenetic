@@ -4,7 +4,7 @@
 # /opt/susanin/etc/vpn_always.txt, но дополняют его новыми записями из сборки
 #
 # Автодополнение из сборки отключается флагом запуска:
-#     sh update.sh --keep-lists
+# sh update.sh --keep-lists
 # (или sh install.sh --keep-lists). Тогда install/update не трогают ни
 # vpn_always.txt, ни vpn_never.txt вообще.
 #
@@ -226,7 +226,7 @@ www.openai.com
 160.79.104.0/21
 8.47.69.0/24
 
-# (resolve_dom() в src/vpn_always.c), а api./help. остаются на прямом пути.
+# (resolve_dom в src/vpn_always.c), а api./help. остаются на прямом пути.
 elevenlabs.io
 api.elevenlabs.io
 api.us.elevenlabs.io
@@ -239,7 +239,7 @@ help.elevenlabs.io
 194.35.227.0/24
 195.211.191.0/24
 
-# --- OpenAI/ChatGPT и Anthropic/Claude: полный набор (2026-10-04) ---
+# --- OpenAI/ChatGPT и Anthropic/Claude: полный набор ---
 # Дополнение к алфавитному списку выше. Уже есть выше и повторять не нужно:
 # openai.com, chatgpt.com, oaistatic.com, oaiusercontent.com, anthropic.com,
 # claude.ai/.com, clau.de, claudemcpclient.com, claudemcpcontent.com,
@@ -281,7 +281,7 @@ telegram.dog
 cdn-telegram.org
 telegram-cdn.org
 tdesktop.com
-# --- локальные записи, перенесённые с роутера (2026-10-25) ---
+# --- локальные записи, перенесённые с роутера ---
 # Этих строк не было в поставляемом списке, но они были в живом файле на
 # устройстве (добавлены вручную/раньше). Сохранены, чтобы обновление не
 aznude.com
@@ -341,7 +341,7 @@ console.alibabacloud.com
 8.214.166.0/24
 *.qwen.ai
 
-# === Qwen Chat (chat.qwen.ai) - всё через VPN (2026-11-12) ===
+# === Qwen Chat (chat.qwen.ai) - всё через VPN ===
 qwen.ai
 *.qwen.ai
 *.alicdn.com
@@ -360,7 +360,7 @@ qwen.com
 
 *.godaddy.com
 199.232.0.0/16
-# === 1С-Битрикс24: ВЕСЬ облачный набор через VPN (2026-11-13) ===
+# === 1С-Битрикс24: ВЕСЬ облачный набор через VPN ===
 # Прямые маршруты МТС-Иркутск -> облако Битрикса теряются (im/cdn/accounts timeout),
 # портал через туннель работает; антифрод к собственному порталу не применяется.
 bitrix24.ru
@@ -377,18 +377,18 @@ im.bitrix24.ru
 pull.bitrix24.ru
 im.bitrix24.com
 video.bitrix24.com
-# === Taobao-медиас стек Qwen (cloud.video и пр.) (2026-11-13) ===
+# === Taobao-медиас стек Qwen (cloud.video и пр.) ===
 *.taobao.com
-# === Lampa (ТВ-плеер): хост за Cloudflare, прямой TLS с линии не проходит (2026-11-13) ===
+# === Lampa (ТВ-плеер): хост за Cloudflare, прямой TLS с линии не проходит ===
 lampa.mx
 *.lampa.mx
-# === Twitch заблокирован ТСПУ целиком (2026-11-13): usher/ttvnw RST, чат twitchsvc ===
+# === Twitch заблокирован ТСПУ целиком: usher/ttvnw RST, чат twitchsvc ===
 *.twitch.tv
 *.ttvnw.net
 *.jtvnw.net
 *.twitchcdn.net
 *.twitchsvc.net
 *.twitchext.net
-# PubNub: fallback-транспорт чата Twitch (тоже в реестре блокировок) (2026-11-13)
+# PubNub: fallback-транспорт чата Twitch (тоже в реестре блокировок)
 *.pubnub.com
 *.pubnub.net
