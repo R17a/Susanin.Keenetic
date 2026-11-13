@@ -2,6 +2,7 @@
 #include "classifier.h"
 #include "backend.h"
 #include "cdn.h"
+#include "dns_sniff.h"
 #include "health.h"
 #include "profiles.h"
 #include "vpn_never.h"
@@ -725,6 +726,21 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
         skip_note(f->dst, f->dport, now, "recently vpn_never");
         return;
     }
+    /* r5.2 RU-guard: российские домены в VPN автоматически НЕ заворачиваем.
+     * Антифрод банков/ОЗОН видит чужой выход и рвёт соединение ещё на TCP
+     * (2026-11-13: Альфа-Банк «Хьюстон, не видим вас», ОЗОН у тестировщиков
+     * «частично в VPN»). ТСПУ внутреннее не блокирует — бенефита от туннеля
+     * нет, один вред. Ручной vpn_always сильнее: его пины сюда не приходят.
+     * Без dns_sniff домен неизвестен — не мешаем обучению. */
+    if (cfg->ru_guard) {
+        char rgd[DNS_DOMAIN_MAX];
+        rgd[0] = '\0';
+        if (dns_sniff_domain_of(f->dst, rgd, sizeof(rgd)) && rgd[0] &&
+            dns_sniff_is_ru_domain(cfg, rgd)) {
+            skip_note(f->dst, f->dport, now, "ru-guard");
+            return;
+        }
+    }
     /* Прямая проба — только для «SYN ушёл без ответа»: там свежий connect
      * информативен. Для DPI-RST/TCP-CLOSE/«тишины» проба бесполезна и вредна:
      * рукопожатие проходит (блокировка по SNI/данным — уже после connect), и мы
@@ -761,7 +777,19 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
     state_add(st_test(ctx->st, udp), kf, now, cfg->test_ttl, 0);
     state_remove(st_watch(ctx->st, udp), kf);
     backend_ipset_add_port(cfg, udp, 0, f->dst, flow_port(cfg, f), cfg->test_ttl);
-    slogf(SL_INFO, "AUTO-SUSANIN: %s %s %s:%u", stage, reason, f->dst, f->dport);
+    /* r5.3: домен в событии обучения — «почему этот IP уехал» читается из
+     * лога без why-разбора (sniffer знает, кому адрес принадлежал). */
+    {
+        char dm[DNS_DOMAIN_MAX];
+        dm[0] = '\0';
+        dns_sniff_domain_of(f->dst, dm, sizeof(dm));
+        if (dm[0])
+            slogf(SL_INFO, "AUTO-SUSANIN: %s %s %s:%u (%s)",
+                  stage, reason, f->dst, f->dport, dm);
+        else
+            slogf(SL_INFO, "AUTO-SUSANIN: %s %s %s:%u",
+                  stage, reason, f->dst, f->dport);
+    }
     backend_ct_delete(f);
 }
 
@@ -1010,7 +1038,17 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 state_remove(st_cool(ctx->st, udp), kf);
                 backend_ipset_add_port(cfg, udp, 1, f->dst, flow_port(cfg, f), cfg->ok_ttl);
                 backend_ipset_del_port(cfg, udp, 0, f->dst, flow_port(cfg, f));
-                slogf(SL_INFO, "AUTO-SUSANIN: CONFIRMED %s:%u", f->dst, f->dport);
+                {
+                    char dm2[DNS_DOMAIN_MAX];
+                    dm2[0] = '\0';
+                    dns_sniff_domain_of(f->dst, dm2, sizeof(dm2));
+                    if (dm2[0])
+                        slogf(SL_INFO, "AUTO-SUSANIN: CONFIRMED %s:%u (%s)",
+                              f->dst, f->dport, dm2);
+                    else
+                        slogf(SL_INFO, "AUTO-SUSANIN: CONFIRMED %s:%u",
+                              f->dst, f->dport);
+                }
                 cdn_aggregate(ctx, f);
                 frozen_net_aggregate(ctx, f);
                 profile_auto_learn(ctx->cfg, f->dst);

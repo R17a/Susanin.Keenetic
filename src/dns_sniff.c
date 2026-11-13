@@ -21,7 +21,7 @@
 #include <unistd.h>
 
 #define DNS_MAX_ENTRIES 2048
-#define DNS_DOMAIN_MAX  128
+/* DNS_DOMAIN_MAX — в dns_sniff.h (нужен и классификатору). */
 
 typedef struct {
     char domain[DNS_DOMAIN_MAX];
@@ -640,6 +640,8 @@ void dns_sniff_reconcile(const susanin_config *cfg)
         }
     }
     backend_batch_end();
+    /* r5.4: счётчик «RU в VPN» для панели (не чаще раза в минуту). */
+    dns_sniff_ru_audit(cfg);
 }
 
 int dns_sniff_count(void)
@@ -669,4 +671,89 @@ int dns_sniff_domain_of(const char *ip, char *domain_out, unsigned n)
         }
     }
     return 0;
+}
+
+/* --- r5: RU-домены -------------------------------------------------------- */
+
+/* Суффикс-матчер TLD из cfg->ru_guard_tlds (".ru,.рф,.xn--p1ai,..."):
+ * сравнение регистронезависимое, совпадение только по границе метки. */
+int dns_sniff_is_ru_domain(const susanin_config *cfg, const char *dom)
+{
+    char buf[256], *save = NULL, *tok;
+    size_t dl;
+    if (!cfg || !dom || !dom[0] || !cfg->ru_guard_tlds[0])
+        return 0;
+    dl = strlen(dom);
+    snprintf(buf, sizeof(buf), "%s", cfg->ru_guard_tlds);
+    for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        size_t tl, k;
+        while (*tok == ' ' || *tok == '\t')
+            tok++;
+        tl = strlen(tok);
+        if (tl == 0 || dl < tl)
+            continue;
+        for (k = 0; k < tl; k++)
+            if (tolower((unsigned char)dom[dl - tl + k]) !=
+                tolower((unsigned char)tok[k]))
+                break;
+        if (k == tl)
+            return 1;
+    }
+    return 0;
+}
+
+/* r5.4: аудит «российское в VPN». Считаем RU-домены из сниффера, чей IP
+ * сейчас в ok_tcp (VPN), пишем счётчик и список в файл для веб-процесса
+ * (панель — отдельный процесс, память сниффера ему недоступна). Не чаще
+ * раза в минуту; файл перезаписываем только при изменении содержимого. */
+void dns_sniff_ru_audit(const susanin_config *cfg)
+{
+    static char last[512];
+    static time_t last_run;
+    char line[512], tmp[544];
+    int i, cnt = 0, used = 0;
+    time_t now = time(NULL);
+    char seen[16][DNS_DOMAIN_MAX];
+    if (!cfg || !g_state || now - last_run < 60)
+        return;
+    last_run = now;
+    line[0] = '\0';
+    for (i = 0; i < DNS_MAX_ENTRIES; i++) {
+        dns_entry *e = &g_tab[i];
+        char kf[64];
+        int j, dup = 0;
+        if (!e->domain[0] || e->expire <= now)
+            continue;
+        if (!dns_sniff_is_ru_domain(cfg, e->domain))
+            continue;
+        state_key(kf, sizeof(kf), e->ip, 0);
+        if (!state_has(&g_state->ok_tcp, kf, now)) {
+            state_key(kf, sizeof(kf), e->ip, 443);
+            if (!state_has(&g_state->ok_tcp, kf, now))
+                continue;
+        }
+        for (j = 0; j < cnt; j++)
+            if (!strcmp(seen[j], e->domain)) { dup = 1; break; }
+        if (dup || cnt >= 16)
+            continue;
+        snprintf(seen[cnt++], DNS_DOMAIN_MAX, "%s", e->domain);
+    }
+    used = snprintf(line, sizeof(line), "%d", cnt);
+    for (i = 0; i < cnt && used < (int)sizeof(line) - DNS_DOMAIN_MAX - 1; i++)
+        used += snprintf(line + used, sizeof(line) - used, " %s", seen[i]);
+    if (!strcmp(line, last))
+        return;
+    snprintf(last, sizeof(last), "%s", line);
+    snprintf(tmp, sizeof(tmp), "/opt/susanin/var/ru-in-vpn");
+    {
+        char wp[544];
+        FILE *f;
+        snprintf(wp, sizeof(wp), "%s.tmp", tmp);
+        f = fopen(wp, "w");
+        if (f) {
+            fprintf(f, "%s\n", line);
+            fclose(f);
+            rename(wp, tmp);
+        }
+    }
 }

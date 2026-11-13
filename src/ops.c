@@ -802,6 +802,31 @@ int ops_status_json(const susanin_config *cfg, const char *conf_path,
     japp(buf, n, &used, "\"vpn_never\":{\"file\":\"%s\",\"count\":%d}},", esc,
          vn_count);
 
+    /* r5.4: «RU в VPN» — счётчик пишет dns_sniff_ru_audit (движок),
+     * панель только читает: RU-домены, идущие через туннель, — это
+     * потенциальные «Хьюстоны» антифрода. */
+    {
+        char rbuf[512] = "";
+        int rcnt = 0;
+        esc[0] = '\0';
+        FILE *rf = fopen("/opt/susanin/var/ru-in-vpn", "r");
+        if (rf) {
+            if (fgets(rbuf, sizeof(rbuf), rf)) {
+                char *sp = strchr(rbuf, ' ');
+                rcnt = atoi(rbuf);
+                if (sp) {
+                    *sp = '\0';
+                    json_str(esc, sizeof(esc), sp + 1);
+                } else {
+                    json_str(esc, sizeof(esc), "");
+                }
+            }
+            fclose(rf);
+        }
+        japp(buf, n, &used, "\"ru_in_vpn\":{\"count\":%d,\"domains\":\"%s\"},",
+             rcnt, esc);
+    }
+
     japp(buf, n, &used, "\"profiles\":[");
     for (k = 0; k < cfg->n_profiles; k++) {
         char ne[128], ge[128];

@@ -166,6 +166,19 @@
       tb.insertAdjacentHTML('beforeend',
         '<tr><td>' + esc(k) + '</td><td>' + esc(ipsets[k]) + '</td></tr>');
     });
+    var rv = d.ru_in_vpn || null;
+    var rvel = document.getElementById('ru-in-vpn');
+    if (rvel) {
+      if (!rv) {
+        rvel.textContent = '—';
+      } else if (rv.count > 0) {
+        rvel.textContent = rv.count + ': ' + (rv.domains || '');
+        rvel.className = 'warn';
+      } else {
+        rvel.textContent = T('status.ru.zero', '0 — норма');
+        rvel.className = 'muted';
+      }
+    }
   }
 
   function load() {
