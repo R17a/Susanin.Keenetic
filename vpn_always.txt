@@ -1,30 +1,25 @@
-# vpn_always.txt — список доменов, которые ВСЕГДА маршрутизируются
 # через VPN (в обход автообучения). Поставляется с дистрибутивом.
 #
 # Установка/обновление НЕ перезаписывают уже существующий
 # /opt/susanin/etc/vpn_always.txt, но дополняют его новыми записями из сборки
-# (merge; существующие строки не удаляются) — правьте его свободно.
 #
 # Автодополнение из сборки отключается флагом запуска:
 #     sh update.sh --keep-lists
 # (или sh install.sh --keep-lists). Тогда install/update не трогают ни
 # vpn_always.txt, ни vpn_never.txt вообще.
 #
-# Лимит записей в файле — 512 (VA_MAXDOM с 0.4.1; до этого было 256, и хвост
 # файла молча игнорировался). Важное держите ближе к началу.
 #
 # Формат: по одному домену (или IPv4, или CIDR a.b.c.d/n) на строку.
-# '#' — комментарии. Поддерживается wildcard: *.example.com — домен и поддомены.
 # Поддомены можно указывать и отдельными строками
 # (api.example.com, www.example.com). IPv6 в v1 не поддерживается (только A).
-# Демон резолвит A-записи в susanin_ok_{tcp,udp}; CIDR — в susanin_ok_net;
 # изменения подхватываются на лету.
 
 # --- Fastly: медиа X/Twitter (pbs.twimg.com, video.twimg.com, abs.twimg.com) ---
 # X раздаёт картинки и видео с edge-адресов Fastly, которые меняются от запроса
 # к запросу: точечные домены покрывают только часть. CIDR пинятся в
 # susanin_ok_net и закрывают весь диапазон. Держим в начале файла.
-199.232.0.0/16
+
 151.101.0.0/16
 
 4pda.to
@@ -113,7 +108,6 @@ gpt3-openai.com
 grok.com
 gstatic.com
 gvt1.com
-# habr.com — российский сайт, в VPN не нужен (только замедлит).
 # habr.com
 hetzner.com
 i.ytimg.com
@@ -229,12 +223,9 @@ www.youtube.com
 www.instagram.com
 www.tiktok.com
 www.openai.com
-# Anthropic/Claude: весь блок 160.79.104.0/21 (адреса 104–111), не только /24.
 160.79.104.0/21
 8.47.69.0/24
 
-# --- ElevenLabs: API/CDN на Google Cloud (не Cloudflare) — только явные имена ---
-# Wildcard «*.elevenlabs.io» пиннит лишь apex и два случайных поддомена
 # (resolve_dom() в src/vpn_always.c), а api./help. остаются на прямом пути.
 elevenlabs.io
 api.elevenlabs.io
@@ -242,10 +233,7 @@ api.us.elevenlabs.io
 eleven-public-cdn.elevenlabs.io
 help.elevenlabs.io
 
-# --- IPTV (megatv): серверы видеопотока — всегда через VPN ---
 # Прямой путь к этим серверам у провайдера периодически режется/шейпится
-# («то плавно, то лагает»), через VPN картинка идёт плавно. ВАЖНО: не кладите
-# эти адреса в vpn_never — там принудительный DIRECT, и снова будет лагать.
 206.123.140.0/24
 45.156.223.0/24
 194.35.227.0/24
@@ -255,8 +243,6 @@ help.elevenlabs.io
 # Дополнение к алфавитному списку выше. Уже есть выше и повторять не нужно:
 # openai.com, chatgpt.com, oaistatic.com, oaiusercontent.com, anthropic.com,
 # claude.ai/.com, clau.de, claudemcpclient.com, claudemcpcontent.com,
-# claudeusercontent.com, datadoghq.com, а также CIDR 160.79.104.0/21 —
-# он шире запрошенного 160.79.104.0/23 (адреса 104–111 против 104–105).
 # IPv6 в v1 не поддерживается (резолвим только A-записи), поэтому сети
 # 2607:6bc0::/48 и 2607:6bc0:11::/48 оставлены закомментированными.
 android.chat.openai.com
@@ -298,7 +284,6 @@ tdesktop.com
 # --- локальные записи, перенесённые с роутера (2026-10-25) ---
 # Этих строк не было в поставляемом списке, но они были в живом файле на
 # устройстве (добавлены вручную/раньше). Сохранены, чтобы обновление не
-# «потеряло» рабочие маршруты.
 aznude.com
 phncdn.com
 pornhub.com
@@ -323,6 +308,55 @@ ifconfig.me
 8.47.69.0/21
 45.64.40.0/22
 
-# Публичные DNS/проверочные адреса — были в живом файле на роутере.
 1.1.1.1
 8.8.8.8
+149.154.160.0/20
+91.108.4.0/22
+91.108.56.0/22
+roblox.com
+*.roblox.com
+*.rbxcdn.com
+rbx.com
+robloxlabs.com
+104.18.32.0/20
+172.64.144.0/20
+*.oracle.com
+*.meshtastic.org
+client.meshtastic.org
+flasher.meshtastic.org
+api.meshtastic.org
+*.alibabacloud.com
+billing-cost.console.alibabacloud.com
+swas.console.alibabacloud.com
+console.alibabacloud.com
+76.76.21.0/24
+66.33.60.0/24
+47.91.64.0/24
+47.254.168.0/24
+47.74.138.0/24
+47.88.128.0/24
+47.88.198.0/24
+47.88.251.0/24
+47.241.205.0/24
+8.214.166.0/24
+*.qwen.ai
+
+# === Qwen Chat (chat.qwen.ai) - всё через VPN (2026-11-12) ===
+qwen.ai
+*.qwen.ai
+*.alicdn.com
+*.aliyuncs.com
+*.aliyun.com
+*.alipayobjects.com
+*.mmstat.com
+*.aliapp.org
+
+# qwen.com (сайт/биллинг-портал), alibabacloud.com (консоль/платежи)
+qwen.com
+*.qwen.com
+*.alibabacloud.com
+
+*.deepseek.com
+
+*.godaddy.com
+199.232.0.0/16
