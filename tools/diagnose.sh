@@ -463,6 +463,41 @@ if [ -z "$DNS_CFG" ] && [ -z "$DNS" ]; then
     echo "  DNS для списков: auto (системный, при 127.0.0.1 — адрес LAN-моста)"
 fi
 
+# r7.9: локальные подсети, не покрытые lan_subnets (гостевой SSID/mesh) —
+# клиенты в них обрабатываться не будут; раньше это было видно только по
+# «почему у меня ничего не работает» со стороны клиента.
+SUBS=$(cfg lan_subnets)
+_unc=$(ip -4 -o addr show 2>/dev/null | awk '{print $2" "$4}' | awk -v subs="$SUBS" '
+BEGIN { n = split(subs, a, ","); m = 0;
+        for (i = 1; i <= n; i++) {
+            gsub(/[[:space:]]/, "", a[i]); if (a[i] == "") continue;
+            split(a[i], p, "/");
+            base[m] = p[1]; pre[m] = (p[2] == "" ? 32 : p[2] + 0); m++;
+        } }
+{
+    iface = $1; cidr = $2; split(cidr, q, "/"); ip = q[1]; pl = q[2] + 0;
+    if (ip ~ /^127\./ || ip ~ /^169\.254\./) next;
+    split(ip, o, ".");
+    v = o[1] * 16777216 + o[2] * 65536 + o[3] * 256 + o[4];
+    hit = 0;
+    for (i = 0; i < m; i++) {
+        split(base[i], b, ".");
+        bv = b[1] * 16777216 + b[2] * 65536 + b[3] * 256 + b[4];
+        sz = 2 ^ (32 - pre[i]);
+        if (v >= bv && v - bv < sz) { hit = 1; break }
+    }
+    if (!hit) printf "%s %s/%d\n", iface, base_str(cidr), pl
+}
+function base_str(c) { return c }
+' 2>/dev/null)
+if [ -n "$_unc" ]; then
+    echo "Локальные подсети вне lan_subnets (их клиенты НЕ обрабатываются):"
+    printf '%s\n' "$_unc" | while read _i _c; do
+        echo "   $_i: $_c"
+    done
+    rec "Добавьте нужные подсети в lan_subnets (панель или: susanin-agent config set lan_subnets \"$SUBS,$(printf '%s' "$_unc" | head -n1 | awk '{print $2}')\"), затем susanin restart. Если подсеть — гостевая и намеренно изолирована, игнорируйте."
+fi
+
 # -------------------------------------------------- OpenConnect (серверный VPN)
 # Регрессия: клиенты OpenConnect не обрабатывались, потому что `oc*`
 # не было в lan_interfaces (tun создаётся по требованию клиента и теряется при

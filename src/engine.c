@@ -160,6 +160,13 @@ static void clients_audit(const susanin_config *cfg, const ct_flow *flows, int n
 {
     static time_t last;
     static char lastbody[1024];
+    /* r7.9: приватные источники ВНЕ lan_subnets (гостевой SSID, mesh, второй
+     * роутер) — Susanin их молча игнорирует, и пользователь думает, что
+     * «правила не работают» (тестировщик, 2026-11-13: телефон 10.215.173.0/24).
+     * Раз в час на /24 — явная строка с командой починки. */
+    static char unc[8][20];
+    static time_t unc_at[8];
+    static int unc_n;
     char body[1024];
     char ips[16][64];
     int tot[16], vpn[16], dir[16];
@@ -172,7 +179,33 @@ static void clients_audit(const susanin_config *cfg, const ct_flow *flows, int n
         const ct_flow *fl = &flows[i];
         int k = -1;
         if (fl->l4proto != 6 && fl->l4proto != 17) continue;
-        if (!from_lan(cfg, fl->src)) continue;
+        if (!from_lan(cfg, fl->src)) {
+            if (clf_is_private_dst(fl->src)) {
+                char u24[20];
+                char *dot3;
+                int j;
+                snprintf(u24, sizeof(u24), "%s", fl->src);
+                dot3 = strrchr(u24, '.');
+                if (dot3) {
+                    dot3[1] = '0';
+                    dot3[2] = '\0';
+                }
+                for (j = 0; j < unc_n; j++)
+                    if (!strcmp(unc[j], u24))
+                        break;
+                if (j == unc_n && j < 8) {
+                    snprintf(unc[j], sizeof(unc[j]), "%s", u24);
+                    unc_n++;
+                }
+                if (j < unc_n && now - unc_at[j] >= 3600) {
+                    unc_at[j] = now;
+                    slogf(SL_INFO, "AUTO-SUSANIN: подсеть %s — потоки из LAN, "
+                          "не покрытой lan_subnets (клиенты там не обрабатываются; "
+                          "добавьте подсеть в lan_subnets)", u24);
+                }
+            }
+            continue;
+        }
         if (clf_is_private_dst(fl->dst)) continue;
         for (j = 0; j < cnt; j++)
             if (!strcmp(ips[j], fl->src)) { k = j; break; }
