@@ -20,7 +20,7 @@ int clf_service_port(unsigned port);
 int clf_port_excluded(const susanin_config *cfg, unsigned port);
 int clf_is_private_dst(const char *dst);
 /* 1 = адрес ip входит в cidr ("a.b.c.d/len"). Нужен reset/forget, чтобы снять
- * покрывающий префикс из susanin_ok_net (инцидент reg.ru: /24 оставался). */
+ * покрывающий префикс из susanin_ok_net (/24 оставался). */
 int clf_ip_in_cidr(const char *ip, const char *cidr);
 
 #endif

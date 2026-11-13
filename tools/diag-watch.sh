@@ -25,7 +25,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 cfgval() { sed -n "s/^$1=[[:space:]]*//p" "$CONF" 2>/dev/null | tail -n1; }
 
 # Интерфейс и порт берём из конфига: раньше здесь был захардкожен nwg0, и на
-# стенде с другим туннелем (nocli0) колонка всегда показывала down.
+# эксперименте с другим туннелем (nocli0) колонка всегда показывала down.
 EGRESS_IF=$(cfgval egress_interface | cut -d, -f1)
 [ -n "$EGRESS_IF" ] || EGRESS_IF=nwg0
 TP_PORT=$(cfgval tproxy_port)

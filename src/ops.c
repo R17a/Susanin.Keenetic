@@ -416,7 +416,7 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
  * (best-effort: DNS не даёт перечислить все поддомены зоны). Файлы
  * vpn_always/vpn_never не изменяются. */
 /* Снять из состояния и susanin_ok_net все сети, покрывающие адрес.
- * Инцидент 2026-10-16 (reg.ru): media-агрегация утащила 194.67.72.0/24 в VPN,
+ * Практика: media-агрегация утащила 194.67.72.0/24 в VPN,
  * а reset/forget показывал «removed=0» — покрывающая сеть оставалась. */
 static int reset_covering_nets(const susanin_config *cfg, susanin_state *st,
                                const char *ip)
@@ -522,7 +522,7 @@ int ops_reset(const susanin_config *cfg, const char *arg)
 
 /* `susanin why <ip|domain>` — почему адрес маршрутизируется так, а не иначе:
  * какая запись списка его накрывает, в каких наборах и кэшах он лежит.
- * (2026-11-12: поиск «почему dnevnik не учится» занял два часа, потому что
+ * (поиск «почему адрес не учится» занял два часа, потому что
  * накрывающий CIDR в vpn_never нигде не было видно.) */
 int ops_why(const susanin_config *cfg, const char *arg)
 {
@@ -804,7 +804,7 @@ int ops_status_json(const susanin_config *cfg, const char *conf_path,
 
     /* r5.4: «RU в VPN» — счётчик пишет dns_sniff_ru_audit (движок),
      * панель только читает: RU-домены, идущие через туннель, — это
-     * потенциальные «Хьюстоны» антифрода. */
+     * потенциальные отказы антифрода. */
     {
         char rbuf[512] = "";
         int rcnt = 0;

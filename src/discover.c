@@ -311,7 +311,7 @@ static int csv_has_oc(const char *csv)
 /* OpenConnect — НЕ у всех: сами 'oc+' в lan_interfaces не добавляем, если
  * сервер не найден. Задача этой функции — поддержать тех, кто уже указал
  * oc+/ocN вручную, и не терять пул клиентов после rescan (регрессия
- * 2026-10-14: «часть сайтов висит, status зелёный»). */
+ * («часть сайтов висит, status зелёный»). */
 static void merge_ocserv(const susanin_config *c, susanin_discovery *d)
 {
     char pool[64], cidr[64];
@@ -333,7 +333,7 @@ static void merge_ocserv(const susanin_config *c, susanin_discovery *d)
     }
 
     /* Файла с ipv4-network нет (штатный Keenetic): берём адрес живого ocN
-     * и расширяем /32 до /24 — именно так выглядит пул на стенде. */
+     * и расширяем /32 до /24 — так выглядит типичный пул. */
     for (i = 0; i < DISC_MAXIF; i++) {
         char name[32];
         snprintf(name, sizeof(name), "oc%d", i);
