@@ -304,7 +304,9 @@ static int test_age(const state_set *st, const susanin_config *cfg,
 #define DIRECT_PROBE_MAX 10
 #define DIRECT_PROBE_PER_SEC 2
 #define DOK_TTL_OK     300   /* «прямой путь отвечает»: не заворачивать, с */
-#define DOK_TTL_BUDGET 120   /* бюджет проб исчерпан: короткая отметка */
+#define DOK_TTL_BUDGET 30    /* бюджет проб исчерпан: короткая отметка (r6:
+                              * раньше 120 с «замораживали» обучение на волне
+                              * фан-аута Lampa/ТВ на десятки хостов в минуту) */
 #define DOK_MAX        256
 
 /* Негативный кэш «прямой путь отвечает»: адрес не заворачиваем и повторно не
@@ -845,6 +847,17 @@ void clr_fast(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                  * соединение ещё ESTABLISHED (ТСПУ держит тишину). Ловим на FAST,
                  * не дожидаясь SOFT. */
                 promote_test(ctx, f, now, "FAST", "DPI-STALL");
+            else if (strcmp(f->tcp_state, "CLOSE") == 0 && f->rp >= 1 &&
+                     f->rb < 128 && f->ob >= lmin_bytes(cfg) &&
+                     f->op >= lmin_op(cfg))
+                /* r6 (Lampa на ТВ, 2026-11-13): плеер закрывает соединение по
+                 * таймауту (~5 с): handshake прошёл, запрос отправлен, ответа
+                 * НЕТ. TCP-CLOSE требует rp==0, DPI-RST — только 443; висячие
+                 * HTTP-источники на замороженных сетях (порт 80!) не ловились
+                 * вообще. Плюс direct-проба (после 0.4.4) помечает такие хосты
+                 * «прямой жив» по успешному connect — CLOSE-EMPTY её не
+                 * слушает и учит адрес дальше. */
+                promote_test(ctx, f, now, "FAST", "TCP-CLOSE-EMPTY");
         } else if (f->l4proto == 17) {
             if (f->dport == 443 && f->op >= (cfg->learn_strict ? 8UL : 6UL) && f->rp == 0)
                 promote_test(ctx, f, now, "FAST", "QUIC");
