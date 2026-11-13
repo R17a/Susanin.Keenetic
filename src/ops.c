@@ -827,6 +827,11 @@ int ops_status_json(const susanin_config *cfg, const char *conf_path,
              rcnt, esc);
     }
 
+    /* r7.5: носитель только для чтения (смерть флешки/сбойjournal) — агент
+     * не может писать pid/лог/state; в панели это должно быть видно сразу. */
+    japp(buf, n, &used, "\"storage_ro\":%s,",
+         access("/opt/susanin/var", W_OK) == 0 ? "false" : "true");
+
     /* r7.4b: аудит клиентов (пишет движок в var/clients.txt). */
     japp(buf, n, &used, "\"clients\":[");
     {

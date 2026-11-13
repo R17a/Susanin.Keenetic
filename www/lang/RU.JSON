@@ -338,6 +338,7 @@
   "status.clients.th.ip": "Клиент",
   "status.clients.th.vpn": "В туннеле",
   "status.clients.title": "Клиенты (последние 15 с)",
+  "status.ro.warn": "Носитель /opt только для чтения — агент не может писать логи/состояние, маршрутизация деградировала. Проверьте USB-накопитель.",
   "status.sets.title": "VPN-наборы (ipset)",
   "status.th.count": "Записей",
   "status.th.set": "Набор",

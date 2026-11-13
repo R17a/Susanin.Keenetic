@@ -338,6 +338,7 @@
   "status.clients.th.ip": "Client",
   "status.clients.th.vpn": "In tunnel",
   "status.clients.title": "Clients (last 15 s)",
+  "status.ro.warn": "Storage /opt is read-only — the agent cannot write logs/state, routing degraded. Check the USB drive.",
   "status.sets.title": "VPN sets (ipset)",
   "status.th.count": "Entries",
   "status.th.set": "Set",

@@ -166,6 +166,10 @@
       tb.insertAdjacentHTML('beforeend',
         '<tr><td>' + esc(k) + '</td><td>' + esc(ipsets[k]) + '</td></tr>');
     });
+    if (d.storage_ro) {
+      var roel = document.getElementById('storage-ro');
+      if (roel) roel.hidden = false;
+    }
     var cb = document.querySelector('#clients tbody');
     if (cb) {
       cb.innerHTML = '';

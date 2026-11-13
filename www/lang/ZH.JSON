@@ -338,6 +338,7 @@
   "status.clients.th.ip": "客户端",
   "status.clients.th.vpn": "隧道内",
   "status.clients.title": "客户端（最近 15 秒）",
+  "status.ro.warn": "存储 /opt 只读——代理无法写入日志/状态，路由已降级。请检查 USB 存储。",
   "status.sets.title": "VPN 集合（ipset）",
   "status.th.count": "条目数",
   "status.th.set": "集合",
