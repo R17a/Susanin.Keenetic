@@ -198,18 +198,34 @@ static flow_t *flow_get(const struct sockaddr_in *server,
     {
         flow_t *f = &g_flow[free_i];
         struct sockaddr_in relay;
-        int ctl = -1, tries, rfd;
-        for (tries = 0; tries < ASSOC_TRIES; tries++) {
-            ctl = socks_associate(g_socks_host, g_socks_port, &relay);
-            if (ctl >= 0)
-                break;
-            sleep(1);
-        }
+        int ctl = -1, rfd;
+        /* r4.4: backoff при систематических отказах ASSOCIATE. Прежняя схема
+         * (ASSOC_TRIES попыток с sleep(1)) на мёртвом socks вешала цикл
+         * релея на секунды для КАЖДОЙ датаграммы — весь UDP LAN-клиентов
+         * упирался в очередь. Теперь: одна быстрая попытка (socks — локальный
+         * loopback, отказ мгновенный), при неудаче экспоненциальная пауза
+         * 5..60 с; в паузе датаграммы молча отбрасываем — UDP-клиенты
+         * (QUIC/DNS) сами повторят, а при оживлении socks всё поедёт дальше. */
+        static time_t block_until;
+        static int fails;
+        if (block_until && now < block_until)
+            return NULL;
+        ctl = socks_associate(g_socks_host, g_socks_port, &relay);
         if (ctl < 0) {
-            slogf(SL_ERROR, "udp-relay: SOCKS5 UDP ASSOCIATE к %s:%d не удался",
-                  g_socks_host, g_socks_port);
+            long bo = 5;
+            int i;
+            fails++;
+            for (i = 1; i < fails && bo < 60; i++)
+                bo *= 2;
+            block_until = now + bo;
+            if (fails == 1 || fails % 20 == 0)
+                slogf(SL_ERROR, "udp-relay: UDP ASSOCIATE к %s:%d не удался"
+                      " (подряд %d, пауза %lds)", g_socks_host, g_socks_port,
+                      fails, bo);
             return NULL;
         }
+        fails = 0;
+        block_until = 0;
         rfd = socket(AF_INET, SOCK_DGRAM, 0);
         if (rfd < 0) {
             slogf(SL_ERROR, "udp-relay: relay socket: %s", strerror(errno));
