@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <pwd.h>
 #include <sys/types.h>
@@ -181,6 +182,19 @@ static int bt_write_file(void)
  * вызов ipset ограничен по времени и при таймауте убивается. */
 #define BT_RESTORE_TIMEOUT_MS 1500
 #define BT_APPLY_TIMEOUT_MS   2000
+/* Предел поштучного применения (fallback, когда restore упал, а ipset жив):
+ * не больше BT_FALLBACK_MAX команд и не дольше BT_FALLBACK_MS — иначе залп
+ * fork+exec замораживает главный цикл. */
+#define BT_FALLBACK_MAX 2000
+#define BT_FALLBACK_MS  10000
+
+/* Монотонные миллисекунды — для предела поштучного применения. */
+static long long bt_now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 
 /* Дождаться ребёнка не дольше timeout_ms. Возврат: код выхода, -1 ошибка,
  * -2 таймаут (ребёнок убит SIGKILL). */
@@ -369,7 +383,8 @@ static int bt_flush(void)
          * restore: раньше из-за этого после рестарта не восстанавливался кэш).
          * Применяем поштучно — медленнее, но без потери остальных записей. */
         size_t off = 0;
-        int ncmd = 0, bad = 0;
+        int ncmd = 0, bad = 0, skipped = 0;
+        long long t0 = bt_now_ms();
         char firstbad[512] = "";
         while (off < g_bt_len) {
             char *nl = memchr(g_bt + off, '\n', g_bt_len - off);
@@ -380,11 +395,16 @@ static int bt_flush(void)
                     len = sizeof(line) - 1;
                 memcpy(line, g_bt + off, len);
                 line[len] = '\0';
-                ncmd++;
-                if (bt_apply_line(line) != 0) {
-                    if (!bad)
-                        snprintf(firstbad, sizeof(firstbad), "%s", line);
-                    bad++;
+                if (ncmd >= BT_FALLBACK_MAX ||
+                    bt_now_ms() - t0 > BT_FALLBACK_MS) {
+                    skipped++;
+                } else {
+                    ncmd++;
+                    if (bt_apply_line(line) != 0) {
+                        if (!bad)
+                            snprintf(firstbad, sizeof(firstbad), "%s", line);
+                        bad++;
+                    }
                 }
             }
             off += len + (nl ? 1 : 0);
@@ -398,10 +418,11 @@ static int bt_flush(void)
                 e[j++] = err[i];
             }
             e[j] = '\0';
-            if (bad)
+            if (bad || skipped)
                 slogf(SL_WARN, "ipset restore rc=%d (%s): применено поштучно %d, "
-                               "ошибок %d, первая: %s",
-                      rc, e[0] ? e : "no stderr", ncmd - bad, bad, firstbad);
+                               "ошибок %d, пропущено %d (предел), первая: %s",
+                      rc, e[0] ? e : "no stderr", ncmd - bad, bad, skipped,
+                      firstbad);
             else
                 slogf(SL_INFO, "ipset restore rc=%d (%s): применил поштучно %d команд",
                       rc, e[0] ? e : "no stderr", ncmd);

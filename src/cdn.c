@@ -4,11 +4,13 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #define CDN_MAX_RANGES 512
@@ -135,46 +137,88 @@ static int run_to_file(char *const argv[], const char *path)
     return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
 
+/* Скачивание — в отдельном процессе: прежние wget/curl с waitpid блокировали
+ * главный цикл на 10–20 с, и на это время dns_sniff с обучением вставали.
+ * Ребёнок качает в .tmp и сам делает rename; родитель пожинает его в
+ * cdn_poll() (вызывается каждый виток главного цикла) и перечитывает файл. */
+static pid_t cdn_pid;
+static time_t cdn_started;
+
 int cdn_refresh(const susanin_config *c)
 {
     char tmp[CFG_PATH_MAX + 8];
-    char *wget_argv[8];
-    char *curl_argv[8];
-    int rc;
+    pid_t pid;
     if (!c || !c->cdn_ranges_url[0] || !c->cdn_ranges_file[0])
         return -1;
+    if (cdn_pid > 0)
+        return 0;                   /* прежнее скачивание ещё идёт */
     snprintf(tmp, sizeof(tmp), "%s.tmp", c->cdn_ranges_file);
-
-    wget_argv[0] = "wget";
-    wget_argv[1] = "-q";
-    wget_argv[2] = "-T";
-    wget_argv[3] = "10";
-    wget_argv[4] = "-O";
-    wget_argv[5] = tmp;
-    wget_argv[6] = (char *)c->cdn_ranges_url;
-    wget_argv[7] = NULL;
-    rc = run_to_file(wget_argv, tmp);
-
-    if (rc != 0) {
-        curl_argv[0] = "curl";
-        curl_argv[1] = "-fsS";
-        curl_argv[2] = "--max-time";
-        curl_argv[3] = "10";
-        curl_argv[4] = "-o";
-        curl_argv[5] = tmp;
-        curl_argv[6] = (char *)c->cdn_ranges_url;
-        curl_argv[7] = NULL;
-        rc = run_to_file(curl_argv, tmp);
-    }
-    if (rc != 0) {
-        unlink(tmp);
+    pid = fork();
+    if (pid < 0)
         return -1;
+    if (pid == 0) {
+        char *wget_argv[8];
+        char *curl_argv[8];
+        int rc;
+        setsid();
+        wget_argv[0] = "wget";
+        wget_argv[1] = "-q";
+        wget_argv[2] = "-T";
+        wget_argv[3] = "10";
+        wget_argv[4] = "-O";
+        wget_argv[5] = tmp;
+        wget_argv[6] = (char *)c->cdn_ranges_url;
+        wget_argv[7] = NULL;
+        rc = run_to_file(wget_argv, tmp);
+        if (rc != 0) {
+            curl_argv[0] = "curl";
+            curl_argv[1] = "-fsS";
+            curl_argv[2] = "--max-time";
+            curl_argv[3] = "10";
+            curl_argv[4] = "-o";
+            curl_argv[5] = tmp;
+            curl_argv[6] = (char *)c->cdn_ranges_url;
+            curl_argv[7] = NULL;
+            rc = run_to_file(curl_argv, tmp);
+        }
+        if (rc != 0) {
+            unlink(tmp);
+            _exit(1);
+        }
+        if (rename(tmp, c->cdn_ranges_file) != 0) {
+            unlink(tmp);
+            _exit(1);
+        }
+        _exit(0);
     }
-    if (rename(tmp, c->cdn_ranges_file) != 0) {
-        unlink(tmp);
-        return -1;
-    }
-    cdn_load(c);
-    slogf(SL_INFO, "CDN: диапазоны обновлены (%d сетей) из %s", gn, c->cdn_ranges_url);
+    cdn_pid = pid;
+    cdn_started = time(NULL);
     return 0;
+}
+
+int cdn_poll(const susanin_config *c)
+{
+    int st;
+    pid_t w;
+    if (cdn_pid <= 0)
+        return 0;
+    w = waitpid(cdn_pid, &st, WNOHANG);
+    if (w == 0) {
+        if (time(NULL) - cdn_started > 120) {   /* завис — не ждём вечно */
+            kill(cdn_pid, SIGKILL);
+            waitpid(cdn_pid, &st, 0);
+            cdn_pid = 0;
+            slogf(SL_WARN, "CDN: скачивание не завершилось за 2 минуты — процесс убит");
+        }
+        return 0;
+    }
+    cdn_pid = 0;
+    if (WIFEXITED(st) && WEXITSTATUS(st) == 0) {
+        cdn_load(c);
+        slogf(SL_INFO, "CDN: диапазоны обновлены (%d сетей) из %s", gn,
+              c->cdn_ranges_url);
+        return 1;
+    }
+    slogf(SL_WARN, "CDN: обновить диапазоны не удалось (повтор через интервал)");
+    return -1;
 }

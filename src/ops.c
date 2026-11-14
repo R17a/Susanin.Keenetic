@@ -173,6 +173,29 @@ static int cap_count_digits(const char *exe, char *const argv[])
     return count;
 }
 
+/* Число записей набора через `ipset list -t` (заголовок без дампа элементов):
+ * «Number of entries: N». Полный `ipset list` на каждый опрос панели (раз в 5 с)
+ * тащит через pipe сотни строк ради счётчика; terse-вариант в разы дешевле и для
+ * веб-процесса, и для CPU роутера. При неожиданном выводе — откат к полному
+ * подсчёту строк-элементов. */
+static int ipset_count(const char *ipset, const char *name)
+{
+    char *a[5];
+    char out[1024];
+    char *p;
+    a[0] = (char *)ipset; a[1] = "list"; a[2] = "-t"; a[3] = (char *)name; a[4] = NULL;
+    if (run_capture(ipset, a, out, sizeof(out)) == 0) {
+        p = strstr(out, "Number of entries:");
+        if (p)
+            return atoi(p + 18);
+    }
+    {
+        char *b[4];
+        b[0] = (char *)ipset; b[1] = "list"; b[2] = (char *)name; b[3] = NULL;
+        return cap_count_digits(ipset, b);
+    }
+}
+
 int ops_setup(const susanin_config *base, const char *conf_path, int argc, char **argv)
 {
     susanin_config cfg = *base;
@@ -377,11 +400,8 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
             "susanin_ok_net", "susanin_never"
         };
         int k;
-        for (k = 0; k < 6; k++) {
-            char *b[4];
-            b[0] = (char *)ipset; b[1] = "list"; b[2] = (char *)names[k]; b[3] = NULL;
-            printf("  %-18s = %d\n", names[k], cap_count_digits(ipset, b));
-        }
+        for (k = 0; k < 6; k++)
+            printf("  %-18s = %d\n", names[k], ipset_count(ipset, names[k]));
     }
 
     cdn_load(cfg);
@@ -785,13 +805,9 @@ int ops_status_json(const susanin_config *cfg, const char *conf_path,
          cfg->mark_test, cfg->mark_ok);
 
     japp(buf, n, &used, "\"ipsets\":{");
-    for (k = 0; k < 6; k++) {
-        char *b[4];
-        int cnt;
-        b[0] = (char *)ipset; b[1] = "list"; b[2] = (char *)sets[k]; b[3] = NULL;
-        cnt = cap_count_digits(ipset, b);
-        japp(buf, n, &used, "%s\"%s\":%d", k ? "," : "", sets[k], cnt);
-    }
+    for (k = 0; k < 6; k++)
+        japp(buf, n, &used, "%s\"%s\":%d", k ? "," : "", sets[k],
+             ipset_count(ipset, sets[k]));
     japp(buf, n, &used, "},");
 
     json_str(esc, sizeof(esc), cfg->vpn_always_file);

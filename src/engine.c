@@ -1366,9 +1366,15 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         }
 
         if (tunnel_up) {
+            /* Проход обучения применяем одним батчем ipset (restore): иначе
+             * каждая add/del на волне промоушенов — отдельный fork+exec, и на
+             * MIPS классификатор захлёбывается вилками. Пустая пачка
+             * сбрасывается без fork'ов. */
+            backend_batch_begin();
             if (now - last[0] >= cfg->fast_interval) { last[0] = now; clr_fast(&ctx, L.v, L.n, now); }
             if (now - last[1] >= cfg->soft_interval) { last[1] = now; clr_soft(&ctx, L.v, L.n, now); }
             if (now - last[2] >= cfg->judge_interval) { last[2] = now; clr_judge(&ctx, L.v, L.n, now); }
+            backend_batch_end();
             clients_audit(cfg, L.v, L.n, now);
         }
 
@@ -1532,8 +1538,9 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         if (cfg->cdn_ranges_interval > 0 &&
             now - last_cdn >= (time_t)cfg->cdn_ranges_interval) {
             last_cdn = now;
-            cdn_refresh(cfg);
+            cdn_refresh(cfg);   /* асинхронно: скачивание в отдельном процессе */
         }
+        cdn_poll(cfg);          /* пожать ребёнка; при успехе перечитать диапазоны */
 
         if (cfg->release_check && cfg->release_check_interval > 0 &&
             now - last_release >= (time_t)cfg->release_check_interval) {
@@ -1554,7 +1561,10 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         if (now - last_trim >= 30) {
             int udp;
             last_trim = now;
+            /* Вытеснения GC — тоже пачкой (state_ipset_del вне батча — fork). */
+            backend_batch_begin();
             trim_ok(cfg, &st);
+            backend_batch_end();
             /* Протухшие записи не должны копиться: state_expire() не вызывался. */
             for (udp = 0; udp < 2; udp++) {
                 state_expire(st_test(&st, udp), now);
