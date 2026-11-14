@@ -404,3 +404,5 @@ pochta.ru
 *.pochta.ru
 russianpost.ru
 *.russianpost.ru
+qwenlm.ai
+*.qwenlm.ai
