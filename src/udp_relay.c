@@ -193,8 +193,18 @@ static flow_t *flow_get(const struct sockaddr_in *server,
             return &g_flow[i];
         }
     }
-    if (free_i < 0)
+    if (free_i < 0) {
+        /* Все слоты заняты: новые потоки отбрасываются. Без строки в логе
+         * исчерпание выглядит как «UDP молча умер» — предупреждаем не чаще
+         * раза в минуту. */
+        static time_t full_warn;
+        if (now - full_warn >= 60) {
+            full_warn = now;
+            slogf(SL_WARN, "udp-relay: все %d слотов потоков заняты — новые отбрасываются",
+                  MAX_FLOWS);
+        }
         return NULL;
+    }
     {
         flow_t *f = &g_flow[free_i];
         struct sockaddr_in relay;

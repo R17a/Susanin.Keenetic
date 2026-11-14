@@ -57,6 +57,11 @@ static int ip_in_cidr(const char *ip, const char *cidr)
         return 0;
     *slash = '\0';
     pre = atoi(slash + 1);
+    /* Опечатка в конфиге ("/33", отрицательный) не должна давать UB-сдвиг. */
+    if (pre < 0)
+        pre = 0;
+    if (pre > 32)
+        pre = 32;
     if (inet_pton(AF_INET, ip, &a) != 1 || inet_pton(AF_INET, c, &n) != 1)
         return 0;
     mask = pre == 0 ? 0 : (0xffffffffu << (32 - pre));
@@ -694,17 +699,31 @@ static const char *pair_key(char *buf, size_t n, const susanin_config *cfg,
 
 /* Пропуск обучения — INFO, но не чаще раза в 10 минут на адрес. С r7.4a
  * виден и LAN-источник («кто запросил») — без него диагностика ТВ/приложений
- * вслепую. */
+ * вслепую. Таблица на 16 адресов: при волне пропусков (например, «бюджет проб
+ * исчерпан» на фан-ауте источника) адреса чередуются, и с одним «последним»
+ * слотом строка писалась бы каждый проход — по сути каждую секунду. */
+#define SKIP_SLOTS 16
 static void skip_note(const char *src, const char *ip, unsigned port,
                       time_t now, const char *why)
 {
-    static char last_ip[64];
-    static time_t last_at;
-    if (strcmp(last_ip, ip) != 0 || now - last_at >= 600) {
-        snprintf(last_ip, sizeof(last_ip), "%.63s", ip);
-        last_at = now;
-        slogf(SL_INFO, "AUTO-SUSANIN: skip %s -> %s:%u (%s)", src, ip, port, why);
+    static char last_ip[SKIP_SLOTS][64];
+    static time_t last_at[SKIP_SLOTS];
+    static int sn_next;
+    int i, hit = -1, oldest = 0;
+    for (i = 0; i < SKIP_SLOTS; i++) {
+        if (!strcmp(last_ip[i], ip)) { hit = i; break; }
+        if (last_at[i] < last_at[oldest]) oldest = i;
     }
+    if (hit < 0)
+        hit = (last_at[oldest] && now - last_at[oldest] < 600)
+                  ? sn_next   /* все слоты свежие — пишем кругом */
+                  : oldest;   /* есть протухший — переиспользуем его */
+    else if (now - last_at[hit] < 600)
+        return;
+    sn_next = (hit + 1) % SKIP_SLOTS;
+    snprintf(last_ip[hit], sizeof(last_ip[hit]), "%.63s", ip);
+    last_at[hit] = now;
+    slogf(SL_INFO, "AUTO-SUSANIN: skip %s -> %s:%u (%s)", src, ip, port, why);
 }
 
 static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
@@ -1021,8 +1040,11 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                     /* tproxy: Xray отвечает сам, поэтому «нет ответов» (rp == 0)
                      * недостижимо — неудачу определяем по отсутствию реальных
                      * данных при состоявшемся соединении, но не раньше, чем запись
-                     * прожила TEST_FAIL_MIN_AGE (см. выше). */
-                    if (test_age(st_test(ctx->st, udp), cfg, f->dst, now) >= TEST_FAIL_MIN_AGE &&
+                     * прожила TEST_FAIL_MIN_AGE (см. выше). Возраст ищем по тому же
+                     * ключу, что и запись (kf): в port-aware режиме это пара
+                     * «ip:порт», и поиск по голому адресу не находил запись —
+                     * детект провала test молча не срабатывал. */
+                    if (test_age(st_test(ctx->st, udp), cfg, kf, now) >= TEST_FAIL_MIN_AGE &&
                         strcmp(f->tcp_state, "ESTABLISHED") == 0 &&
                         f->op >= lmin_op(cfg) && f->ob >= lmin_bytes(cfg) &&
                         f->rb < 128)
@@ -1030,7 +1052,7 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 } else if ((strcmp(f->tcp_state, "SYN_SENT") == 0 && f->op >= 3 &&
                             f->rp == 0) ||
                            (strcmp(f->tcp_state, "ESTABLISHED") == 0 &&
-                            test_age(st_test(ctx->st, udp), cfg, f->dst, now) >= TEST_FAIL_MIN_AGE &&
+                            test_age(st_test(ctx->st, udp), cfg, kf, now) >= TEST_FAIL_MIN_AGE &&
                             f->op >= lmin_op(cfg) && f->ob >= lmin_bytes(cfg) &&
                             f->rp <= 1 && f->rb < 128)) {
                     /* SYN_SENT без единого ответа — сигнал немедленный (окна данных

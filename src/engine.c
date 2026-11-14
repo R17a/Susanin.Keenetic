@@ -62,6 +62,11 @@ static int ip_in_cidr(const char *ip, const char *cidr)
         return 0;
     *slash = '\0';
     pre = atoi(slash + 1);
+    /* Опечатка в конфиге ("/33", отрицательный) не должна давать UB-сдвиг. */
+    if (pre < 0)
+        pre = 0;
+    if (pre > 32)
+        pre = 32;
     if (inet_pton(AF_INET, ip, &a) != 1 || inet_pton(AF_INET, c, &n) != 1)
         return 0;
     mask = pre == 0 ? 0 : (0xffffffffu << (32 - pre));
@@ -159,7 +164,7 @@ static void clients_audit(const susanin_config *cfg, const ct_flow *flows, int n
                           time_t now)
 {
     static time_t last;
-    static char lastbody[1024];
+    static char lastbody[2048];
     /* r7.9: приватные источники ВНЕ lan_subnets (гостевой SSID, mesh, второй
      * роутер) — Susanin их молча игнорирует, и пользователь думает, что
      * «правила не работают» (клиент в гостевой подсети вне lan_subnets).
@@ -167,9 +172,9 @@ static void clients_audit(const susanin_config *cfg, const ct_flow *flows, int n
     static char unc[8][20];
     static time_t unc_at[8];
     static int unc_n;
-    char body[1024];
-    char ips[16][64];
-    int tot[16], vpn[16], dir[16];
+    char body[2048];
+    char ips[32][64];
+    int tot[32], vpn[32], dir[32];
     int cnt = 0, i, j, used = 0;
     FILE *f;
     if (now - last < 15)
@@ -210,7 +215,7 @@ static void clients_audit(const susanin_config *cfg, const ct_flow *flows, int n
         for (j = 0; j < cnt; j++)
             if (!strcmp(ips[j], fl->src)) { k = j; break; }
         if (k < 0) {
-            if (cnt >= 16) continue;
+            if (cnt >= 32) continue;
             k = cnt++;
             snprintf(ips[k], sizeof(ips[k]), "%s", fl->src);
             tot[k] = vpn[k] = dir[k] = 0;

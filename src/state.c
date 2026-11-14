@@ -214,6 +214,11 @@ int state_save(const char *path, const susanin_state *s)
     set_save(fp, "ok udp", &s->ok_udp);
     set_save(fp, "cool tcp", &s->cooldown_tcp);
     set_save(fp, "cool udp", &s->cooldown_udp);
+    /* Наблюдаемые (watch) тоже сохраняем: иначе после рестарта агента
+     * накопленные цепочки late-stall/QUIC приходится набирать заново.
+     * Старые версии агента неизвестную фазу при загрузке пропускают. */
+    set_save(fp, "watch tcp", &s->watch_tcp);
+    set_save(fp, "watch udp", &s->watch_udp);
     /* Префиксы ok_net и «мягко-прямо» (формат тот же: phase proto addr expire). */
     set_save(fp, "net tcp", &s->net);
     set_save(fp, "direct tcp", &s->direct);
@@ -248,6 +253,8 @@ int state_load(const char *path, susanin_state *s)
             set = !strcmp(proto, "tcp") ? &s->ok_tcp : &s->ok_udp;
         else if (!strcmp(phase, "cool"))
             set = !strcmp(proto, "tcp") ? &s->cooldown_tcp : &s->cooldown_udp;
+        else if (!strcmp(phase, "watch"))
+            set = !strcmp(proto, "tcp") ? &s->watch_tcp : &s->watch_udp;
         else if (!strcmp(phase, "net"))
             set = &s->net;
         else if (!strcmp(phase, "direct"))
