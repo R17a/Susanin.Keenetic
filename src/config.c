@@ -178,6 +178,11 @@ void config_set_defaults(susanin_config *c)
     c->frozen_net_min_ips = 3;
     c->frozen_net_prefix = 24;
     c->frozen_net_ttl = 86400;
+    c->test_net_enabled = 1;
+    c->test_net_min_ips = 2;
+    c->test_net_prefix = 24;
+    c->test_net_window = 60;
+    c->test_net_ttl = 600;
     c->ru_guard = 1;
     c->ru_guard_direct = 1;
     snprintf(c->ru_guard_tlds, sizeof(c->ru_guard_tlds), "%s",
@@ -507,6 +512,16 @@ int config_load(const char *path, susanin_config *c)
             c->frozen_net_prefix = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "frozen_net_ttl"))
             c->frozen_net_ttl = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "test_net_enabled"))
+            c->test_net_enabled = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "test_net_min_ips"))
+            c->test_net_min_ips = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "test_net_prefix"))
+            c->test_net_prefix = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "test_net_window"))
+            c->test_net_window = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "test_net_ttl"))
+            c->test_net_ttl = parse_dur(val, U_SEC);
         else if (!strcmp(key, "ru_guard"))
             c->ru_guard = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "ru_guard_direct"))
@@ -913,6 +928,20 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "# TTL наследованного префикса, сек (продлевается при новых\n");
     fprintf(fp, "# подтверждениях сети; истёк — сеть снова учится по IP).\n");
     fprintf(fp, "frozen_net_ttl=%d\n", out_dur(c->frozen_net_ttl, U_SEC));
+    fprintf(fp, "# Быстрая агрегация на фазе TEST: N разных IP одного префикса\n");
+    fprintf(fp, "# в test за окно секунд -> префикс коротко пинится в susanin_ok_net\n");
+    fprintf(fp, "# (фан-аут источника идёт в VPN сразу, не дожидаясь CONFIRMED\n");
+    fprintf(fp, "# на каждый адрес); vpn_never приоритетнее. 0|1.\n");
+    fprintf(fp, "test_net_enabled=%d\n", c->test_net_enabled);
+    fprintf(fp, "# Сколько разных IP префикса нужно в test (>=1).\n");
+    fprintf(fp, "test_net_min_ips=%d\n", c->test_net_min_ips);
+    fprintf(fp, "# Длина префикса, бит (8..32).\n");
+    fprintf(fp, "test_net_prefix=%d\n", c->test_net_prefix);
+    fprintf(fp, "# Окно накопления серии, сек (серия остыла — счёт заново).\n");
+    fprintf(fp, "test_net_window=%d\n", out_dur(c->test_net_window, U_SEC));
+    fprintf(fp, "# TTL пина префикса, сек (короткий — ограничивает вред\n");
+    fprintf(fp, "# ложного срабатывания).\n");
+    fprintf(fp, "test_net_ttl=%d\n", out_dur(c->test_net_ttl, U_SEC));
     fprintf(fp, "# RU-guard (r5): российские домены НЕ заворачивать в VPN\n");
     fprintf(fp, "# автоматически — антифрод банков/OZON рвёт с чужого выхода.\n");
     fprintf(fp, "# Ручной vpn_always сильнее; работает при dns_sniff=1. 0|1.\n");
@@ -1160,6 +1189,11 @@ void config_print(const susanin_config *c)
     printf("frozen_net_min_ips=%d\n", c->frozen_net_min_ips);
     printf("frozen_net_prefix=%d\n", c->frozen_net_prefix);
     printf("frozen_net_ttl=%d\n", out_dur(c->frozen_net_ttl, U_SEC));
+    printf("test_net_enabled=%d\n", c->test_net_enabled);
+    printf("test_net_min_ips=%d\n", c->test_net_min_ips);
+    printf("test_net_prefix=%d\n", c->test_net_prefix);
+    printf("test_net_window=%d\n", out_dur(c->test_net_window, U_SEC));
+    printf("test_net_ttl=%d\n", out_dur(c->test_net_ttl, U_SEC));
     printf("ru_guard=%d\n", c->ru_guard);
     printf("ru_guard_direct=%d\n", c->ru_guard_direct);
     printf("ru_guard_tlds=%s\n", c->ru_guard_tlds);

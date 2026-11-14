@@ -638,6 +638,105 @@ static void frozen_net_aggregate(classifier_ctx *ctx, const ct_flow *f)
           cidr, want, f->dst, cfg->frozen_net_ttl);
 }
 
+/* Быстрая агрегация на фазе TEST. Отдельная таблица подтверждений (не общая
+ * с ag[]): окно и пороги отличаются от frozen/CDN/media, а смешение счётчиков
+ * приводило бы к перекрёстному срабатыванию (чужой want достигается раньше). */
+#define TN_CONF 64
+#define TN_HIST 3        /* помним до 3 последних адресов префикса */
+typedef struct { char cidr[64]; char last[TN_HIST][64]; int n; time_t at; } tnslot;
+static tnslot tn[TN_CONF];
+
+static int tn_confirm(int want, int win_s, const char *cidr, const char *addr)
+{
+    int i, k, free_i = -1, oldest = 0;
+    time_t now = time(NULL);
+    if (want < 1)
+        want = 1;
+    for (i = 0; i < TN_CONF; i++) {
+        if (tn[i].cidr[0] && !strcmp(tn[i].cidr, cidr)) {
+            if (now - tn[i].at > win_s) {   /* серия остыла — считаем заново */
+                tn[i].n = 0;
+                for (k = 0; k < TN_HIST; k++)
+                    tn[i].last[k][0] = '\0';
+            }
+            for (k = 0; k < TN_HIST; k++)   /* повтор того же адреса не считаем */
+                if (tn[i].last[k][0] && !strcmp(tn[i].last[k], addr)) {
+                    tn[i].at = now;
+                    return tn[i].n >= want;
+                }
+            for (k = TN_HIST - 1; k > 0; k--)     /* сдвигаем историю адресов */
+                memcpy(tn[i].last[k], tn[i].last[k - 1], sizeof(tn[i].last[k]));
+            snprintf(tn[i].last[0], sizeof(tn[i].last[0]), "%s", addr);
+            tn[i].n++;
+            tn[i].at = now;
+            return tn[i].n >= want;
+        }
+        if (!tn[i].cidr[0] && free_i < 0)
+            free_i = i;
+        if (tn[i].at < tn[oldest].at)
+            oldest = i;
+    }
+    i = free_i >= 0 ? free_i : oldest;   /* нет свободных — вытесняем старую */
+    snprintf(tn[i].cidr, sizeof(tn[i].cidr), "%s", cidr);
+    for (k = 0; k < TN_HIST; k++)
+        tn[i].last[k][0] = '\0';
+    snprintf(tn[i].last[0], sizeof(tn[i].last[0]), "%s", addr);
+    tn[i].n = 1;
+    tn[i].at = now;
+    return want <= 1;
+}
+
+/* Фан-аут источника (плеер/IPTV-плейлист, сайт на целом /24 хостинга) бьёт
+ * сразу по десяткам хостов одной сети; при поадресном обучении каждый ждёт
+ * собственного CONFIRMED, и плейлист «прокашивается» медленно. Здесь:
+ * test_net_min_ips РАЗНЫХ IP одного префикса оказались в test за
+ * test_net_window секунд -> префикс пинится в susanin_ok_net на короткий
+ * test_net_ttl, и следующие соединения сети идут в VPN с первого пакета.
+ * Короткий TTL ограничивает радиус вреда ложного срабатывания; vpn_never и
+ * ru-guard для адреса-триггера уже проверены на входе promote_test, а перед
+ * самим пином адрес дополнительно проверяется в ipset susanin_never. */
+static void test_net_aggregate(classifier_ctx *ctx, const ct_flow *f, time_t now)
+{
+    const susanin_config *cfg = ctx->cfg;
+    struct in_addr b;
+    char ab[INET_ADDRSTRLEN];
+    char cidr[64];
+    uint32_t mask;
+    int pre, want, win, ttl;
+    if (!cfg->test_net_enabled || !f->dst4)
+        return;
+    pre = cfg->test_net_prefix > 0 ? cfg->test_net_prefix : 24;
+    if (pre < 8)
+        pre = 8;
+    if (pre > 32)
+        pre = 32;
+    mask = 0xffffffffu << (32 - pre);
+    b.s_addr = htonl(f->dst4 & mask);
+    if (!inet_ntop(AF_INET, &b, ab, sizeof(ab)))
+        return;
+    snprintf(cidr, sizeof(cidr), "%s/%d", ab, pre);
+    /* Префикс уже запинен (frozen/CDN/media или более ранний test-net). */
+    if (state_has(&ctx->st->net, cidr, now))
+        return;
+    want = cfg->test_net_min_ips >= 1 ? cfg->test_net_min_ips : 2;
+    win = cfg->test_net_window > 0 ? cfg->test_net_window : 60;
+    if (!tn_confirm(want, win, cidr, f->dst)) {
+        slogf(SL_DEBUG, "TEST-NET: %s копит подтверждения (нужно %d разных IP за %d с)",
+              cidr, want, win);
+        return;
+    }
+    /* ipset-проверка (fork) — только в момент агрегации, не на каждый промоушен. */
+    if (backend_set_test(cfg, "susanin_never", f->dst) == 0) {
+        slogf(SL_DEBUG, "TEST-NET: не агрегирую %s — адрес в vpn_never", f->dst);
+        return;
+    }
+    ttl = cfg->test_net_ttl > 0 ? cfg->test_net_ttl : 600;
+    backend_net_add(cfg, cidr, ttl);
+    state_touch(&ctx->st->net, cidr, now, ttl);
+    slogf(SL_INFO, "TEST-NET: %s -> vpn (%d IP в test за %d с, последний %s, ttl=%ds)",
+          cidr, want, win, f->dst, ttl);
+}
+
 /* C1/C4: при подтверждении адреса из CDN-диапазона закрепить ближайший префикс
  * CDN в susanin_ok_net (с TTL) — чтобы следующие edge-и шли в VPN сразу. */
 static void cdn_aggregate(classifier_ctx *ctx, const ct_flow *f)
@@ -968,6 +1067,10 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
             slogf(SL_INFO, "AUTO-SUSANIN: %s %s %s -> %s:%u",
                   stage, reason, f->src, f->dst, f->dport);
     }
+    /* Пока адрес копит подтверждения, фан-аут источника бьёт по соседним IP:
+     * несколько разных адресов одной сети в test — короткий пин префикса,
+     * и следующие соединения сети не ждут собственного CONFIRMED. */
+    test_net_aggregate(ctx, f, now);
     backend_ct_delete(f);
 }
 
