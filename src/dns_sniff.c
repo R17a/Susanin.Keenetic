@@ -29,6 +29,14 @@ typedef struct {
     time_t expire;
     int pinned;
     int pinned_never;
+    /* Кэш вердиктов по спискам: reconcile каждые 10 с на каждую живую запись
+     * выполнял до 5 полных проходов vpn_always/vpn_never (сотни зон) плюс
+     * суффикс-проверку TLD. Вердикты пересчитываются только при смене
+     * поколения списков (файлы перечитаны / TLD-набор изменён). */
+    unsigned vgen;          /* поколение списков, на котором считали */
+    signed char v_always;   /* -1 = не считали, 0/1 = вердикт */
+    signed char v_never;
+    signed char v_ru;
 } dns_entry;
 
 static dns_entry g_tab[DNS_MAX_ENTRIES];
@@ -53,6 +61,12 @@ typedef struct {
     char *data;              /* домены через '\n' */
 } lcache;
 static lcache lc[2];
+/* Поколение списков: растёт при любом перечитывании vpn_always/vpn_never или
+ * смене набора RU-TLD — кэш вердиктов записей при этом сбрасывается. */
+static unsigned g_list_gen = 1;
+
+static void reconcile_entry(const susanin_config *cfg, dns_entry *e, int i,
+                            time_t now);
 
 static unsigned long dns_hash(const char *s)
 {
@@ -66,29 +80,52 @@ static void dns_store(const char *domain, const char *ip, int ttl)
 {
     time_t now = time(NULL);
     unsigned long h;
-    int idx;
+    int idx, reuse = -1;
+    dns_entry *e;
 
     if (!domain[0] || !ip[0])
         return;
     h = dns_hash(domain) % DNS_MAX_ENTRIES;
+    /* Домен ищем среди живых И истёкших записей: домен, который спрашивают
+     * реже dns_sniff_ttl, раньше терял запись вместе с pinned-флагами, и
+     * reconcile каждые dns_sniff_ttl секунд заново пинил его с логом. Теперь
+     * та же пара домен+IP просто оживает; при смене IP флаги сбрасываются
+     * (старый пин относится к прежнему адресу), и новый адрес пинится сразу. */
     for (idx = 0; idx < DNS_MAX_ENTRIES; idx++) {
         int s = (int)((h + (unsigned long)idx) % DNS_MAX_ENTRIES);
-        dns_entry *e = &g_tab[s];
-        if (e->domain[0] && e->expire > now &&
-            !strcasecmp(e->domain, domain)) {
-            snprintf(e->ip, sizeof(e->ip), "%s", ip);
+        e = &g_tab[s];
+        if (!e->domain[0]) {
+            if (reuse < 0) reuse = s;
+            continue;
+        }
+        if (!strcasecmp(e->domain, domain)) {
+            if (strcmp(e->ip, ip) != 0) {
+                snprintf(e->ip, sizeof(e->ip), "%s", ip);
+                e->pinned = 0;
+                e->pinned_never = 0;
+            }
             e->expire = now + ttl;
+            if (g_cfg)
+                reconcile_entry(g_cfg, e, s, now);   /* мгновенный пин */
             return;
         }
-        if (!e->domain[0] || e->expire <= now) {
-            snprintf(e->domain, sizeof(e->domain), "%s", domain);
-            snprintf(e->ip, sizeof(e->ip), "%s", ip);
-            e->expire = now + ttl;
-            e->pinned = 0;
-            e->pinned_never = 0;
-            return;
-        }
+        if (e->expire <= now && reuse < 0)
+            reuse = s;
     }
+    if (reuse < 0)
+        return;                 /* таблица полна живыми — не вытесняем */
+    e = &g_tab[reuse];
+    snprintf(e->domain, sizeof(e->domain), "%s", domain);
+    snprintf(e->ip, sizeof(e->ip), "%s", ip);
+    e->expire = now + ttl;
+    e->pinned = 0;
+    e->pinned_never = 0;
+    e->vgen = 0;                /* вердикты ещё не считали */
+    e->v_always = -1;
+    e->v_never = -1;
+    e->v_ru = -1;
+    if (g_cfg)
+        reconcile_entry(g_cfg, e, reuse, now);       /* мгновенный пин */
 }
 
 /* Разбор DNS-имени с поддержкой сжатия. nextoff — позиция после имени. */
@@ -364,6 +401,9 @@ void dns_sniff_poll(void)
 
     if (!g_started || g_nfd <= 0)
         return;
+    /* Пины, применённые сразу при DNS-ответе, копятся в один батч ipset:
+     * без него каждый пин был бы отдельным fork'ом ipset. */
+    backend_batch_begin();
     for (f = 0; f < g_nfd; ) {
         int guard = 0, dropped = 0;
         while (guard++ < 128) {
@@ -400,6 +440,7 @@ void dns_sniff_poll(void)
         if (!dropped)
             f++;
     }
+    backend_batch_end();
 }
 
 static int zone_match(const char *domain, const char *zone_in)
@@ -407,8 +448,11 @@ static int zone_match(const char *domain, const char *zone_in)
     char zone[DNS_DOMAIN_MAX];
     size_t dl, zl;
     unsigned i;
+    /* zone_in уже приведён к нижнему регистру при загрузке кэша списка —
+     * tolower на каждую зону на каждую запись раньше стоил заметной доли
+     * reconcile. */
     for (i = 0; zone_in[i] && i < sizeof(zone) - 1; i++)
-        zone[i] = (char)tolower((unsigned char)zone_in[i]);
+        zone[i] = zone_in[i];
     zone[i] = '\0';
     if (zone[0] == '*') {
         const char *z = zone + 1;
@@ -479,8 +523,12 @@ static const char *list_cache(int slot, const char *file)
                 break;
             buf = nb;
         }
-        memcpy(buf + len, p, l);
-        len += l;
+        {
+            size_t j;
+            for (j = 0; j < l; j++)
+                buf[len + j] = (char)tolower((unsigned char)p[j]);
+            len += l;
+        }
         buf[len++] = '\n';
         buf[len] = '\0';
     }
@@ -494,6 +542,7 @@ static const char *list_cache(int slot, const char *file)
         c->mtime = 0;
         c->size = 0;
     }
+    g_list_gen++;   /* список перечитан — кэш вердиктов записей недействителен */
     return c->data;
 }
 
@@ -557,6 +606,101 @@ static int other_entry_matches(time_t now, int skip, int slot,
     return 0;
 }
 
+/* Вердикты записи по спискам — из кэша; пересчёт только при смене поколения
+ * списков (файлы vpn_always/vpn_never перечитаны или изменён набор RU-TLD). */
+static void entry_verdicts(const susanin_config *cfg, dns_entry *e)
+{
+    if (e->vgen == g_list_gen && e->v_always >= 0)
+        return;
+    e->v_always = (signed char)list_match(0, cfg->vpn_always_file, e->domain);
+    e->v_never = (signed char)list_match(1, cfg->vpn_never_file, e->domain);
+    e->v_ru = (signed char)dns_sniff_is_ru_domain(cfg, e->domain);
+    e->vgen = g_list_gen;
+}
+
+/* Применить решения по одной записи: вызывается и периодическим reconcile, и
+ * сразу из dns_store (C1) — новый домен из списка уезжает в туннель/прямой
+ * с первого соединения, а не через окно до 10 с. */
+static void reconcile_entry(const susanin_config *cfg, dns_entry *e, int i,
+                            time_t now)
+{
+    int va, ru_force;
+    if (!cfg || !e->domain[0] || e->expire <= now)
+        return;
+    entry_verdicts(cfg, e);
+    va = e->v_always;
+    if (!e->pinned && va) {
+        backend_ok_pin_add(cfg, e->ip, cfg->ok_ttl);
+        e->pinned = 1;
+        if (g_state) {                      /* переживёт re-provision/рестарт */
+            /* Тот же срок, что и в ipset (ok_ttl), и только продление:
+             * state_touch создаёт запись или продлевает существующую. */
+            state_touch(st_ok(g_state, 0), e->ip, now, cfg->ok_ttl);
+            state_touch(st_ok(g_state, 1), e->ip, now, cfg->ok_ttl);
+        }
+        slogf(SL_INFO, "dns-sniff: %s -> %s pinned (vpn_always)", e->domain, e->ip);
+    }
+    /* r7.8: RU-домены — активный direct (пин в never), а не только
+     * «не учить»: IP .рф-сайта может совпадать с выученным VPN-адресом
+     * чужого сервиса (общий CDN/хостинг) и уезжать в туннель вместе с
+     * ним. Ручной vpn_always для конкретного домена сильнее guard'а. */
+    ru_force = cfg->ru_guard && cfg->ru_guard_direct && e->v_ru && !va;
+    if (!e->pinned_never && (e->v_never || ru_force)) {
+        backend_set_add(cfg, "susanin_never", e->ip, 0);
+        e->pinned_never = 1;
+        if (g_state)
+            /* В ipset запись бессрочная (ttl 0) — в state так же. */
+            state_touch(&g_state->never, e->ip, now, 0);
+        /* Конфликт ok <-> never: адрес мог быть уже выучен в VPN — снимаем
+         * и рвём его соединения, иначе «прямо» не заработает. */
+        if (g_state) {
+            if (state_has(st_ok(g_state, 0), e->ip, now) ||
+                state_has(st_ok(g_state, 1), e->ip, now) ||
+                state_has(st_test(g_state, 0), e->ip, now) ||
+                state_has(st_test(g_state, 1), e->ip, now)) {
+                state_remove(st_ok(g_state, 0), e->ip);
+                state_remove(st_ok(g_state, 1), e->ip);
+                state_remove(st_test(g_state, 0), e->ip);
+                state_remove(st_test(g_state, 1), e->ip);
+                backend_ok_pin_del(cfg, e->ip);
+                backend_ct_flush_ip(e->ip);
+                slogf(SL_INFO, "dns-sniff: %s -> %s снят из VPN (конфликт с vpn_never)",
+                      e->domain, e->ip);
+            }
+        }
+        slogf(SL_INFO, "dns-sniff: %s -> %s (%s)", e->domain, e->ip,
+              e->v_never ? "vpn_never" : "ru-guard");
+    }
+    /* Снятие пина, когда записи УЖЕ НЕТ в списке: раньше dns_sniff-пин
+     * переживал удаление строки (never — бессрочно, always — до ok_ttl),
+     * и пользователь не мог «отпустить» адрес правкой списка
+     * Флаг сбрасываем в любом случае;
+     * сам пин — только если его не держит другая живая запись. */
+    if (e->pinned && !va) {
+        e->pinned = 0;
+        if (!other_entry_matches(now, i, 0, cfg, e->ip)) {
+            backend_ok_pin_del(cfg, e->ip);
+            if (g_state) {
+                state_remove(st_ok(g_state, 0), e->ip);
+                state_remove(st_ok(g_state, 1), e->ip);
+            }
+            slogf(SL_INFO, "dns-sniff: %s -> %s unpinned (нет в vpn_always)",
+                  e->domain, e->ip);
+        }
+    }
+    if (e->pinned_never && !e->v_never && !ru_force) {
+        e->pinned_never = 0;
+        if (!other_entry_matches(now, i, 1, cfg, e->ip)) {
+            backend_set_del(cfg, "susanin_never", e->ip);
+            if (g_state)
+                state_remove(&g_state->never, e->ip);
+            backend_ct_flush_ip(e->ip);
+            slogf(SL_INFO, "dns-sniff: %s -> %s unpinned (нет в vpn_never)",
+                  e->domain, e->ip);
+        }
+    }
+}
+
 void dns_sniff_reconcile(const susanin_config *cfg)
 {
     int i;
@@ -576,79 +720,7 @@ void dns_sniff_reconcile(const susanin_config *cfg)
         dns_entry *e = &g_tab[i];
         if (!e->domain[0] || e->expire <= now)
             continue;
-        if (!e->pinned && list_match(0, cfg->vpn_always_file, e->domain)) {
-            backend_ok_pin_add(cfg, e->ip, cfg->ok_ttl);
-            e->pinned = 1;
-            if (g_state) {                      /* переживёт re-provision/рестарт */
-                /* Тот же срок, что и в ipset (ok_ttl), и только продление:
-                 * state_touch создаёт запись или продлевает существующую. */
-                state_touch(st_ok(g_state, 0), e->ip, now, cfg->ok_ttl);
-                state_touch(st_ok(g_state, 1), e->ip, now, cfg->ok_ttl);
-            }
-            slogf(SL_INFO, "dns-sniff: %s -> %s pinned (vpn_always)", e->domain, e->ip);
-        }
-        /* r7.8: RU-домены — активный direct (пин в never), а не только
-         * «не учить»: IP .рф-сайта может совпадать с выученным VPN-адресом
-         * чужого сервиса (общий CDN/хостинг) и уезжать в туннель вместе с
-         * ним. Ручной vpn_always для конкретного домена сильнее guard'а. */
-        int ru_force = cfg->ru_guard && cfg->ru_guard_direct &&
-                       dns_sniff_is_ru_domain(cfg, e->domain) &&
-                       !list_match(0, cfg->vpn_always_file, e->domain);
-        if (!e->pinned_never && (list_match(1, cfg->vpn_never_file, e->domain) || ru_force)) {
-            backend_set_add(cfg, "susanin_never", e->ip, 0);
-            e->pinned_never = 1;
-            if (g_state)
-                /* В ipset запись бессрочная (ttl 0) — в state так же. */
-                state_touch(&g_state->never, e->ip, now, 0);
-            /* Конфликт ok <-> never: адрес мог быть уже выучен в VPN — снимаем
-             * и рвём его соединения, иначе «прямо» не заработает. */
-            if (g_state) {
-                if (state_has(st_ok(g_state, 0), e->ip, now) ||
-                    state_has(st_ok(g_state, 1), e->ip, now) ||
-                    state_has(st_test(g_state, 0), e->ip, now) ||
-                    state_has(st_test(g_state, 1), e->ip, now)) {
-                    state_remove(st_ok(g_state, 0), e->ip);
-                    state_remove(st_ok(g_state, 1), e->ip);
-                    state_remove(st_test(g_state, 0), e->ip);
-                    state_remove(st_test(g_state, 1), e->ip);
-                    backend_ok_pin_del(cfg, e->ip);
-                    backend_ct_flush_ip(e->ip);
-                    slogf(SL_INFO, "dns-sniff: %s -> %s снят из VPN (конфликт с vpn_never)",
-                          e->domain, e->ip);
-                }
-            }
-            slogf(SL_INFO, "dns-sniff: %s -> %s (%s)", e->domain, e->ip,
-                  list_match(1, cfg->vpn_never_file, e->domain) ? "vpn_never" : "ru-guard");
-        }
-        /* Снятие пина, когда записи УЖЕ НЕТ в списке: раньше dns_sniff-пин
-         * переживал удаление строки (never — бессрочно, always — до ok_ttl),
-         * и пользователь не мог «отпустить» адрес правкой списка
-         * Флаг сбрасываем в любом случае;
-         * сам пин — только если его не держит другая живая запись. */
-        if (e->pinned && !list_match(0, cfg->vpn_always_file, e->domain)) {
-            e->pinned = 0;
-            if (!other_entry_matches(now, i, 0, cfg, e->ip)) {
-                backend_ok_pin_del(cfg, e->ip);
-                if (g_state) {
-                    state_remove(st_ok(g_state, 0), e->ip);
-                    state_remove(st_ok(g_state, 1), e->ip);
-                }
-                slogf(SL_INFO, "dns-sniff: %s -> %s unpinned (нет в vpn_always)",
-                      e->domain, e->ip);
-            }
-        }
-        if (e->pinned_never && !list_match(1, cfg->vpn_never_file, e->domain) &&
-            !ru_force) {
-            e->pinned_never = 0;
-            if (!other_entry_matches(now, i, 1, cfg, e->ip)) {
-                backend_set_del(cfg, "susanin_never", e->ip);
-                if (g_state)
-                    state_remove(&g_state->never, e->ip);
-                backend_ct_flush_ip(e->ip);
-                slogf(SL_INFO, "dns-sniff: %s -> %s unpinned (нет в vpn_never)",
-                      e->domain, e->ip);
-            }
-        }
+        reconcile_entry(cfg, e, i, now);
     }
     backend_batch_end();
     /* r5.4: счётчик «RU в VPN» для панели (не чаще раза в минуту). */
@@ -687,25 +759,48 @@ int dns_sniff_domain_of(const char *ip, char *domain_out, unsigned n)
 /* --- r5: RU-домены -------------------------------------------------------- */
 
 /* Суффикс-матчер TLD из cfg->ru_guard_tlds (".ru,.рф,.xn--p1ai,..."):
- * сравнение регистронезависимое, совпадение только по границе метки. */
+ * сравнение регистронезависимое, совпадение только по границе метки.
+ * Список TLD разбирается один раз и кэшируется: прежняя версия копировала
+ * строку конфига и strtok'ила её на каждый вызов (вызов — на каждую запись
+ * reconcile и в классификаторе). При изменении набора увеличивается
+ * поколение списков — кэш вердиктов dns_entry сбрасывается. */
 int dns_sniff_is_ru_domain(const susanin_config *cfg, const char *dom)
 {
-    char buf[256], *save = NULL, *tok;
+    static char tld_src[256];
+    static char tld[16][64];
+    static int tld_n;
     size_t dl;
+    int i;
     if (!cfg || !dom || !dom[0] || !cfg->ru_guard_tlds[0])
         return 0;
+    if (strcmp(tld_src, cfg->ru_guard_tlds) != 0) {
+        char buf[256], *save = NULL, *tok;
+        snprintf(tld_src, sizeof(tld_src), "%s", cfg->ru_guard_tlds);
+        snprintf(buf, sizeof(buf), "%s", cfg->ru_guard_tlds);
+        tld_n = 0;
+        for (tok = strtok_r(buf, ",", &save); tok && tld_n < 16;
+             tok = strtok_r(NULL, ",", &save)) {
+            size_t tl, k;
+            while (*tok == ' ' || *tok == '\t')
+                tok++;
+            tl = strlen(tok);
+            if (!tl || tl >= sizeof(tld[0]))
+                continue;
+            for (k = 0; k < tl; k++)    /* храним в нижнем регистре */
+                tld[tld_n][k] = (char)tolower((unsigned char)tok[k]);
+            tld[tld_n][tl] = '\0';
+            tld_n++;
+        }
+        g_list_gen++;
+    }
     dl = strlen(dom);
-    snprintf(buf, sizeof(buf), "%s", cfg->ru_guard_tlds);
-    for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
-        size_t tl, k;
-        while (*tok == ' ' || *tok == '\t')
-            tok++;
-        tl = strlen(tok);
-        if (tl == 0 || dl < tl)
+    for (i = 0; i < tld_n; i++) {
+        size_t tl = strlen(tld[i]);
+        size_t k;
+        if (!tl || dl < tl)
             continue;
         for (k = 0; k < tl; k++)
-            if (tolower((unsigned char)dom[dl - tl + k]) !=
-                tolower((unsigned char)tok[k]))
+            if (tolower((unsigned char)dom[dl - tl + k]) != tld[i][k])
                 break;
         if (k == tl)
             return 1;
