@@ -1103,6 +1103,8 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     time_t last_logrot = 0;
     int xray_tries = 0;
     int stuck_tries = 0;      /* подряд «процесс есть, но порт не слушается» */
+    int idle_mult = 1;        /* адаптивный период проходов классификатора (1 или 2) */
+    int idle_cnt = 0;         /* подряд проходов без событий обучения */
     time_t last_dnssniff = 0;
     time_t last_prof = 0;
     int force_pending = 0;
@@ -1319,9 +1321,9 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         {
             int need_scan = 0;
             if (tunnel_up &&
-                (now - last[0] >= cfg->fast_interval ||
-                 now - last[1] >= cfg->soft_interval ||
-                 now - last[2] >= cfg->judge_interval))
+                (now - last[0] >= cfg->fast_interval * idle_mult ||
+                 now - last[1] >= cfg->soft_interval * idle_mult ||
+                 now - last[2] >= cfg->judge_interval * idle_mult))
                 need_scan = 1;
             if (dp_ok && tunnel_up && now - last_sweep >= 60)
                 need_scan = 1;
@@ -1337,15 +1339,29 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         }
 
         if (tunnel_up) {
+            int ran = 0;
             /* Проход обучения применяем одним батчем ipset (restore): иначе
              * каждая add/del на волне промоушенов — отдельный fork+exec, и на
              * MIPS классификатор захлёбывается вилками. Пустая пачка
              * сбрасывается без fork'ов. */
             backend_batch_begin();
-            if (now - last[0] >= cfg->fast_interval) { last[0] = now; clr_fast(&ctx, L.v, L.n, now); }
-            if (now - last[1] >= cfg->soft_interval) { last[1] = now; clr_soft(&ctx, L.v, L.n, now); }
-            if (now - last[2] >= cfg->judge_interval) { last[2] = now; clr_judge(&ctx, L.v, L.n, now); }
+            if (now - last[0] >= cfg->fast_interval * idle_mult) { last[0] = now; clr_fast(&ctx, L.v, L.n, now); ran = 1; }
+            if (now - last[1] >= cfg->soft_interval * idle_mult) { last[1] = now; clr_soft(&ctx, L.v, L.n, now); ran = 1; }
+            if (now - last[2] >= cfg->judge_interval * idle_mult) { last[2] = now; clr_judge(&ctx, L.v, L.n, now); ran = 1; }
             backend_batch_end();
+            /* Адаптивный период: 15 проходов подряд без событий обучения
+             * (ничего не учим, не подтверждаем, не берём под наблюдение) —
+             * интервалы удваиваются, парсинг conntrack вдвое реже. Первое же
+             * событие возвращает обычный темп: цена простоя — не более +1 с
+             * к реакции на новый заблокированный поток. */
+            if (ran) {
+                if (clf_take_events() > 0) {
+                    idle_cnt = 0;
+                    idle_mult = 1;
+                } else if (++idle_cnt >= 15 && idle_mult < 2) {
+                    idle_mult = 2;
+                }
+            }
             clients_audit(cfg, L.v, L.n, now);
         }
 

@@ -953,6 +953,19 @@ static const char *pair_key(char *buf, size_t n, const susanin_config *cfg,
     return buf;
 }
 
+/* Счётчик событий обучения за проход: промоушен в test, подтверждение (ok),
+ * кулдаун, взятие под наблюдение (watch). Движок читает и обнуляет его через
+ * clf_take_events() и держит обычный темп сканирования, пока события есть;
+ * при долгом затишье период удваивается (экономия CPU в простое). */
+static unsigned g_clf_events;
+
+unsigned clf_take_events(void)
+{
+    unsigned n = g_clf_events;
+    g_clf_events = 0;
+    return n;
+}
+
 /* Пропуск обучения — INFO, но не чаще раза в 10 минут на адрес. С r7.4a
  * виден и LAN-источник («кто запросил») — без него диагностика ТВ/приложений
  * вслепую. Таблица на 16 адресов: при волне пропусков (например, «бюджет проб
@@ -1054,6 +1067,7 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
     state_add(st_test(ctx->st, udp), kf, now, cfg->test_ttl, 0);
     state_remove(st_watch(ctx->st, udp), kf);
     backend_ipset_add_port(cfg, udp, 0, f->dst, flow_port(cfg, f), cfg->test_ttl);
+    g_clf_events++;
     /* r5.3: домен в событии обучения — «почему этот IP уехал» читается из
      * лога без why-разбора (sniffer знает, кому адрес принадлежал). */
     {
@@ -1185,8 +1199,10 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                         char wk0[64];
                         pair_key(wk0, sizeof(wk0), cfg, f);
                         if (!state_has(st_watch(ctx->st, 0), wk0, now)) {
-                            if (candidate_ok(ctx, f, now))
+                            if (candidate_ok(ctx, f, now)) {
                                 state_add(st_watch(ctx->st, 0), wk0, now, cfg->watch_ttl, 0);
+                                g_clf_events++;
+                            }
                         } else {
                             time_t at = state_at(st_watch(ctx->st, 0), wk0, now);
                             if (at && (int)(at - now) <= cfg->watch_retry_below) {
@@ -1211,8 +1227,10 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                             char wk2[64];
                             pair_key(wk2, sizeof(wk2), cfg, f);
                             if (!state_has(st_watch(ctx->st, 0), wk2, now)) {
-                                if (candidate_ok(ctx, f, now))
+                                if (candidate_ok(ctx, f, now)) {
                                     state_add(st_watch(ctx->st, 0), wk2, now, cfg->watch_ttl, 0);
+                                    g_clf_events++;
+                                }
                             } else {
                                 time_t at = state_at(st_watch(ctx->st, 0), wk2, now);
                                 if (at && (int)(at - now) <= cfg->watch_retry_below) {
@@ -1249,8 +1267,10 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                     char wk1[64];
                     pair_key(wk1, sizeof(wk1), cfg, f);
                     if (!state_has(st_watch(ctx->st, 1), wk1, now)) {
-                        if (candidate_ok(ctx, f, now))
+                        if (candidate_ok(ctx, f, now)) {
                             state_add(st_watch(ctx->st, 1), wk1, now, cfg->watch_ttl, 0);
+                            g_clf_events++;
+                        }
                     } else {
                         time_t at = state_at(st_watch(ctx->st, 1), wk1, now);
                         if (at && (int)(at - now) <= cfg->watch_retry_below) {
@@ -1330,6 +1350,7 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 state_remove(st_test(ctx->st, udp), kf);
                 state_remove(st_watch(ctx->st, udp), kf);
                 state_remove(st_cool(ctx->st, udp), kf);
+                g_clf_events++;
                 backend_ipset_add_port(cfg, udp, 1, f->dst, flow_port(cfg, f), cfg->ok_ttl);
                 backend_ipset_del_port(cfg, udp, 0, f->dst, flow_port(cfg, f));
                 {
@@ -1350,6 +1371,7 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 state_remove(st_test(ctx->st, udp), kf);
                 state_remove(st_watch(ctx->st, udp), kf);
                 state_add(st_cool(ctx->st, udp), kf, now, cfg->cooldown_ttl, 0);
+                g_clf_events++;
                 backend_ipset_del_port(cfg, udp, 0, f->dst, flow_port(cfg, f));
                 slogf(SL_INFO, "AUTO-SUSANIN: COOLDOWN %s:%u", f->dst, f->dport);
                 backend_ct_delete(f);
@@ -1387,6 +1409,7 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 state_remove(st_test(ctx->st, udp), kf);
                 state_remove(st_watch(ctx->st, udp), kf);
                 state_add(st_cool(ctx->st, udp), kf, now, cfg->cooldown_ok_ttl, 0);
+                g_clf_events++;
                 backend_ipset_del_port(cfg, udp, 1, f->dst, flow_port(cfg, f));
                 /* D1: адрес в VPN (ok) деградирует — пробуем «прямо» (мягкое
                  * «прямо» с TTL). Если и прямой путь плох, обучение вернёт VPN. */

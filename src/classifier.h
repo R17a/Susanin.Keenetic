@@ -24,6 +24,10 @@ int clf_is_private_dst(const char *dst);
  * и inet_pton на каждый поток в каждом проходе. */
 int clf_from_lan4(const susanin_config *cfg, uint32_t src4);
 int clf_is_private4(uint32_t a);
+/* Число событий обучения (промоушены/подтверждения/кулдауны/взятие под
+ * наблюдение) с прошлого вызова; сбрасывает счётчик. Движок по нему выбирает
+ * период сканирования conntrack: долго нет событий — сканируем реже. */
+unsigned clf_take_events(void);
 /* 1 = адрес ip входит в cidr ("a.b.c.d/len"). Нужен reset/forget, чтобы снять
  * покрывающий префикс из susanin_ok_net (/24 оставался). */
 int clf_ip_in_cidr(const char *ip, const char *cidr);
