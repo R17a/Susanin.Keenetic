@@ -112,16 +112,66 @@ int clf_port_excluded(const susanin_config *cfg, unsigned port)
 int clf_is_private_dst(const char *dst) { return is_private_dst(dst, NULL); }
 int clf_ip_in_cidr(const char *ip, const char *cidr) { return ip_in_cidr(ip, cidr); }
 
-/* rate cache (two-sample deltas) */
+/* rate cache (two-sample deltas). Цепочечный хэш-индекс: rc_find раньше
+ * линейно strcmp'ил до 2048 ключей на каждый активный поток раз в секунду.
+ * Индекс поддерживается инкрементально (вставка/вытеснение) и пересобирается
+ * после уплотнения в rc_end. Связи — «номер слота + 1», 0 = «нет». */
 #define RCAP 2048
+#define RCHASH 1024
 typedef struct {
     char key[192];
     unsigned long op, rp, ob, rb;
     time_t t;
     int seen;
+    int next;
 } rslot;
 static rslot rc[RCAP];
 static int rc_n = 0;
+static int rc_head[RCHASH];     /* бакет -> номер слота + 1, 0 = пусто */
+
+static unsigned long rc_hash(const char *s)
+{
+    unsigned long h = 5381;
+    for (; *s; s++)
+        h = ((h << 5) + h) ^ (unsigned char)*s;
+    return h;
+}
+
+static void rc_rechain(void)
+{
+    int i;
+    for (i = 0; i < RCHASH; i++) rc_head[i] = 0;
+    for (i = 0; i < rc_n; i++) {
+        unsigned b = rc_hash(rc[i].key) % RCHASH;
+        rc[i].next = rc_head[b];
+        rc_head[b] = i + 1;
+    }
+}
+
+/* Вынуть слот из цепочки его текущего ключа (перед перезаписью ключа). */
+static void rc_unchain(int slot)
+{
+    unsigned b = rc_hash(rc[slot].key) % RCHASH;
+    int prev = 0, cur = rc_head[b];
+    while (cur) {
+        if (cur - 1 == slot) {
+            if (prev)
+                rc[prev - 1].next = rc[slot].next;
+            else
+                rc_head[b] = rc[slot].next;
+            return;
+        }
+        prev = cur;
+        cur = rc[cur - 1].next;
+    }
+}
+
+static void rc_chain(int slot)
+{
+    unsigned b = rc_hash(rc[slot].key) % RCHASH;
+    rc[slot].next = rc_head[b];
+    rc_head[b] = slot + 1;
+}
 
 static void rc_begin(void)
 {
@@ -135,20 +185,25 @@ static void rc_end(void)
     for (i = 0; i < rc_n; i++)
         if (rc[i].seen) rc[w++] = rc[i];
     rc_n = w;
+    rc_rechain();   /* слоты переехали — цепочки собираем заново */
 }
 
 static rslot *rc_find(const char *key)
 {
-    int i;
-    for (i = 0; i < rc_n; i++)
-        if (strcmp(rc[i].key, key) == 0)
-            return &rc[i];
+    int i = rc_head[rc_hash(key) % RCHASH];
+    while (i && i <= rc_n) {
+        rslot *s = &rc[i - 1];
+        if (strcmp(s->key, key) == 0)
+            return s;
+        i = s->next;
+    }
     return NULL;
 }
 
 static rslot *rc_store(const char *key, const ct_flow *f, time_t now)
 {
     rslot *s;
+    int slot;
     if (rc_n >= RCAP) {
         /* Кэш полон: вытесняем одну самую старую запись, а не обнуляем весь
          * кэш (иначе под нагрузкой rate-детект «слепнет» целиком). */
@@ -156,13 +211,17 @@ static rslot *rc_store(const char *key, const ct_flow *f, time_t now)
         for (i = 1; i < rc_n; i++)
             if (rc[i].t < rc[oldest].t)
                 oldest = i;
-        s = &rc[oldest];
+        slot = oldest;
+        rc_unchain(slot);   /* прежний ключ уходит из индекса */
     } else {
-        s = &rc[rc_n++];
+        slot = rc_n++;
     }
+    s = &rc[slot];
     snprintf(s->key, sizeof(s->key), "%s", key);
     s->op = f->op; s->rp = f->rp; s->ob = f->ob; s->rb = f->rb;
     s->t = now; s->seen = 1;
+    s->next = 0;
+    rc_chain(slot);
     return s;
 }
 

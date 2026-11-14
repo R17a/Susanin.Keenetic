@@ -6,12 +6,20 @@
 typedef struct {
     char addr[64];
     time_t expire;
+    int next;   /* цепочечный хэш-индекс: номер следующего слота + 1, 0 = конец
+                 * (внутреннее поле state.c, в файле состояния не пишется) */
 } state_entry;
 
 typedef struct {
-    state_entry *v;
+    state_entry *v;     /* записи в порядке добавления; уплотняются при remove/expire */
     int n;
     int cap;
+    /* Цепочечный хэш-индекс (внутреннее state.c): бакет -> номер слота + 1,
+     * 0 = пусто. Наборы достигают тысяч записей, а state_has/state_at
+     * вызываются на каждом потоке каждую секунду — без индекса это линейный
+     * обход с strcmp. */
+    int *bkt;
+    int nb;
 } state_set;
 
 typedef struct {
