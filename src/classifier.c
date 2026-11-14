@@ -28,19 +28,36 @@ static int service_port(unsigned p)
     return p == 53 || p == 853 || p == 500 || p == 4500 || p == 8567;
 }
 
+/* Списки из конфига (learn_exclude_ports, lan_subnets, media_ports) парсятся
+ * один раз и кэшируются: копирование строки + strtok на каждый поток в каждом
+ * проходе были заметной статьёй расходов на слабом CPU. Кэш сбрасывается при
+ * изменении исходной строки (reload конфига). */
+static unsigned excl_ports[64];
+static int excl_n;
+static char excl_src[CFG_PATH_MAX];
+
 static int port_excluded(const susanin_config *cfg, unsigned port)
 {
-    char buf[256], *save = NULL, *tok;
+    int i;
     if (service_port(port))
         return 1;
     if (!cfg->learn_exclude_ports[0])
         return 0;
-    snprintf(buf, sizeof(buf), "%s", cfg->learn_exclude_ports);
-    for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
-        while (*tok == ' ' || *tok == '\t') tok++;
-        if ((unsigned)strtoul(tok, NULL, 10) == port)
-            return 1;
+    if (strcmp(excl_src, cfg->learn_exclude_ports) != 0) {
+        char buf[CFG_PATH_MAX], *save = NULL, *tok;
+        snprintf(excl_src, sizeof(excl_src), "%s", cfg->learn_exclude_ports);
+        snprintf(buf, sizeof(buf), "%s", cfg->learn_exclude_ports);
+        excl_n = 0;
+        for (tok = strtok_r(buf, ",", &save); tok && excl_n < 64;
+             tok = strtok_r(NULL, ",", &save)) {
+            while (*tok == ' ' || *tok == '\t') tok++;
+            if (*tok)
+                excl_ports[excl_n++] = (unsigned)strtoul(tok, NULL, 10);
+        }
     }
+    for (i = 0; i < excl_n; i++)
+        if (excl_ports[i] == port)
+            return 1;
     return 0;
 }
 
@@ -70,15 +87,52 @@ static int ip_in_cidr(const char *ip, const char *cidr)
     return (ah & mask) == (nh & mask);
 }
 
-static int from_lan(const susanin_config *cfg, const char *src)
+/* LAN-подсети парами (net,mask): проверка потока — пара целочисленных
+ * операций вместо копирования строки, strtok и двух inet_pton. */
+typedef struct { uint32_t net, mask; } cidr4;
+static cidr4 lan_c[16];
+static int lan_cn;
+static char lan_src[CFG_PATH_MAX];
+
+static void lan_cache_sync(const susanin_config *cfg)
 {
-    char buf[512], *save = NULL, *tok;
+    char buf[CFG_PATH_MAX], *save = NULL, *tok;
+    if (!strcmp(lan_src, cfg->lan_subnets))
+        return;
+    snprintf(lan_src, sizeof(lan_src), "%s", cfg->lan_subnets);
     snprintf(buf, sizeof(buf), "%s", cfg->lan_subnets);
-    for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+    lan_cn = 0;
+    for (tok = strtok_r(buf, ",", &save); tok && lan_cn < 16;
+         tok = strtok_r(NULL, ",", &save)) {
+        char *slash;
+        uint32_t net;
+        int pre;
         while (*tok == ' ') tok++;
-        if (ip_in_cidr(src, tok))
-            return 1;
+        slash = strchr(tok, '/');
+        if (!slash)
+            continue;
+        *slash = '\0';
+        pre = atoi(slash + 1);
+        if (pre < 0) pre = 0;
+        if (pre > 32) pre = 32;
+        net = ct_parse4(tok);
+        if (!net)
+            continue;   /* не IPv4 (и 0.0.0.0 — бессмысленная LAN-подсеть) */
+        lan_c[lan_cn].mask = pre == 0 ? 0u : (0xffffffffu << (32 - pre));
+        lan_c[lan_cn].net = net & lan_c[lan_cn].mask;
+        lan_cn++;
     }
+}
+
+static int from_lan4(const susanin_config *cfg, uint32_t src4)
+{
+    int i;
+    if (!src4)
+        return 0;   /* не IPv4: строковая версия тоже давала 0 (inet_pton) */
+    lan_cache_sync(cfg);
+    for (i = 0; i < lan_cn; i++)
+        if ((src4 & lan_c[i].mask) == lan_c[i].net)
+            return 1;
     return 0;
 }
 
@@ -97,6 +151,32 @@ static int is_private_dst(const char *dst, int *is_private)
     return 0;
 }
 
+/* Тот же набор диапазонов, что в строковой is_private_dst, но бинарно:
+ * проверка адреса — несколько целочисленных сравнений. a == 0 означает
+ * «адрес не IPv4» — не приватный (строковая версия на IPv6 тоже давала 0). */
+static const struct { uint32_t net, mask; } priv4[] = {
+    { 0x00000000u, 0xff000000u },   /* 0.0.0.0/8 */
+    { 0x0a000000u, 0xff000000u },   /* 10.0.0.0/8 */
+    { 0x64400000u, 0xffc00000u },   /* 100.64.0.0/10 */
+    { 0x7f000000u, 0xff000000u },   /* 127.0.0.0/8 */
+    { 0xa9fe0000u, 0xffff0000u },   /* 169.254.0.0/16 */
+    { 0xac100000u, 0xfff00000u },   /* 172.16.0.0/12 */
+    { 0xc0a80000u, 0xffff0000u },   /* 192.168.0.0/16 */
+    { 0xe0000000u, 0xf0000000u },   /* 224.0.0.0/4 (multicast) */
+    { 0xf0000000u, 0xf0000000u },   /* 240.0.0.0/4 (reserved) */
+};
+
+static int is_private4(uint32_t a)
+{
+    int i;
+    if (!a)
+        return 0;
+    for (i = 0; i < (int)(sizeof(priv4) / sizeof(priv4[0])); i++)
+        if ((a & priv4[i].mask) == priv4[i].net)
+            return 1;
+    return 0;
+}
+
 static int ours(const ct_flow *f, const susanin_config *cfg)
 {
     return f->ctmark && ((f->ctmark & cfg->mark_mask) == cfg->mark_test ||
@@ -111,6 +191,11 @@ int clf_port_excluded(const susanin_config *cfg, unsigned port)
 }
 int clf_is_private_dst(const char *dst) { return is_private_dst(dst, NULL); }
 int clf_ip_in_cidr(const char *ip, const char *cidr) { return ip_in_cidr(ip, cidr); }
+int clf_from_lan4(const susanin_config *cfg, uint32_t src4)
+{
+    return from_lan4(cfg, src4);
+}
+int clf_is_private4(uint32_t a) { return is_private4(a); }
 
 /* rate cache (two-sample deltas). Цепочечный хэш-индекс: rc_find раньше
  * линейно strcmp'ил до 2048 ключей на каждый активный поток раз в секунду.
@@ -591,17 +676,30 @@ static void cdn_aggregate(classifier_ctx *ctx, const ct_flow *f)
 /* M1: media-класс (IPTV/видео). Детект по форме потока и агрегация префикса в
  * susanin_ok_net (VPN): достаточно один раз увидеть крупный асимметричный поток,
  * чтобы последующие шли в VPN с первого пакета (userspace, без FASTNAT). */
+static unsigned media_p[32];
+static int media_pn;
+static char media_src[128];
+
 static int media_port(const susanin_config *cfg, unsigned p)
 {
-    char buf[128], *save = NULL, *tok;
+    int i;
     if (!cfg->media_ports[0])
         return 0;
-    snprintf(buf, sizeof(buf), "%s", cfg->media_ports);
-    for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
-        while (*tok == ' ' || *tok == '\t') tok++;
-        if ((unsigned)strtoul(tok, NULL, 10) == p)
-            return 1;
+    if (strcmp(media_src, cfg->media_ports) != 0) {
+        char buf[128], *save = NULL, *tok;
+        snprintf(media_src, sizeof(media_src), "%s", cfg->media_ports);
+        snprintf(buf, sizeof(buf), "%s", cfg->media_ports);
+        media_pn = 0;
+        for (tok = strtok_r(buf, ",", &save); tok && media_pn < 32;
+             tok = strtok_r(NULL, ",", &save)) {
+            while (*tok == ' ' || *tok == '\t') tok++;
+            if (*tok)
+                media_p[media_pn++] = (unsigned)strtoul(tok, NULL, 10);
+        }
     }
+    for (i = 0; i < media_pn; i++)
+        if (media_p[i] == p)
+            return 1;
     return 0;
 }
 
@@ -891,8 +989,8 @@ void clr_fast(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         const ct_flow *f = &flows[i];
         if (f->l4proto != 6 && f->l4proto != 17) continue;
         if (f->ctmark != 0 || ours(f, cfg)) continue;
-        if (!from_lan(cfg, f->src)) continue;
-        if (is_private_dst(f->dst, NULL)) continue;
+        if (!from_lan4(cfg, f->src4)) continue;
+        if (is_private4(f->dst4)) continue;
         if (port_excluded(cfg, f->dport) || port_excluded(cfg, f->sport)) continue;
         if (!candidate_ok(ctx, f, now)) continue;
 
@@ -952,8 +1050,8 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         const ct_flow *f = &flows[i];
         if (f->l4proto != 6 && f->l4proto != 17) continue;
         if (f->ctmark != 0 || ours(f, cfg)) continue;
-        if (!from_lan(cfg, f->src)) continue;
-        if (is_private_dst(f->dst, NULL)) continue;
+        if (!from_lan4(cfg, f->src4)) continue;
+        if (is_private4(f->dst4)) continue;
 
         /* M1: media (IPTV/видео) — детект по форме потока, агрегация в VPN. */
         if ((f->l4proto == 6 && strcmp(f->tcp_state, "ESTABLISHED") == 0) ||
@@ -1077,7 +1175,7 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         char kf[64];
         pair_key(kf, sizeof(kf), cfg, f);
         if (f->l4proto != 6 && f->l4proto != 17) continue;
-        if (!from_lan(cfg, f->src)) continue;
+        if (!from_lan4(cfg, f->src4)) continue;
         udp = is_udp(f);
 
         if (!ours(f, cfg)) continue;

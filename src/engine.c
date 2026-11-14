@@ -49,43 +49,9 @@ static int collect(void *ud, const ct_flow *f)
     return 0;
 }
 
-static int ip_in_cidr(const char *ip, const char *cidr)
-{
-    char c[64];
-    char *slash;
-    struct in_addr a, n;
-    uint32_t mask, ah, nh;
-    int pre;
-    snprintf(c, sizeof(c), "%s", cidr);
-    slash = strchr(c, '/');
-    if (!slash)
-        return 0;
-    *slash = '\0';
-    pre = atoi(slash + 1);
-    /* Опечатка в конфиге ("/33", отрицательный) не должна давать UB-сдвиг. */
-    if (pre < 0)
-        pre = 0;
-    if (pre > 32)
-        pre = 32;
-    if (inet_pton(AF_INET, ip, &a) != 1 || inet_pton(AF_INET, c, &n) != 1)
-        return 0;
-    mask = pre == 0 ? 0 : (0xffffffffu << (32 - pre));
-    ah = ntohl(a.s_addr);
-    nh = ntohl(n.s_addr);
-    return (ah & mask) == (nh & mask);
-}
-
-static int from_lan(const susanin_config *cfg, const char *src)
-{
-    char buf[512], *save = NULL, *tok;
-    snprintf(buf, sizeof(buf), "%s", cfg->lan_subnets);
-    for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
-        while (*tok == ' ') tok++;
-        if (ip_in_cidr(src, tok))
-            return 1;
-    }
-    return 0;
-}
+/* Фильтры LAN/приватные — бинарные из classifier.c (clf_from_lan4/
+ * clf_is_private4): строковые версии тянули inet_pton и strtok на каждый
+ * поток в каждом проходе. */
 
 /* Ключ состояния -> элемент ipset: "1.2.3.4:443" превращается в "1.2.3.4,443"
  * (в port-aware режиме), обычный адрес идёт как есть. Нужно при ре-ассерте и
@@ -184,8 +150,8 @@ static void clients_audit(const susanin_config *cfg, const ct_flow *flows, int n
         const ct_flow *fl = &flows[i];
         int k = -1;
         if (fl->l4proto != 6 && fl->l4proto != 17) continue;
-        if (!from_lan(cfg, fl->src)) {
-            if (clf_is_private_dst(fl->src)) {
+        if (!clf_from_lan4(cfg, fl->src4)) {
+            if (fl->src4 && clf_is_private4(fl->src4)) {
                 char u24[20];
                 char *dot3;
                 int j;
@@ -211,7 +177,7 @@ static void clients_audit(const susanin_config *cfg, const ct_flow *flows, int n
             }
             continue;
         }
-        if (clf_is_private_dst(fl->dst)) continue;
+        if (clf_is_private4(fl->dst4)) continue;
         for (j = 0; j < cnt; j++)
             if (!strcmp(ips[j], fl->src)) { k = j; break; }
         if (k < 0) {
@@ -247,7 +213,7 @@ static void sweep_direct(const susanin_config *cfg, susanin_state *st,
         const ct_flow *f = &flows[i];
         int udp;
         if (f->ctmark != 0) continue;
-        if (!from_lan(cfg, f->src)) continue;
+        if (!clf_from_lan4(cfg, f->src4)) continue;
         /* Адреса из vpn_never должны ходить напрямую — их не трогаем: и те, что
          * сейчас в списке (vn_has), и пины DNS-снифинга (st.never), и недавно
          * снятые. */
@@ -258,7 +224,7 @@ static void sweep_direct(const susanin_config *cfg, susanin_state *st,
         /* Те же фильтры, что в clr_fast: служебные порты (53/853/500/4500/8567)
          * и приватные адреса не рвём. */
         if (clf_port_excluded(cfg, f->dport) || clf_port_excluded(cfg, f->sport)) continue;
-        if (clf_is_private_dst(f->dst)) continue;
+        if (clf_is_private4(f->dst4)) continue;
         udp = (f->l4proto == 17);
         /* Ключ состояния потока: пара ip:порт в port-aware, иначе адрес.
          * Без этого в pair-режиме проверки не находили записи и потоки к
@@ -298,13 +264,13 @@ static void never_sweep_marked(const susanin_config *cfg, susanin_state *st,
          * «дёргаться»). Приоритет явный: профиль > never. */
         if (f->ctmark & ~cfg->mark_mask)
             continue;
-        if (!from_lan(cfg, f->src))
+        if (!clf_from_lan4(cfg, f->src4))
             continue;
         if (f->l4proto != 6 && f->l4proto != 17)
             continue;
         if (!vn_has(f->dst) && !state_has(&st->never, f->dst, now))
             continue;
-        if (clf_is_private_dst(f->dst) || clf_service_port(f->dport))
+        if (clf_is_private4(f->dst4) || clf_service_port(f->dport))
             continue;
         backend_ct_delete(f);
         done++;
