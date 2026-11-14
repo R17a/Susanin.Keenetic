@@ -95,6 +95,68 @@ int main(void)
         state_free(&e);
     }
 
+    printf("=== стресс: хэш-индекс (хиты/промахи/удаления) ===\n");
+    {
+        susanin_state h;
+        char key[64];
+        int i, bad = 0;
+        state_init(&h);
+        for (i = 0; i < 300; i++) {
+            snprintf(key, sizeof(key), "10.1.%d.%d", i / 250, i % 250 + 1);
+            state_add(&h.ok_tcp, key, now, 600, 0);
+        }
+        CHECK(h.ok_tcp.n == 300, "300 записей добавлено");
+        for (i = 0; i < 300; i++) {
+            snprintf(key, sizeof(key), "10.1.%d.%d", i / 250, i % 250 + 1);
+            if (!state_has(&h.ok_tcp, key, now))
+                bad++;
+        }
+        CHECK(bad == 0, "все существующие найдены");
+        bad = 0;
+        for (i = 0; i < 300; i++) {
+            snprintf(key, sizeof(key), "10.9.%d.%d", i / 250, i % 250 + 1);
+            if (state_has(&h.ok_tcp, key, now))
+                bad++;
+        }
+        CHECK(bad == 0, "несуществующие не найдены (коллизии без зацикливания)");
+        for (i = 0; i < 300; i += 2) {
+            snprintf(key, sizeof(key), "10.1.%d.%d", i / 250, i % 250 + 1);
+            state_remove(&h.ok_tcp, key);
+        }
+        CHECK(h.ok_tcp.n == 150, "половина удалена");
+        bad = 0;
+        for (i = 0; i < 300; i++) {
+            int expect = (i % 2) != 0;
+            snprintf(key, sizeof(key), "10.1.%d.%d", i / 250, i % 250 + 1);
+            if (state_has(&h.ok_tcp, key, now) != expect)
+                bad++;
+        }
+        CHECK(bad == 0, "после удалений индекс согласован");
+        state_free(&h);
+    }
+
+    printf("=== регресс: малый набор (<64) + промахи не зацикливаются ===\n");
+    {
+        /* На наборе меньше 64 бакетов роста нет; старая ошибка двойного
+         * подвешивания первого слота давала самоописанную цепь, и промах
+         * в тот бакет зависал. Ищем много отсутствующих ключей. */
+        susanin_state m;
+        char key[64];
+        int i, bad = 0;
+        state_init(&m);
+        for (i = 0; i < 40; i++) {
+            snprintf(key, sizeof(key), "172.20.0.%d", i + 1);
+            state_add(&m.ok_tcp, key, now, 600, 0);
+        }
+        for (i = 0; i < 4000; i++) {
+            snprintf(key, sizeof(key), "192.0.2.%d", i);
+            if (state_has(&m.ok_tcp, key, now))
+                bad++;
+        }
+        CHECK(bad == 0, "4000 промахов на малом наборе — без зацикливания/ложных хитов");
+        state_free(&m);
+    }
+
     state_free(&s);
     remove(path);
     printf("\n%s\n", failures ? "ЕСТЬ ОШИБКИ" : "все проверки пройдены");

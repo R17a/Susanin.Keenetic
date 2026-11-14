@@ -36,23 +36,25 @@ static void idx_grow(state_set *st)
 {
     int nb = st->nb ? st->nb * 2 : 64;
     int *nbkt = realloc(st->bkt, (size_t)nb * sizeof(int));
-    if (!nbkt)
-        return;         /* остаёмся на старых бакетах: страдает лишь длина цепочек */
-    st->bkt = nbkt;
-    st->nb = nb;
+    if (nbkt) {
+        st->bkt = nbkt;
+        st->nb = nb;
+    }
+    /* Перевешиваем ВСЕ записи (включая только что добавленную). При OOM
+     * бакеты остаются прежними — но пересборка цепочек всё равно нужна,
+     * иначе новый слот не найдётся через индекс. */
     idx_rechain(st);
 }
 
 static void idx_insert(state_set *st, int slot)
 {
     unsigned b;
-    if (!st->bkt)
-        idx_grow(st);   /* первое добавление — завести бакеты */
-    if (!st->bkt)
-        return;         /* OOM: поиск пойдёт линейным fallback'ом */
-    if (st->n > st->nb) {
-        idx_grow(st);   /* загрузка > 1 — расширяем и перевешиваем всё */
-        return;
+    if (!st->bkt || st->n > st->nb) {
+        /* Первый вызов (бакетов нет) или загрузка > 1: idx_grow пересобирает
+         * цепи для ВСЕХ слотов 0..n-1, включая slot, — отдельно вешать slot
+         * нельзя, иначе получилась бы ссылка на самого себя. */
+        idx_grow(st);
+        return;         /* при OOM bkt остаётся NULL — поиск линейным fallback'ом */
     }
     b = set_hash(st->v[slot].addr) % (unsigned)st->nb;
     st->v[slot].next = st->bkt[b];
