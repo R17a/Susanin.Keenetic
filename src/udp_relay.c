@@ -403,23 +403,21 @@ static void relay_loop(int main_fd)
     }
 }
 
-int udp_relay_start(const susanin_config *cfg)
+/* Бинд TPROXY-сокета и fork работника. Возврат: pid > 0 или 0 при ошибке.
+ * Вынесено из start: watchdog перезапускает погибшего ребёнка без дублирования
+ * связки socket/setsockopt/bind/fork. */
+static pid_t relay_spawn(const susanin_config *cfg)
 {
     int main_fd, on = 1, i;
     struct sockaddr_in b;
     pid_t pid;
 
-    if (!cfg->udp_relay)
-        return 0;
-    if (g_pid > 0)
-        return (int)g_pid;
-
-    snprintf(g_socks_host, sizeof(g_socks_host), "%s",
-             cfg->socks_addr[0] ? cfg->socks_addr : "127.0.0.1");
-    g_socks_port = cfg->socks_port > 0 ? cfg->socks_port : 1080;
     for (i = 0; i < MAX_FLOWS; i++) {
+        g_flow[i].used = 0;
         g_flow[i].ctl_fd = -1;
         g_flow[i].relay_fd = -1;
+        g_rs[i].used = 0;
+        g_rs[i].fd = -1;
     }
 
     main_fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -457,12 +455,104 @@ int udp_relay_start(const susanin_config *cfg)
         _exit(0);
     }
     close(main_fd);
-    g_pid = pid;
-    return (int)pid;
+    return pid;
+}
+
+/* Снимок конфига, с которым запущен работник: нужен watchdog'у для рестарта
+ * и reload для сравнения значимых полей. */
+static susanin_config g_rcfg;
+static int g_active;            /* релей включён и должен работать */
+static int g_stopping;          /* вызван stop() — автоперезапуск не делать */
+static time_t g_next_try;       /* backoff рестарта при ошибках запуска */
+static int g_spawn_fails;
+
+int udp_relay_start(const susanin_config *cfg)
+{
+    if (!cfg->udp_relay)
+        return 0;
+    if (g_pid > 0)
+        return (int)g_pid;
+
+    g_rcfg = *cfg;
+    g_active = 1;
+    g_stopping = 0;
+    g_spawn_fails = 0;
+    g_next_try = 0;
+    snprintf(g_socks_host, sizeof(g_socks_host), "%s",
+             cfg->socks_addr[0] ? cfg->socks_addr : "127.0.0.1");
+    g_socks_port = cfg->socks_port > 0 ? cfg->socks_port : 1080;
+    g_pid = relay_spawn(cfg);
+    return (int)g_pid;
+}
+
+void udp_relay_tick(void)
+{
+    int st;
+    pid_t w;
+    time_t now;
+    if (!g_active || g_stopping)
+        return;
+    if (g_pid > 0) {
+        w = waitpid(g_pid, &st, WNOHANG);
+        if (w == 0)
+            return;                 /* работник жив */
+        if (w != g_pid)
+            return;                 /* ошибка waitpid — попробуем на следующем витке */
+        slogf(SL_WARN, "udp-relay: дочерний процесс завершился (%s) — перезапускаю",
+              WIFSIGNALED(st) ? "убит сигналом" : "exit");
+        g_pid = 0;
+    }
+    now = time(NULL);
+    if (now < g_next_try)
+        return;                     /* backoff после неудачного запуска */
+    g_pid = relay_spawn(&g_rcfg);
+    if (g_pid > 0) {
+        g_spawn_fails = 0;
+        g_next_try = 0;
+    } else {
+        g_spawn_fails++;
+        g_next_try = now + (g_spawn_fails > 5 ? 60 : 5 * g_spawn_fails);
+    }
+}
+
+void udp_relay_reload(const susanin_config *cfg)
+{
+    const char *nh;
+    int np;
+    if (!cfg->udp_relay) {
+        if (g_active)
+            udp_relay_stop();
+        return;
+    }
+    if (!g_active) {
+        udp_relay_start(cfg);       /* был выключен — включили */
+        return;
+    }
+    nh = cfg->socks_addr[0] ? cfg->socks_addr : "127.0.0.1";
+    np = cfg->socks_port > 0 ? cfg->socks_port : 1080;
+    if (strcmp(g_socks_host, nh) == 0 && g_socks_port == np &&
+        g_rcfg.udp_relay_port == cfg->udp_relay_port) {
+        g_rcfg = *cfg;              /* значимые поля те же — обновить снимок */
+        return;
+    }
+    slogf(SL_INFO, "udp-relay: параметры изменились — перезапуск работника");
+    if (g_pid > 0) {
+        kill(g_pid, SIGTERM);
+        waitpid(g_pid, NULL, 0);
+        g_pid = 0;
+    }
+    g_rcfg = *cfg;
+    snprintf(g_socks_host, sizeof(g_socks_host), "%s", nh);
+    g_socks_port = np;
+    g_spawn_fails = 0;
+    g_next_try = 0;
+    g_pid = relay_spawn(cfg);
 }
 
 void udp_relay_stop(void)
 {
+    g_stopping = 1;
+    g_active = 0;
     if (g_pid > 0) {
         kill(g_pid, SIGTERM);
         waitpid(g_pid, NULL, 0);

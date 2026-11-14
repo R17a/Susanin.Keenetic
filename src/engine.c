@@ -1244,6 +1244,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         time_t now = time(NULL);
 
         kids_poll();     /* пожинать детей прямого запуска Xray/S93 (без зомби) */
+        udp_relay_tick();    /* работник жив? перезапуск убитого/упавшего (B1) */
 
         if (cfg->dns_sniff)
             dns_sniff_poll();
@@ -1255,6 +1256,10 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 *cfg = nc;
                 backend_batch_enable(cfg->ipset_batch);
                 slogf(SL_INFO, "config reloaded: %s", conf_path);
+                /* Работник udp-relay держит конфиг, с которым запущен:
+                 * при смене значимых полей — перезапуск, при выключении
+                 * udp_relay — остановка. */
+                udp_relay_reload(cfg);
                 /* W6: перечитать настройку индикатора релиза; при включении —
                  * проверка в ближайшие 30 с, а не через 12 ч. */
                 release_init(cfg);
