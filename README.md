@@ -26,7 +26,7 @@ MikroTik RouterOS), перенесён на роутеры Keenetic/Entware.
 VPN недоступен — всё идёт напрямую. Есть и простой список доменов, которые должны
 идти через VPN **всегда** (без ручных списков IP — только имена, как в Keenetic).
 
-**Статус: релиз 0.4.6.** Проверено на Keenetic Viva (MT7621, MIPS),
+**Статус: релиз 0.4.7.** Проверено на Keenetic Viva (MT7621, MIPS),
 KeeneticOS 5.1.4–5.1.5, Entware, туннели WireGuard/AmneziaWG (`nwg0`/`nwg1`),
 Xray VLESS+REALITY и VLESS+WS+TLS (`egress_type=tproxy`), Keenetic Giga/Ultra.
 
@@ -120,7 +120,7 @@ the VPN. If the VPN is unavailable, everything goes direct. There is also a plai
 list of domains that must **always** go through the VPN (no manual IP lists —
 names only, like in Keenetic).
 
-**Status: release 0.4.6.** Tested on Keenetic Viva (MT7621, MIPS),
+**Status: release 0.4.7.** Tested on Keenetic Viva (MT7621, MIPS),
 KeeneticOS 5.1.4–5.1.5, Entware, WireGuard/AmneziaWG tunnels (`nwg0`/`nwg1`),
 Xray VLESS+REALITY and VLESS+WS+TLS (`egress_type=tproxy`), Keenetic Giga/Ultra.
 
@@ -199,7 +199,7 @@ VPN 路由）实现，并移植到 Keenetic/Entware 路由器。
 连接并继续让它们走 VPN。如果 VPN 不可用，所有流量都直连。此外还有一份「始终走
 VPN」的域名列表（无需手工维护 IP 列表——只写域名，和 Keenetic 一样）。
 
-**状态：0.4.6 版。** 已在 Keenetic Viva（MT7621，MIPS）、KeeneticOS
+**状态：0.4.7 版。** 已在 Keenetic Viva（MT7621，MIPS）、KeeneticOS
 5.1.4–5.1.5、Entware、WireGuard/AmneziaWG 隧道（`nwg0`/`nwg1`）、
 Xray VLESS+REALITY 及 VLESS+WS+TLS（`egress_type=tproxy`）、Keenetic Giga/Ultra 上验证。
 
