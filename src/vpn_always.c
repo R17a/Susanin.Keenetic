@@ -1196,3 +1196,16 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
     free(desired_net);
     return pending;
 }
+
+/* Состояние списка для наблюдаемости: refresh сам ничего не печатает, когда
+ * меняться нечему, и по логу нельзя было утверждать, что список перечитан
+ * (в частности — после явного Reload). */
+void va_counts(const vpn_always *v, int *ndom, int *nip, int *nnet)
+{
+    if (ndom)
+        *ndom = v ? v->nd : 0;
+    if (nip)
+        *nip = v ? v->ntrack : 0;
+    if (nnet)
+        *nnet = v ? v->ntracknet : 0;
+}

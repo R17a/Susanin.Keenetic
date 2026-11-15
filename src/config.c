@@ -112,6 +112,10 @@ void config_set_defaults(susanin_config *c)
     c->health_interval = 5;
     c->fast_syn_min_op = 2;
     c->udp_min_op = 3;
+    /* Улика гибели прямого пути (см. sf_note): 3 разных соединения на один
+     * dst:port за 120 с -> заворачиваем в test без прямой пробы. 0 = выключить. */
+    c->synfail_quorum = 3;
+    c->synfail_window = 120;
     c->ok_ttl = 6 * 3600;
     c->ok_refresh_below = 3 * 3600;
     c->ok_max_entries = 4096;
@@ -228,7 +232,8 @@ void config_set_defaults(susanin_config *c)
     /* Медиа-порты по умолчанию — только видео/IPTV. 80/443 убраны: обычная
      * загрузка страницы под них подпадала, и два адреса уводили в VPN всю /24
      * хостинга. Кому нужно — задаёт явно. */
-    snprintf(c->media_ports, sizeof(c->media_ports), "%s", "554,1935,8080,8443");
+    snprintf(c->media_ports, sizeof(c->media_ports), "%s",
+             "554,1935,8000,8001,8080,8443");
     c->media_min_bytes = 1048576;
     c->media_ratio = 8;
     c->media_min_rate = 150000;
@@ -402,6 +407,10 @@ int config_load(const char *path, susanin_config *c)
         else if (!strcmp(key, "udp_min_op")) {
             c->udp_min_op = (int)strtol(val, NULL, 0);
         }
+        else if (!strcmp(key, "synfail_quorum"))
+            c->synfail_quorum = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "synfail_window"))
+            c->synfail_window = parse_dur(val, U_SEC);
         else if (!strcmp(key, "ok_ttl"))
             c->ok_ttl = parse_dur(val, U_SEC);
         else if (!strcmp(key, "ok_refresh_below"))
@@ -762,6 +771,14 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "# в VPN. Голосовые хендшейки (Discord) дают 3 пакета с нового порта и\n");
     fprintf(fp, "# сдаются — при большом значении адрес не успевает выучиться. 0 = 12.\n");
     fprintf(fp, "udp_min_op=%d\n", c->udp_min_op);
+    fprintf(fp, "# Улика гибели прямого пути: сколько разных соединений на один\n");
+    fprintf(fp, "# dst:port должны потерять SYN в окне synfail_window, чтобы уйти\n");
+    fprintf(fp, "# в VPN без прямой пробы. Нужна потому, что проба — это connect()\n");
+    fprintf(fp, "# с самого роутера, а умирает поток клиента; плюс проба ограничена\n");
+    fprintf(fp, "# общим бюджетом и при фан-ауте не успевается. 0 = выключить.\n");
+    fprintf(fp, "synfail_quorum=%d\n", c->synfail_quorum);
+    fprintf(fp, "# Окно накопления улики, сек.\n");
+    fprintf(fp, "synfail_window=%d\n", out_dur(c->synfail_window, U_SEC));
     fprintf(fp, "# TTL выученных ok-адресов, сек; 0 = никогда не истекает (наборы растут).\n");
     fprintf(fp, "ok_ttl=%d\n", out_dur(c->ok_ttl, U_SEC));
     fprintf(fp, "# Обновлять ok-адрес, если до истечения меньше заданного, ч.\n");
@@ -1089,6 +1106,195 @@ int config_file_set(const char *path, const char *key, const char *val, int allo
     return 0;
 }
 
+/* Строка вида "key=" — вернуть имя ключа. Коментарии, пустые строки и строки
+ * с нелегальными символами дают -1. Пробелы до имени и перед '=' допускаются
+ * ровно как их допускает config_load(): иначе строка "tz = 1" не попала бы в
+ * список имеющихся ключей, и config_sync дописал бы второй "tz=" — дубль,
+ * где победитель зависит от порядка строк в файле. */
+static int cfg_line_key(const char *line, char *out, size_t n)
+{
+    size_t i = 0;
+    const char *p = line;
+    while (*p == ' ' || *p == '\t')
+        p++;
+    while (*p && *p != '=' && *p != ' ' && *p != '\t' && *p != '\n' && i + 1 < n) {
+        char ch = *p++;
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_'))
+            return -1;
+        out[i++] = ch;
+    }
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (i == 0 || *p != '=')
+        return -1;
+    out[i] = '\0';
+    return 0;
+}
+
+/* Дописать в конфиг отсутствующие ключи со значениями по умолчанию.
+ *
+ * Единственный источник истины — config_save(): он перечисляет все ключи, а
+ * его значения совпадают с config_set_defaults(), потому что лежат в одном
+ * файле. Рукописный перечень в update.sh от кода отстал (в нём не было
+ * ru_guard*, tz, test_net_*, frozen_net_*, port_aware и др., а lan_interfaces,
+ * lan_subnets и media_ports остались с прежними дефолтами) — поэтому
+ * дописывание делает здесь агент, а не скрипт.
+ *
+ * Существующие строки не перезаписываются: значение пользователя важнее
+ * дефолта. dry_run=1 — только напечатать то, что добавилось бы.
+ * Возвращает число добавленных (напечатанных) ключей, -1 при ошибке. */
+int config_sync(const char *path, int dry_run)
+{
+    susanin_config c;
+    char gen[CFG_PATH_MAX + 16], line[1024], key[96];
+    char *kname[512], *kline[512];
+    char *have[512];
+    FILE *f, *g, *out;
+    int nhave = 0, nmiss = 0, i, found;
+    size_t tmpl;
+    char tmp[CFG_PATH_MAX + 16];
+
+    if (!path || !path[0])
+        return -1;
+    if (config_load(path, &c) != 0)
+        config_set_defaults(&c);
+    snprintf(gen, sizeof(gen), "%s.gen.tmp", path);
+    if (config_save(gen, &c) != 0)
+        return -1;
+
+    f = fopen(path, "r");
+    if (f) {
+        while (fgets(line, sizeof(line), f)) {
+            if (cfg_line_key(line, key, sizeof(key)) != 0)
+                continue;
+            if (nhave >= (int)(sizeof(have) / sizeof(have[0]))) {
+                /* Без полного списка имеющихся ключей дописывание стало бы
+                 * опасным: невидимые ключи получили бы дубли. Отказываемся. */
+                fclose(f);
+                for (i = 0; i < nhave; i++)
+                    free(have[i]);
+                remove(gen);
+                return -1;
+            }
+            have[nhave] = strdup(key);
+            if (have[nhave])
+                nhave++;
+        }
+        fclose(f);
+    }
+
+    g = fopen(gen, "r");
+    if (!g) {
+        remove(gen);
+        for (i = 0; i < nhave; i++)
+            free(have[i]);
+        return -1;
+    }
+    while (fgets(line, sizeof(line), g)) {
+        if (cfg_line_key(line, key, sizeof(key)) != 0)
+            continue;
+        if (nmiss >= (int)(sizeof(kname) / sizeof(kname[0])))
+            break;
+        found = 0;
+        for (i = 0; i < nhave; i++) {
+            if (!strcmp(have[i], key)) {
+                found = 1;
+                break;
+            }
+        }
+        if (found)
+            continue;
+        /* один и тот же ключ в генераторе не повторяется, но на всякий случай
+         * не добавляем дубль и в список недостающих */
+        {
+            int j, dup = 0;
+            for (j = 0; j < nmiss; j++)
+                if (!strcmp(kname[j], key)) { dup = 1; break; }
+            if (dup)
+                continue;
+        }
+        kname[nmiss] = strdup(key);
+        kline[nmiss] = strdup(line);
+        if (!kname[nmiss] || !kline[nmiss]) {
+            /* не оставляем висячий указатель: nmiss не увеличивается, и
+               освобождённый ниже по nmiss цикл его не увидит */
+            free(kname[nmiss]);
+            free(kline[nmiss]);
+            break;
+        }
+        nmiss++;
+    }
+    fclose(g);
+    remove(gen);
+    for (i = 0; i < nhave; i++)
+        free(have[i]);
+
+    if (dry_run) {
+        for (i = 0; i < nmiss; i++)
+            fputs(kline[i], stdout);
+        for (i = 0; i < nmiss; i++) {
+            free(kname[i]);
+            free(kline[i]);
+        }
+        return nmiss;
+    }
+
+    if (nmiss == 0)
+        return 0;
+
+    /* Отдельное имя временного файла: config_file_set() (его зовёт панель при
+     * «config set») пишет в "%s.tmp". Один и тот же tmp на два writer — это
+     * гонка, где rename победил бы одного из них. */
+    snprintf(tmp, sizeof(tmp), "%s.sync.tmp", path);
+    f = fopen(path, "r");
+    out = fopen(tmp, "w");
+    if (!f || !out) {
+        if (f)
+            fclose(f);
+        if (out)
+            fclose(out);
+        remove(tmp);
+        for (i = 0; i < nmiss; i++) {
+            free(kname[i]);
+            free(kline[i]);
+        }
+        return -1;
+    }
+    while (fgets(line, sizeof(line), f))
+        fputs(line, out);
+    fclose(f);
+    fprintf(out, "\n# --- добавлены config sync: ключи, которых в файле не было ---\n");
+    fprintf(out, "# Значения — действующие по умолчанию. Свои настройки здесь не менялись.\n");
+    for (i = 0; i < nmiss; i++) {
+        tmpl = strlen(kline[i]);
+        if (!tmpl || kline[i][tmpl - 1] != '\n')
+            fprintf(out, "%s\n", kline[i]);
+        else
+            fputs(kline[i], out);
+    }
+    if (fclose(out) != 0) {
+        remove(tmp);
+        for (i = 0; i < nmiss; i++) {
+            free(kname[i]);
+            free(kline[i]);
+        }
+        return -1;
+    }
+    if (rename(tmp, path) != 0) {
+        remove(tmp);
+        for (i = 0; i < nmiss; i++) {
+            free(kname[i]);
+            free(kline[i]);
+        }
+        return -1;
+    }
+    for (i = 0; i < nmiss; i++) {
+        free(kname[i]);
+        free(kline[i]);
+    }
+    return nmiss;
+}
+
 void config_print(const susanin_config *c)
 {
     int i;
@@ -1107,6 +1313,8 @@ void config_print(const susanin_config *c)
     printf("health_interval=%d\n", out_dur(c->health_interval, U_SEC));
     printf("fast_syn_min_op=%d\n", c->fast_syn_min_op);
     printf("udp_min_op=%d\n", c->udp_min_op);
+    printf("synfail_quorum=%d\n", c->synfail_quorum);
+    printf("synfail_window=%d\n", out_dur(c->synfail_window, U_SEC));
     printf("ok_ttl=%d\n", out_dur(c->ok_ttl, U_SEC));
     printf("ok_refresh_below=%d\n", out_dur(c->ok_refresh_below, U_HOUR));
     printf("ok_max_entries=%d\n", c->ok_max_entries);

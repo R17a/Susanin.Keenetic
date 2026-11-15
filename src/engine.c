@@ -1092,6 +1092,10 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     time_t last_force = 0;
     time_t last_never = 0;
     int never_pending = 0;
+    /* Явный Reload: списки перечитываются в этом же проходе, но сами refresh-и
+     * молчат, когда меняться нечему. Флаг нужен, чтобы по одному разу сказать
+     * оператору, что именно перечитано (или почему не перечитано). */
+    int just_reloaded = 0;
     time_t last_trim = 0;
     time_t last_sweep = 0;
     time_t last_nsweep = 0;
@@ -1309,6 +1313,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 }
                 last_force = 0;
                 last_never = 0;
+                just_reloaded = 1;
             } else {
                 slogf(SL_ERROR, "config reload failed: %s",
                       conf_path ? conf_path : "?");
@@ -1731,6 +1736,17 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             backend_batch_end();
             if (force_pending)
                 last_force = prev;  /* догоняем оставшиеся домены вскоре */
+            if (just_reloaded) {
+                int nd = 0, nip = 0, nnet = 0;
+                va_counts(va, &nd, &nip, &nnet);
+                slogf(SL_INFO, "vpn_always: перечитан (доменов=%d, "
+                      "запинено ip=%d net=%d)", nd, nip, nnet);
+            }
+        } else if (just_reloaded && va && cfg->vpn_always_file[0]) {
+            /* Раньше это было молчанием: Reload при мёртвом туннеле перечитывал
+             * vpn_never, а vpn_always пропускал (fail-open), и по логу нельзя
+             * было отличить «отложено сознательно» от «список не применился». */
+            slogf(SL_INFO, "vpn_always: отложен до подъёма туннеля (fail-open)");
         }
 
         if (nv &&
@@ -1749,7 +1765,14 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 never_state_clean(cfg, &st, now);
             if (never_pending)
                 last_never = prev;
+            if (just_reloaded) {
+                int nd = 0, nt = 0;
+                vn_counts(nv, &nd, &nt);
+                slogf(SL_INFO, "vpn_never: перечитан (доменов=%d, direct=%d)",
+                      nd, nt);
+            }
         }
+        just_reloaded = 0;
 
         /* Ротация логов по размеру в рантайме: раньше — только
          * при старте службы; долгий аптайм + INFO/debug = раздутый файл

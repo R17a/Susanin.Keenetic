@@ -744,3 +744,14 @@ int vn_match_file(const char *path, const char *ip, char *out, size_t n)
     }
     return 0;
 }
+
+/* Состояние списка для наблюдаемости (см. va_counts): refresh молчит, когда
+ * меняться нечему, и по логу нельзя было отличить «перечитано и ничего не
+ * изменилось» от «не перечитано вовсе». */
+void vn_counts(const vpn_never *v, int *ndom, int *ntrack)
+{
+    if (ndom)
+        *ndom = v ? v->nd : 0;
+    if (ntrack)
+        *ntrack = v ? v->ntrack : 0;
+}

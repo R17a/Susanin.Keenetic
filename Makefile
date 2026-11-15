@@ -13,7 +13,7 @@ SRCS = src/main.c src/config.c src/discover.c src/conntrack.c src/state.c \
 OBJS = $(SRCS:.c=.o)
 
 TARGET = susanin-agent
-TESTS = tests/test_conntrack tests/test_config tests/test_ops tests/test_web_list tests/test_web_choices tests/test_state tests/test_backend_value tests/test_backend_lock tests/test_classifier_key tests/test_classifier_media tests/test_web_token tests/test_release
+TESTS = tests/test_conntrack tests/test_config tests/test_ops tests/test_web_list tests/test_web_choices tests/test_state tests/test_backend_value tests/test_backend_lock tests/test_classifier_key tests/test_classifier_media tests/test_classifier_synfail tests/test_config_sync tests/test_web_token tests/test_release
 SAMPLES = testdata/nf_conntrack.samples
 # Объекты для тестов, которые включают .c-файл в свой TU (тогда его .o линковать нельзя).
 TEST_OBJS = $(filter-out src/main.o,$(OBJS))
@@ -28,8 +28,14 @@ $(TARGET): $(OBJS)
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# web.c включает заголовок модуля «известных значений» — пересобираем при правке.
-src/web.o src/web_choices.o: src/web_choices.h
+# Все объектники зависят от всех заголовков src/. Без этого правка структуры в
+# config.h (новые поля меняют смещения) пересобирает только изменённый .c, а
+# остальные остаются со СТАРОЙ раскладкой — линкуется бинарник с разными layout
+# в одном процессе. На хосте это выглядит как чудесно падающий тест, на роутере
+# — как чтение чужих полей. Раньше зависимость ставили точечно (web_choices.h);
+# теперь общая, включая тестовые сборки, которые линкуют те же объектники.
+HDRS = $(wildcard src/*.h)
+$(OBJS): $(HDRS)
 
 # Тесты (хост-компилятор; в кросс-сборку и поставку не входят).
 test: $(TESTS)
@@ -43,6 +49,8 @@ test: $(TESTS)
 	./tests/test_backend_lock
 	./tests/test_classifier_key
 	./tests/test_classifier_media
+	./tests/test_classifier_synfail
+	./tests/test_config_sync
 	./tests/test_web_token
 	./tests/test_release
 	sh tests/test-egress-failover.sh
@@ -71,6 +79,14 @@ tests/test_classifier_key: tests/test_classifier_key.c src/classifier.c $(TEST_O
 # media_port / ip_in_cidr) — .o классификатора исключаем, как выше.
 tests/test_classifier_media: tests/test_classifier_media.c src/classifier.c src/classifier.h $(TEST_OBJS)
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_classifier_media.c $(filter-out src/classifier.o,$(TEST_OBJS))
+
+# Улика гибели прямого пути: sf_note — static, поэтому classifier.c включается в TU.
+tests/test_classifier_synfail: tests/test_classifier_synfail.c src/classifier.c src/classifier.h $(TEST_OBJS)
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_classifier_synfail.c $(filter-out src/classifier.o,$(TEST_OBJS))
+
+# config sync работает с файлом: config.c + log.c (slogf вызывается из config.c).
+tests/test_config_sync: tests/test_config_sync.c src/config.c src/config.h src/log.c src/log.h
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_config_sync.c src/config.c src/log.c
 
 tests/test_conntrack: tests/test_conntrack.c src/conntrack.c src/conntrack.h
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_conntrack.c src/conntrack.c

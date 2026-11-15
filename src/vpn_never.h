@@ -34,4 +34,8 @@ int vn_has(const char *ip);
  * Возврат 1, в out — строка списка. Читает файл напрямую (CLI-процесс). */
 int vn_match_file(const char *path, const char *ip, char *out, size_t n);
 
+/* Текущее состояние списка (домены / запиненные адреса) — для сводки после
+ * явного Reload: refresh молчит, когда меняться нечему. */
+void vn_counts(const vpn_never *v, int *ndom, int *ntrack);
+
 #endif

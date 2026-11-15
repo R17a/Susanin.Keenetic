@@ -46,4 +46,9 @@ int va_dns_query(const char *server, const char *domain, char ips[][16],
                  int max, int timeout_ms);
 void va_pick_resolver(const susanin_config *cfg, char *out, size_t n);
 
+/* Текущее состояние списка (число доменов и запиненных ip/net). Нужно для
+ * того, чтобы после явного Reload сказать оператору, что список перечитан:
+ * сам refresh ничего не печатает, когда меняться нечему. */
+void va_counts(const vpn_always *v, int *ndom, int *nip, int *nnet);
+
 #endif

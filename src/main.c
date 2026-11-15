@@ -29,6 +29,8 @@ static void usage(void)
         "  susanin-agent version\n"
         "  susanin-agent config show\n"
         "  susanin-agent config set <key> <value>\n"
+        "  susanin-agent config sync [--dry-run]   (дописать отсутствующие ключи\n"
+        "                                            действующими дефолтами)\n"
         "  susanin-agent discover\n"
         "  susanin-agent ct-scan\n"
         "  susanin-agent datapath {up|down|p5|p5-down|status|flush|add|del}\n"
@@ -161,6 +163,34 @@ int main(int argc, char **argv)
                 return 2;
             }
             printf("%s=%s\n", argv[3], argv[4]);
+            return 0;
+        }
+        if (argc > 2 && !strcmp(argv[2], "sync")) {
+            int dry = 0, n;
+            /* Не «всё, что не --dry-run, значит запись»: опечатка в третьем
+             * аргументе не должна молча менять конфиг на рабочем роутере. */
+            if (argc > 3) {
+                if (strcmp(argv[3], "--dry-run")) {
+                    fprintf(stderr, "config sync: непонятный аргумент '%s' "
+                                    "(ожидается --dry-run)\n", argv[3]);
+                    return 2;
+                }
+                dry = 1;
+            }
+            if (access(cfg_path(), R_OK) != 0) {
+                fprintf(stderr, "config sync: нет файла %s — создавать не буду\n",
+                        cfg_path());
+                return 2;
+            }
+            n = config_sync(cfg_path(), dry);
+            if (n < 0) {
+                fprintf(stderr, "config sync: не удалось обновить %s\n", cfg_path());
+                return 1;
+            }
+            if (dry)
+                printf("# config sync: не хватает %d ключ(ов) — выше то, что добавилось бы\n", n);
+            else
+                printf("config sync: добавлено %d ключ(ов)\n", n);
             return 0;
         }
         usage();
