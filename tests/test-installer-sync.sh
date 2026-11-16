@@ -118,6 +118,36 @@ check 'cmp -s "$P/show1.conf" "$P/show2.conf"' \
 check '[ "$(grep -c "precision=(выкл)" "$P/show1.conf")" = 0 ]' \
       "служебные пояснения не попадают в значения"
 
+echo "=== susanin.sh: disk_mode=soft => лог не ведётся ==="
+# Функции берутся из настоящего скрипта запуска: проверяем его решение, а не
+# свою пересказанную версию.
+_fn=$(mktemp "${TMPDIR:-/tmp}/susanin-fns.XXXXXX" 2>/dev/null) || _fn=""
+if [ -n "$_fn" ]; then
+    sed -n '/^disk_mode_of()/,/^}/p;/^log_dest()/,/^}/p' "$ROOT/tools/susanin.sh" > "$_fn"
+    # shellcheck disable=SC1091
+    . "$_fn"
+    CONF="$P/mode.conf"
+    LOG="$P/susanin.log"
+
+    printf 'disk_mode=soft\n' > "$CONF"
+    check '[ "$(log_dest "$LOG")" = "/dev/null" ]' "soft: вывод идёт в /dev/null"
+    check '[ "$(disk_mode_of)" = "soft" ]' "soft: режим прочитан"
+
+    printf 'disk_mode = normal\n' > "$CONF"
+    check '[ "$(log_dest "$LOG")" = "$LOG" ]' "normal: вывод идёт в файл лога"
+    check '[ "$(disk_mode_of)" = "normal" ]' "форма «key = value» прочитана (пробелы)"
+
+    printf 'disk_mode=normal\ndisk_mode=soft\n' > "$CONF"
+    check '[ "$(log_dest "$LOG")" = "/dev/null" ]' \
+          "при двух строках побеждает последняя (как в config_load)"
+    printf 'disk_mode=soft\n# disk_mode=normal\n' > "$CONF"
+    check '[ "$(log_dest "$LOG")" = "/dev/null" ]' \
+          "закомментированное значение не меняет решения"
+    rm -f "$_fn"
+else
+    echo "FAIL: mktemp недоступен"; fail=$((fail + 1))
+fi
+
 rm -rf "$P"
 echo
 if [ "$fail" = 0 ]; then echo "ИТОГ: все проверки пройдены"; else echo "ЕСТЬ ОШИБКИ ($fail)"; fi

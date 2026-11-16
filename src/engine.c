@@ -1248,25 +1248,25 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     {
         const char *lf = getenv("SUSANIN_LOG");
         struct stat lst;
-        off_t prev_sz = (lf && *lf && stat(lf, &lst) == 0) ? lst.st_size : 0;
+        int soft = (strcmp(cfg->disk_mode, "soft") == 0);
+        off_t prev_sz = (!soft && lf && *lf && stat(lf, &lst) == 0) ? lst.st_size : 0;
 
-        /* disk_mode=soft: агентовский fd не открываем (минимум СВОИХ записей на
-         * носитель), но путь запоминаем всегда. Причина: susanin.sh перенаправляет
-         * stdout демона в тот же файл редиректом оболочки, то есть writes в него
-         * идут и в soft. Прежняя связка «soft => не открываем => не ротируем»
-         * означала бесконечный рост файла на флешке ровно в том режиме, который
-         * должен был её беречь, и упор был уже не в логи, а в ENOSPC. */
-        if (lf && *lf) {
-            if (strcmp(cfg->disk_mode, "soft") != 0) {
-                int fd = open(lf, O_WRONLY | O_CREAT | O_APPEND, 0644);
-                if (fd >= 0) {
-                    dup2(fd, 1);
-                    dup2(fd, 2);
-                    if (fd > 2)
-                        close(fd);
-                }
+        /* disk_mode=soft означает, что ЛОГА НЕТ (см. TROUBLESHOOTING.md,
+         * USER_GUIDE.md): вывод демона и панели уводится в /dev/null на уровне
+         * susanin.sh, поэтому здесь не открываем свой fd и не запоминаем путь:
+         * ротация файла, который никто не пишет, трогала бы носитель впустую.
+         * Именно этого режима и не хватало: раньше редирект оболочки был
+         * безусловный, и soft давал худшее сочетание — флешка стирается
+         * записями, которые панель отказывается показывать. */
+        if (lf && *lf && !soft) {
+            int fd = open(lf, O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (fd >= 0) {
+                dup2(fd, 1);
+                dup2(fd, 2);
+                if (fd > 2)
+                    close(fd);
+                snprintf(g_agentlog, sizeof(g_agentlog), "%s", lf);
             }
-            snprintf(g_agentlog, sizeof(g_agentlog), "%s", lf);
         }
         log_prev_size = prev_sz;
     }
@@ -1277,12 +1277,11 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                        "при reboot улики исчезают. Держите лог на flash (так дешевле "
                        "для носителя, чем кажется) или disk_mode=soft", g_agentlog);
     if (strcmp(cfg->disk_mode, "soft") == 0)
-        /* Прежняя формулировка «log file off» была неверной: файл лога продолжает
-         * писаться редиректом оболочки. Врать про это опасно — оператор решал,
-         * что логов нет, и не искал их при разборе. */
-        slogf(SL_INFO, "disk_mode=soft: свой fd лога не открываем, state не сохраняем "
-              "(кроме soft_state_interval), бэкапов нет; файл лога пишет оболочка, "
-              "ротация по размеру работает");
+        /* В soft это сообщение уходит в /dev/null — по определению режима.
+         * Остаётся для случая, когда soft включён, а логи всё же пишутся
+         * вручную (перенаправленный запуск без оболочки). */
+        slogf(SL_INFO, "disk_mode=soft: лог не ведётся (вывод в /dev/null), "
+              "state не сохраняется (кроме soft_state_interval), бэкапов нет");
     if (cfg->ok_ttl == 0)
         slogf(SL_WARN, "ok_ttl=0: выученные адреса не истекают (наборы будут расти); "
                        "рекомендуется конечный TTL, напр. ok_ttl=21600");
@@ -2078,11 +2077,16 @@ int engine_run(susanin_config *cfg, const char *conf_path)
          * писатели с O_APPEND продолжают с нового EOF. */
         if (now - last_logrot >= 300) {
             last_logrot = now;
-            /* Ограничение по размеру нужно и в soft: файл пишет оболочка, и
-             * без ротации он растёт на флешке бесконечно. */
-            if (g_agentlog[0])
-                log_rotate_if_big(g_agentlog, 4096, 1024);
-            log_rotate_if_big("/opt/susanin/var/susanin-web.log", 2048, 512);
+            /* Свой и web-лог вращаем только там, где они есть: в soft вывод
+             * процессов идёт в /dev/null (смысл режима по документации — лог не
+             * ведётся), и крутить файл, который никто не пишет, значило бы
+             * трогать носитель впустую. xray.log ниже — исключение намеренное:
+             * его пишет Xray, и его лимит защищает память, а не наблюдения. */
+            if (strcmp(cfg->disk_mode, "soft") != 0) {
+                if (g_agentlog[0])
+                    log_rotate_if_big(g_agentlog, 4096, 1024);
+                log_rotate_if_big("/opt/susanin/var/susanin-web.log", 2048, 512);
+            }
         }
 
         /* xray.log раньше урезался только при спавне Xray. Долгоживой Xray с
