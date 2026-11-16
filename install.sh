@@ -32,6 +32,9 @@ NO_START=0
 # 1 = не трогать существующие vpn_always.txt/vpn_never.txt (флаг --keep-lists).
 KEEP_LISTS=0
 DISK_MODE=""
+# 1 = режим задан явно (--disk-mode). Авто-определение не имеет права
+# перезаписывать сознательный выбор оператора при повторном запуске.
+DISK_MODE_SET=0
 DEPS=0
 XRAYTUN=0
 USE_IPK=0
@@ -187,7 +190,7 @@ while [ $# -gt 0 ]; do
         --lan) LAN="$2"; shift ;;
         --subnets) SUBNETS="$2"; shift ;;
         --prefix) PREFIX="$2"; shift ;;
-        --disk-mode) DISK_MODE="$2"; shift ;;
+        --disk-mode) DISK_MODE="$2"; DISK_MODE_SET=1; shift ;;
         --deps) DEPS=1 ;;
         --ipk) USE_IPK=1 ;;
         # Локальный .ipk (без релиза/интернета): --ipk-file /opt/tmp/x.ipk
@@ -528,6 +531,14 @@ if [ -f "$DIR0/susanin-agent" ] || [ -f "$DIR0/bin/susanin-agent" ] \
     say "local package: $DIR"
 else
     pick_fetch
+    # Поддерживаемые архитектуры — только те, для которых CI собирает бинарь
+    # (см. .github/workflows/release.yml). Проверка ДО загрузки: устройство с
+    # mips64el получало безликий «download failed, проверьте --arch», хотя
+    # причина была в том, что сборки для такой архитектуры нет.
+    case "$ARCH" in
+        mipsel|mips|aarch64|armv7|x86_64) : ;;
+        *) die "для архитектуры '$ARCH' готовых сборок нет (есть: mipsel, mips, aarch64, armv7, x86_64). Если устройство совместимо с одной из них — укажите явно: --arch mipsel" ;;
+    esac
     ASSET="susanin-keenetic-deploy-$ARCH.tar.gz"
     say "arch=$ARCH version=$VERSION"
     TMP=$(mktemp -d /tmp/susanin-inst.XXXXXX)
@@ -768,14 +779,26 @@ else
     say "config kept: $PREFIX/etc/susanin.conf"
 fi
 
-# disk_mode применяем всегда (в т.ч. когда конфиг уже существовал).
+# disk_mode: явный --disk-mode применяется всегда (это заказ оператора),
+# авто-определение — только когда ключа в конфиге ещё нет. Прежнее поведение
+# («применяем всегда») затирало сознательный выбор при каждом запуске
+# установщика: поставил normal на внутренней флешке — после обновления снова
+# получил soft, потому что детектор увидел USB.
 if [ -f "$PREFIX/etc/susanin.conf" ]; then
-    if grep -q '^disk_mode=' "$PREFIX/etc/susanin.conf" 2>/dev/null; then
-        sed -i "s|^disk_mode=.*|disk_mode=$DISK_MODE|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
+    _dm_have=0
+    grep -Eq '^[[:space:]]*disk_mode[[:space:]]*=' "$PREFIX/etc/susanin.conf" 2>/dev/null \
+        && _dm_have=1
+    if [ "$DISK_MODE_SET" = "1" ] || [ "$_dm_have" = "0" ]; then
+        if [ "$_dm_have" = "1" ]; then
+            sed -i "s|^[[:space:]]*disk_mode[[:space:]]*=.*|disk_mode=$DISK_MODE|" \
+                "$PREFIX/etc/susanin.conf" 2>/dev/null || true
+        else
+            echo "disk_mode=$DISK_MODE" >> "$PREFIX/etc/susanin.conf"
+        fi
+        say "disk_mode=$DISK_MODE -> $PREFIX/etc/susanin.conf"
     else
-        echo "disk_mode=$DISK_MODE" >> "$PREFIX/etc/susanin.conf"
+        say "disk_mode оставлен как в конфиге ($(sed -n 's/^[[:space:]]*disk_mode=//p' "$PREFIX/etc/susanin.conf" | tail -n1)); --disk-mode, чтобы изменить"
     fi
-    say "disk_mode=$DISK_MODE -> $PREFIX/etc/susanin.conf"
 fi
 
 # --- P5: сторонний прокси на роутере (Teleproxy/MTProxy) --------------------
@@ -907,124 +930,45 @@ else
     say "CDN ranges kept (not overwritten; auto-updates from cdn_ranges_url)"
 fi
 
+# --- MIGRATION-BEGIN (тест tests/test-installer-sync.sh вырезает этот участок;
+# --- границы менять только вместе с тестом) -----------------------------------
 # Дописать отсутствующие дефолтные ключи: старый susanin.conf мог их не
-# содержать, и тогда `sed 's|^key=.*|...|'` молча ничего не делал (web_*,
-# egress_type, tproxy_port и т.п.). Ничего не перезаписываем — только добавляем.
-ensure_key() { # ensure_key <file> <key> <default>
-    _f="$1"; _k="$2"; _d="$3"
-    [ -f "$_f" ] || return 0
-    grep -q "^${_k}=" "$_f" 2>/dev/null || printf '%s=%s\n' "$_k" "$_d" >> "$_f"
-}
+# содержать, и тогда `sed 's|^key=.*|...|'` молча ничего не делал.
+#
+# Перечень делает агент (`config sync`): значения берутся там же, где живут
+# дефолты. Рукописный список из 98 строк отставал от кода ровно так же, как в
+# update.sh: в нём не было ru_guard*, tz, test_net_*, frozen_net_*, port_aware,
+# udp_min_op, synfail_*, ipset_batch и др., а media_ports дописывался прежним
+# опасным значением (80/443 уводили в VPN целые /24 хостингов).
+# SUSANIN_CONF передаём явно: при --prefix путь конфига другой, а у агента он
+# по умолчанию /opt/susanin/etc/susanin.conf.
 if [ -f "$PREFIX/etc/susanin.conf" ]; then
-    ensure_key "$PREFIX/etc/susanin.conf" web_enable 0
-    ensure_key "$PREFIX/etc/susanin.conf" web_listen ""
-    ensure_key "$PREFIX/etc/susanin.conf" web_port 8087
-    ensure_key "$PREFIX/etc/susanin.conf" web_token ""
-    ensure_key "$PREFIX/etc/susanin.conf" egress_type interface
-    ensure_key "$PREFIX/etc/susanin.conf" tproxy_port 12345
-    ensure_key "$PREFIX/etc/susanin.conf" discover_exclude "wdtt0,wdttraw0,tun0,tap0"
-    ensure_key "$PREFIX/etc/susanin.conf" fast_syn_min_op 2
-    ensure_key "$PREFIX/etc/susanin.conf" ok_max_entries 4096
-    ensure_key "$PREFIX/etc/susanin.conf" ok_evict_misses 3
-    ensure_key "$PREFIX/etc/susanin.conf" promo_per_min 120
-    ensure_key "$PREFIX/etc/susanin.conf" soft_state_interval 12
-    ensure_key "$PREFIX/etc/susanin.conf" learn_exclude_ports "22,23,53,135,137,138,139,445,500,554,853,1433,1723,3306,3389,4500,5432,5900,6379,7547,8567,9100,11211,27017"
-    ensure_key "$PREFIX/etc/susanin.conf" vpn_always_file /opt/susanin/etc/vpn_always.txt
-    ensure_key "$PREFIX/etc/susanin.conf" vpn_always_dns ""
-    ensure_key "$PREFIX/etc/susanin.conf" vpn_always_interval 300
-    ensure_key "$PREFIX/etc/susanin.conf" vpn_never_file /opt/susanin/etc/vpn_never.txt
-    ensure_key "$PREFIX/etc/susanin.conf" vpn_never_interval 300
-    ensure_key "$PREFIX/etc/susanin.conf" lan_server_interfaces ""
-    ensure_key "$PREFIX/etc/susanin.conf" dp_check_interval 15
-    ensure_key "$PREFIX/etc/susanin.conf" learn_min_op 10
-    ensure_key "$PREFIX/etc/susanin.conf" learn_min_bytes 2000
-    ensure_key "$PREFIX/etc/susanin.conf" confirm_min_bytes 512
-    ensure_key "$PREFIX/etc/susanin.conf" learn_strict 0
-    # Пресет порогов (strict|normal|aggressive); пусто = выключен.
-    ensure_key "$PREFIX/etc/susanin.conf" precision ""
-    ensure_key "$PREFIX/etc/susanin.conf" cdn_ranges_file /opt/susanin/etc/cdn_ranges.txt
-    ensure_key "$PREFIX/etc/susanin.conf" cdn_ranges_url https://www.cloudflare.com/ips-v4
-    ensure_key "$PREFIX/etc/susanin.conf" cdn_ranges_interval 86400
-    ensure_key "$PREFIX/etc/susanin.conf" cdn_prefix_learn 1
-    ensure_key "$PREFIX/etc/susanin.conf" cdn_prefix_ttl 3600
-    ensure_key "$PREFIX/etc/susanin.conf" cdn_prefix_max 24
-    ensure_key "$PREFIX/etc/susanin.conf" aggregate_confirm 2
-    ensure_key "$PREFIX/etc/susanin.conf" ipv6_block 1
-    ensure_key "$PREFIX/etc/susanin.conf" quic_block 1
-    ensure_key "$PREFIX/etc/susanin.conf" health_mode icmp
-    ensure_key "$PREFIX/etc/susanin.conf" health_tcp_port 443
-    # Остальные ключи, которые есть в веб-панели — чтобы поля не показывались
-    # как «нет в файле». Существующие значения НЕ меняются (ensure_key только
-    # дописывает отсутствующую строку).
-    ensure_key "$PREFIX/etc/susanin.conf" egress_interface nwg0
-    ensure_key "$PREFIX/etc/susanin.conf" egress_address 10.8.1.1
-    ensure_key "$PREFIX/etc/susanin.conf" lan_interfaces br0
-    ensure_key "$PREFIX/etc/susanin.conf" lan_subnets ""
-    ensure_key "$PREFIX/etc/susanin.conf" routing_table 100
-    ensure_key "$PREFIX/etc/susanin.conf" mark_test 0x10000000
-    ensure_key "$PREFIX/etc/susanin.conf" mark_ok 0x20000000
-    ensure_key "$PREFIX/etc/susanin.conf" mark_mask 0x30000000
-    ensure_key "$PREFIX/etc/susanin.conf" ip_rule_priority_start 2000
-    ensure_key "$PREFIX/etc/susanin.conf" fast_interval 1
-    ensure_key "$PREFIX/etc/susanin.conf" soft_interval 1
-    ensure_key "$PREFIX/etc/susanin.conf" judge_interval 1
-    ensure_key "$PREFIX/etc/susanin.conf" health_interval 5
-    ensure_key "$PREFIX/etc/susanin.conf" ok_ttl 21600
-    ensure_key "$PREFIX/etc/susanin.conf" ok_refresh_below 3
-    ensure_key "$PREFIX/etc/susanin.conf" test_ttl 1
-    ensure_key "$PREFIX/etc/susanin.conf" cooldown_ttl 5
-    ensure_key "$PREFIX/etc/susanin.conf" cooldown_ok_ttl 30
-    ensure_key "$PREFIX/etc/susanin.conf" watch_ttl 8
-    ensure_key "$PREFIX/etc/susanin.conf" watch_retry_below 4
-    ensure_key "$PREFIX/etc/susanin.conf" health_probe "1.1.1.1,8.8.8.8"
-    ensure_key "$PREFIX/etc/susanin.conf" udp_relay 0
-    ensure_key "$PREFIX/etc/susanin.conf" udp_relay_port 1081
-    ensure_key "$PREFIX/etc/susanin.conf" socks_addr 127.0.0.1
-    ensure_key "$PREFIX/etc/susanin.conf" socks_port 1080
-    ensure_key "$PREFIX/etc/susanin.conf" log_level info
-    ensure_key "$PREFIX/etc/susanin.conf" xray_loglevel warning
-    # 0.4.0-dev5: failback/watchdog/offload/dns-sniff/pin_reassert.
-    ensure_key "$PREFIX/etc/susanin.conf" egress_failback 1
-    ensure_key "$PREFIX/etc/susanin.conf" egress_failback_debounce 30
-    ensure_key "$PREFIX/etc/susanin.conf" egress_race 0
-    ensure_key "$PREFIX/etc/susanin.conf" xray_gogc 50
-    ensure_key "$PREFIX/etc/susanin.conf" xray_gomemlimit 64MiB
-    ensure_key "$PREFIX/etc/susanin.conf" xray_watchdog 1
-    ensure_key "$PREFIX/etc/susanin.conf" kernel_offload 0
-    ensure_key "$PREFIX/etc/susanin.conf" kernel_egress ""
-    ensure_key "$PREFIX/etc/susanin.conf" kernel_offload_max 24
-    ensure_key "$PREFIX/etc/susanin.conf" dns_sniff 0
-    ensure_key "$PREFIX/etc/susanin.conf" dns_sniff_ttl 300
-    ensure_key "$PREFIX/etc/susanin.conf" dns_sniff_iface ""
-    ensure_key "$PREFIX/etc/susanin.conf" dns_hijack 0
-    ensure_key "$PREFIX/etc/susanin.conf" dns_hijack_target ""
-    ensure_key "$PREFIX/etc/susanin.conf" vpn_always_cdn_prefix 0
-    ensure_key "$PREFIX/etc/susanin.conf" pin_reassert 1
-    ensure_key "$PREFIX/etc/susanin.conf" auto_direct 1
-    ensure_key "$PREFIX/etc/susanin.conf" direct_pref_ttl 3600
-    ensure_key "$PREFIX/etc/susanin.conf" media_enabled 0
-    ensure_key "$PREFIX/etc/susanin.conf" media_ports "80,443,554,1935,8080,8443"
-    ensure_key "$PREFIX/etc/susanin.conf" media_min_bytes 1048576
-    ensure_key "$PREFIX/etc/susanin.conf" media_ratio 8
-    ensure_key "$PREFIX/etc/susanin.conf" media_min_rate 150000
-    ensure_key "$PREFIX/etc/susanin.conf" media_min_age 12
-    ensure_key "$PREFIX/etc/susanin.conf" media_ttl 21600
-    ensure_key "$PREFIX/etc/susanin.conf" media_prefix_max 24
-    ensure_key "$PREFIX/etc/susanin.conf" mss_clamp 0
-    ensure_key "$PREFIX/etc/susanin.conf" mss_clamp_lan 0
-    ensure_key "$PREFIX/etc/susanin.conf" profile_failover 1
+    _sync_out=$(mktemp "${TMPDIR:-/tmp}/susanin-sync.XXXXXX" 2>/dev/null || echo "")
+    if [ -n "$_sync_out" ] &&
+       SUSANIN_CONF="$PREFIX/etc/susanin.conf" \
+       "$PREFIX/bin/susanin-agent" config sync >"$_sync_out" 2>/dev/null; then
+        say "конфиг: $(tr '\n' ' ' < "$_sync_out" 2>/dev/null)"
+    else
+        say "ВНИМАНИЕ: config sync не выполнился (старый бинарь?) — отсутствующие" \
+            "ключи не дописаны, проверьте $PREFIX/etc/susanin.conf вручную"
+    fi
+    [ -n "$_sync_out" ] && rm -f "$_sync_out"
 fi
 
 # --- миграция значений по умолчанию (0.4.0) ----------------------------------
 # promo_per_min: дефолт поднят 30 -> 120 (обучение быстрее). Меняем только если
 # в конфиге стоит прежний дефолт — своё значение пользователя не трогаем.
 if [ -f "$PREFIX/etc/susanin.conf" ]; then
-    _pp=$(sed -n 's/^promo_per_min=//p' "$PREFIX/etc/susanin.conf" 2>/dev/null | tail -n1)
+    _pp=$(sed -n 's/^[[:space:]]*promo_per_min[[:space:]]*=[[:space:]]*//p' \
+              "$PREFIX/etc/susanin.conf" 2>/dev/null | tail -n1)
     if [ "$_pp" = "30" ]; then
-        sed -i 's/^promo_per_min=.*/promo_per_min=120/' "$PREFIX/etc/susanin.conf" 2>/dev/null \
+        sed -i 's|^[[:space:]]*promo_per_min[[:space:]]*=.*|promo_per_min=120|' \
+            "$PREFIX/etc/susanin.conf" 2>/dev/null \
             && say "promo_per_min: 30 -> 120 (новый дефолт)"
     fi
 fi
+
+# --- MIGRATION-END -------------------------------------------------------------
 
 # Каталоги профилей маршрутизации: profiles (списки) и profiles.d (секции).
 mkdir -p "$PREFIX/etc/profiles" "$PREFIX/etc/profiles.d" 2>/dev/null || true

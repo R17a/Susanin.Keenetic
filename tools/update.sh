@@ -149,6 +149,13 @@ if [ "$VERSION" = latest ]; then
 else
     BASE="https://github.com/$REPO/releases/download/$VERSION"
 fi
+# Только те архитектуры, для которых CI собирает бинарник
+# (.github/workflows/release.yml). Проверка до загрузки, чтобы не показывать
+# «скачивание не удалось» там, где сборки для этой платформы просто нет.
+case "$ARCH" in
+    mipsel|mips|aarch64|armv7|x86_64) : ;;
+    *) die "для архитектуры '$ARCH' готовых сборок нет (есть: mipsel, mips, aarch64, armv7, x86_64); обновите вручную: sh tools/update.sh --arch mipsel" ;;
+esac
 ASSET="susanin-keenetic-deploy-$ARCH.tar.gz"
 TMP=$(mktemp -d /tmp/susanin-upd.XXXXXX)
 
@@ -285,6 +292,8 @@ fi
 rm -f "$PREFIX/etc/vpn_always.txt".bak-[0-9]* \
       "$PREFIX/etc/vpn_never.txt".bak-[0-9]* 2>/dev/null || true
 
+# --- MIGRATION-BEGIN (тест tests/test-installer-sync.sh вырезает этот участок;
+# --- границы менять только вместе с тестом) -----------------------------------
 # Дописать отсутствующие дефолтные ключи (старый конфиг мог их не содержать).
 # Перечень ключей и их значения берёт сам агент (`config sync`): рукописный
 # список в этом скрипте неминуемо отстаёт от кода — в нём не было ru_guard*,
@@ -293,22 +302,35 @@ rm -f "$PREFIX/etc/vpn_always.txt".bak-[0-9]* \
 # что обновлённый роутер получал устаревшие настройки молча. Существующие
 # строки не перезаписываются: значение пользователя важнее дефолта.
 if [ -f "$PREFIX/etc/susanin.conf" ]; then
-    if "$PREFIX/bin/susanin-agent" config sync >/tmp/susanin-sync.txt 2>/dev/null; then
-        say "конфиг: $(cat /tmp/susanin-sync.txt 2>/dev/null)"
+    # Путь конфига передаём явно: у агента он по умолчанию /opt/susanin, а
+    # обновление может идти в другой --prefix — иначе sync правил бы не тот
+    # файл, что обновляется. Временное имя уникально: две сессии обновления не
+    # должны затирать вывод друг друга.
+    _sync_out=$(mktemp "${TMPDIR:-/tmp}/susanin-sync.XXXXXX" 2>/dev/null || echo "")
+    if [ -n "$_sync_out" ] &&
+       SUSANIN_CONF="$PREFIX/etc/susanin.conf" \
+           "$PREFIX/bin/susanin-agent" config sync >"$_sync_out" 2>/dev/null; then
+        say "конфиг: $(tr '\n' ' ' < "$_sync_out" 2>/dev/null)"
     else
         say "ВНИМАНИЕ: config sync не выполнился (старый бинарник?) —" \
             "отсутствующие ключи не дописаны, проверьте susanin.conf вручную"
     fi
-    rm -f /tmp/susanin-sync.txt
+    [ -n "$_sync_out" ] && rm -f "$_sync_out"
 
     # Миграция значений по умолчанию (0.4.0): promo_per_min 30 -> 120.
     # Меняем только прежний дефолт; своё значение пользователя не трогаем.
-    _pp=$(sed -n 's/^promo_per_min=//p' "$PREFIX/etc/susanin.conf" 2>/dev/null | tail -n1)
+    # Форма с пробелами («promo_per_min = 30») читается агентом как обычный
+    # ключ, поэтому и миграция должна её видеть.
+    _pp=$(sed -n 's/^[[:space:]]*promo_per_min[[:space:]]*=[[:space:]]*//p' \
+              "$PREFIX/etc/susanin.conf" 2>/dev/null | tail -n1)
     if [ "$_pp" = "30" ]; then
-        sed -i 's/^promo_per_min=.*/promo_per_min=120/' "$PREFIX/etc/susanin.conf" 2>/dev/null \
+        sed -i 's|^[[:space:]]*promo_per_min[[:space:]]*=.*|promo_per_min=120|' \
+            "$PREFIX/etc/susanin.conf" 2>/dev/null \
             && say "promo_per_min: 30 -> 120 (новый дефолт)"
     fi
 fi
+
+# --- MIGRATION-END -------------------------------------------------------------
 
 # Данные CDN (cdn_ranges.txt): ставим, если файла ещё нет; существующий не трогаем.
 if [ -f "$DIR/cdn_ranges.txt" ] && [ ! -f "$PREFIX/etc/cdn_ranges.txt" ]; then

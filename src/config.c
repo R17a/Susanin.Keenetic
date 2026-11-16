@@ -1819,11 +1819,17 @@ void config_print(const susanin_config *c)
     printf("learn_min_bytes=%d\n", c->learn_min_bytes);
     printf("confirm_min_bytes=%d\n", c->confirm_min_bytes);
     printf("learn_strict=%d\n", c->learn_strict);
-    printf("precision=%s%s\n", c->precision[0] ? c->precision : "(выкл)",
-           !c->precision[0] ? "" :
-           (precision_known(c->precision)
-                ? "  (пресет применён к порогам, которых нет в конфиге)"
-                : "  (НЕИЗВЕСТНЫЙ пресет — игнорируется)"));
+    /* Значение — сырое, пояснение отдельной строкой-комментарием. Вывод
+     * `config show` копируют в susanin.conf, а прежняя приписка внутри значения
+     * («precision=(выкл)») при обратной загрузке давала неизвестный пресет и
+     * предупреждение на каждом старте. */
+    printf("precision=%s\n", c->precision);
+    if (!c->precision[0])
+        printf("# precision не задан (строгие значения: strict|normal|aggressive)\n");
+    else if (!precision_known(c->precision))
+        printf("# ВНИМАНИЕ: пресет «%s» неизвестен — игнорируется\n", c->precision);
+    else
+        printf("# пресет применён только к порогам, которых нет в конфиге\n");
     printf("port_aware=%d%s\n", c->port_aware,
            c->port_aware ? "  (экспериментально: наборы hash:ip,port, решения по паре адрес+порт)" : "");
     printf("cdn_ranges_file=%s\n", c->cdn_ranges_file);

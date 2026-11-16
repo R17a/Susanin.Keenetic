@@ -36,6 +36,10 @@ $(TARGET): $(OBJS)
 # теперь общая, включая тестовые сборки, которые линкуют те же объектники.
 HDRS = $(wildcard src/*.h)
 $(OBJS): $(HDRS)
+# Тестовые бинари — тоже: они линкуют те же объектники и включают те же
+# заголовки, а правило выше покрывает только src/*.o. Без этого, например,
+# test_release мог остаться собранным со старым version.h.
+$(TESTS): $(HDRS)
 
 # Тесты (хост-компилятор; в кросс-сборку и поставку не входят).
 test: $(TESTS)
@@ -55,6 +59,7 @@ test: $(TESTS)
 	./tests/test_web_token
 	./tests/test_release
 	sh tests/test-egress-failover.sh
+	sh tests/test-installer-sync.sh
 
 tests/test_state: tests/test_state.c src/state.c src/state.h
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_state.c src/state.c
