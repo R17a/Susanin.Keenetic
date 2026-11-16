@@ -58,9 +58,18 @@ int cdn_load(const susanin_config *c)
             if (!slash)
                 continue;
             *slash = '\0';
-            pre = atoi(slash + 1);
-            if (pre < 0 || pre > 32)
-                continue;
+            {
+                /* Только явные цифры. atoi() дал бы 0 на «/abc» или на пустом
+                 * префиксе, а 0 — это 0.0.0.0/0: запись, совпадающая с любым
+                 * адресом. Файл загружается по cdn_ranges_url, то есть такой
+                 * match-all пришёл бы извне и агрегировал в VPN весь интернет. */
+                char *ep = NULL;
+                if (!slash[1])
+                    continue;
+                pre = (int)strtol(slash + 1, &ep, 10);
+                if (!ep || *ep || pre < 0 || pre > 32)
+                    continue;
+            }
             if (inet_pton(AF_INET, p, &a) != 1)
                 continue;
             g[n].net = ntohl(a.s_addr) & pre_mask(pre);
@@ -198,19 +207,29 @@ int cdn_refresh(const susanin_config *c)
 
 int cdn_poll(const susanin_config *c)
 {
-    int st;
+    int st = 0;
     pid_t w;
+
     if (cdn_pid <= 0)
         return 0;
     w = waitpid(cdn_pid, &st, WNOHANG);
     if (w == 0) {
         if (time(NULL) - cdn_started > 120) {   /* завис — не ждём вечно */
+            st = -1;
             kill(cdn_pid, SIGKILL);
-            waitpid(cdn_pid, &st, 0);
+            /* Дожидаемся обязательно: брошенный ребёнок — это зомби, а если
+             * waitpid не вернуть статус, ниже читалось бы чужое значение. */
+            if (waitpid(cdn_pid, &st, 0) < 0)
+                st = -1;
             cdn_pid = 0;
             slogf(SL_WARN, "CDN: скачивание не завершилось за 2 минуты — процесс убит");
         }
         return 0;
+    }
+    if (w != cdn_pid) {
+        /* -1 (ECHILD и т.п.): st не заполнялся, интерпретировать его нельзя. */
+        cdn_pid = 0;
+        return -1;
     }
     cdn_pid = 0;
     if (WIFEXITED(st) && WEXITSTATUS(st) == 0) {

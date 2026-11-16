@@ -931,33 +931,29 @@ int ops_config_json(const susanin_config *cfg, const char *conf_path, char *buf,
     fp = conf_path ? fopen(conf_path, "r") : NULL;
     if (fp) {
         while (fgets(line, sizeof(line), fp)) {
-            char *eq, *p, *q;
-            size_t l;
-            l = strlen(line);
-            while (l > 0 && (line[l - 1] == '\n' || line[l - 1] == '\r' ||
-                             line[l - 1] == ' ' || line[l - 1] == '\t'))
-                line[--l] = '\0';
-            p = line;
-            while (*p == ' ' || *p == '\t')
-                p++;
-            if (*p == '\0' || *p == '#')
+            char kk[96], ke[256], ve[2048];
+            char *q = NULL;
+            const char *k = kk, *v = "";
+
+            /* Разбор общий с агентом (config_line_split). Собственная
+             * укороченная версия здесь оставляла пробел в имени ключа, и для
+             * строки «web_token = SECRET» сравнение с "web_token" не срабатывало
+             * — секрет ушел бы в JSON панели открытым текстом. */
+            if (config_line_split(line, kk, sizeof(kk), &q) != 0)
                 continue;
-            eq = strchr(p, '=');
-            if (!eq)
-                continue;
-            *eq = '\0';
-            q = eq + 1;
-            {
-                char ke[256], ve[2048];
-                const char *k = p;
-                const char *v = q;
-                if (!strcmp(k, "web_token"))
-                    v = "";  /* секрет не отдаём */
-                json_str(ke, sizeof(ke), k);
-                json_str(ve, sizeof(ve), v);
-                japp(buf, n, &used, "%s\"%s\":\"%s\"", first ? "" : ",", ke, ve);
-                first = 0;
+            if (q) {
+                size_t l;
+                v = q;
+                l = strlen(v);
+                while (l && (v[l - 1] == '\n' || v[l - 1] == '\r'))
+                    ((char *)v)[--l] = '\0';
             }
+            if (!strcmp(k, "web_token"))
+                v = "";  /* секрет не отдаём */
+            json_str(ke, sizeof(ke), k);
+            json_str(ve, sizeof(ve), v);
+            japp(buf, n, &used, "%s\"%s\":\"%s\"", first ? "" : ",", ke, ve);
+            first = 0;
         }
         fclose(fp);
     }

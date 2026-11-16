@@ -267,6 +267,7 @@ int state_remove(state_set *st, const char *addr)
     if (w != st->n) {
         st->n = w;
         idx_rechain(st);    /* после уплотнения цепочки указывают на старых слотов */
+        return 1;           /* запись была и её сняли */
     }
     return 0;
 }
@@ -306,8 +307,19 @@ int state_save(const char *path, const susanin_state *s)
     set_save(fp, "net tcp", &s->net);
     set_save(fp, "direct tcp", &s->direct);
     set_save(fp, "never tcp", &s->never);
-    fclose(fp);
-    rename(tmp, path);
+    /* Ошибки закрытия и переименования значимы: без них «сохранение удалось»
+     * возвращалось и при непоставившемся rename (тогда рабочий state остаётся
+     * от прошлого запуска, а временный файл висит в var), и при полном
+     * носителе. */
+    {
+        int werr = (fflush(fp) != 0) || ferror(fp);
+        int cerr = (fclose(fp) != 0);
+
+        if (werr || cerr || rename(tmp, path) != 0) {
+            remove(tmp);
+            return -1;
+        }
+    }
     return 0;
 }
 

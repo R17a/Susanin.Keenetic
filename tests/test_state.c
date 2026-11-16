@@ -161,6 +161,20 @@ int main(void)
         state_free(&m);
     }
 
+    printf("=== state_remove возвращает факт снятия ===\n");
+    {
+        /* ops.c («susanin why/reset») считает снятые записи по возврату
+         * функции; прежде она всегда возвращала 0, и счётчик «removed» был
+         * нулём даже когда записи реально удалялись. */
+        char rk[64];
+
+        state_key(rk, sizeof(rk), "203.0.113.77", 0);
+        state_remove(&s.ok_tcp, rk);                    /* на случайного мусора */
+        state_add(&s.ok_tcp, rk, time(NULL), 600, 0);
+        CHECK(state_remove(&s.ok_tcp, rk) == 1, "существующая запись -> 1");
+        CHECK(state_remove(&s.ok_tcp, rk) == 0, "повторное снятие -> 0");
+    }
+
     state_free(&s);
     remove(path);
     printf("\n%s\n", failures ? "ЕСТЬ ОШИБКИ" : "все проверки пройдены");

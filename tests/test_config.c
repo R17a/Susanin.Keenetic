@@ -324,6 +324,22 @@ int main(void)
         config_load(write_cfg("learn_min_op=5x\n"), &cfg);
         CHECK(cfg.n_bad_values >= 1, "мусорный суффикс помечен");
 
+        /* Шестнадцатеричная форма с буквами: маски fwmark записываются именно
+         * так. Проверка формы принимала только цифры и тем самым обнуляла
+         * mark_mask — заявленная поддержка hex не работала. */
+        config_load(write_cfg("mark_mask=0xffff0000\nmark_ok=0xdeadbeef\n"), &cfg);
+        CHECK(cfg.mark_mask == 0xffff0000UL && cfg.mark_ok == 0xdeadbeefUL,
+              "hex с буквами принят (mark_mask/mark_ok)");
+        CHECK(cfg.n_bad_values == 0, "и не помечен как отклонённый");
+        /* Для длительности hex-формы не существует: разбор вернул бы 0, а 0 =
+         * «не истекает». Такое должно быть замечено, а не применено молча. */
+        config_load(write_cfg("ok_ttl=0x10\n"), &cfg);
+        CHECK(cfg.n_bad_values == 1 && !strcmp(cfg.bad_values[0], "ok_ttl"),
+              "hex в длительности отклонён, а не стал «бессрочно»");
+        /* Переполнение: на 32-битном MIPS strtoul возвращает ULONG_MAX. */
+        config_load(write_cfg("mark_ok=0xffffffffffffffff\n"), &cfg);
+        CHECK(cfg.n_bad_values == 1, "переполнение значения метки помечено");
+
         /* Ведущий ноль — это десятичная система, а не восьмеричная. */
         config_load(write_cfg("routing_table=0100\n"), &cfg);
         CHECK(cfg.routing_table == 100, "«0100» прочитано как 100, а не как 64");

@@ -569,11 +569,21 @@ static void json_err(int fd, const char *msg)
     char b[512], esc[256];
     const char *s = msg ? msg : "";
     size_t j = 0;
-    for (; *s && j + 1 < sizeof(esc); s++) {
-        if (*s == '"' || *s == '\\')
-            esc[j++] = '\\';
+    /* Экранирование: побайтовая проверка «j + 1 <» не учитывала, что кавычка
+     * пишет ДВА байта, и на позиции 254 завершающий NUL попадал за конец
+     * массива. Теперь каждый путь проверяет нужный запас. */
+    for (; *s; s++) {
         if (*s == '\n')
             continue;
+        if (*s == '"' || *s == '\\') {
+            if (j + 2 >= sizeof(esc))
+                break;
+            esc[j++] = '\\';
+            esc[j++] = *s;
+            continue;
+        }
+        if (j + 1 >= sizeof(esc))
+            break;
         esc[j++] = *s;
     }
     esc[j] = '\0';

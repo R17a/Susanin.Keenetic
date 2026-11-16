@@ -1302,6 +1302,13 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         if (f->ctmark != 0 || ours(f, cfg)) continue;
         if (!from_lan4(cfg, f->src4)) continue;
         if (is_private4(f->dst4)) continue;
+        /* Тот же фильтр, что в clr_fast, и на том же месте. Без него
+         * learn_exclude_ports (DoT 853, IPsec 500/4500, скан-шум) действовал
+         * только на «быстрые» признаки: поток, дошедший до ESTABLISHED и
+         * зависший, всё равно уезжал в test/VPN. Проверка стоит ДО
+         * media_aggregate — иначе агрегация /24 успевала пинить префикс по
+         * потоку на заведомо исключаемом порту. */
+        if (port_excluded(cfg, f->dport) || port_excluded(cfg, f->sport)) continue;
 
         /* M1: media (IPTV/видео) — детект по форме потока, агрегация в VPN. */
         if ((f->l4proto == 6 && strcmp(f->tcp_state, "ESTABLISHED") == 0) ||

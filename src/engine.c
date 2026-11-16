@@ -143,6 +143,11 @@ static void clients_audit(const susanin_config *cfg, const ct_flow *flows, int n
     int tot[32], vpn[32], dir[32];
     int cnt = 0, i, j, used = 0;
     FILE *f;
+
+    /* Пустой список — это тоже результат: ниже body сравнивается с прошлым
+     * значением через strcmp, и без инициализации он читал мусор стека
+     * (а при cnt == 0 цикл записи ни разу не выполнялся). */
+    body[0] = '\0';
     if (now - last < 15)
         return;
     last = now;
@@ -1754,7 +1759,12 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                             : 300;
             if (every > 0 && now - last_save >= every) {
                 last_save = now;
-                state_save(state_path, &st);
+                /* Без этого «обучение не переживает рестарт» выглядело бы как
+                 * поломка логики: state просто не записан (полный носитель,
+                 * севшая флешка, EBUSY). */
+                if (state_save(state_path, &st) != 0)
+                    slogf(SL_WARN, "state: сохранить %s не удалось — после "
+                          "рестарта обучения начнётся с нуля", state_path);
             }
         }
 
@@ -2090,7 +2100,8 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     probe_job_stop();
     udp_relay_stop();
     dns_sniff_stop();
-    state_save(state_path, &st);
+    if (state_save(state_path, &st) != 0)
+        slogf(SL_WARN, "state: сохранить %s при остановке не удалось", state_path);
     slogf(SL_INFO, "engine stopped");
     va_free(va);
     vn_free(nv);

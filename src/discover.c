@@ -128,8 +128,14 @@ static int list_default_devs(char names[][64], int max)
         return 0;
     }
     while (fgets(line, sizeof(line), fp) && n < max) {
-        char iface[64], dest[32], flags[32];
-        if (sscanf(line, "%63s %31s %31s", iface, dest, flags) != 3)
+        char iface[64], dest[32], gw[32], flags[32];
+
+        /* Колонки /proc/net/route: Iface Destination Gateway Flags ...
+         * Ранее читались три строки в «flags», то есть в проверку RTF_UP
+         * попадал адрес шлюза: у типовых частных сетей он чётный, бит 0
+         * всегда сброшен, и список устройств default-маршрута был пустым
+         * ВСЕГДА — автовыбор egress по маршруту не работал. */
+        if (sscanf(line, "%63s %31s %31s %31s", iface, dest, gw, flags) != 4)
             continue;
         if (strcmp(dest, "00000000") != 0)
             continue;

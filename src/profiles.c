@@ -77,8 +77,18 @@ static void prof_load(prof_cache *pc, const char *path)
             continue;
         slash = strchr(p, '/');
         if (slash) {
+            char *ep = NULL;
+
             *slash = '\0';
-            bits = atoi(slash + 1);
+            /* atoi() возвращает 0 и на «10.0.0.0/», и на «10.0.0.0/abc».
+             * 0 бит — это 0.0.0.0/0, то есть запись, совпадающая с ЛЮБЫМ
+             * адресом: одна опечатка в profileN_list молча уводила весь
+             * подтверждённый трафик в этот профиль. */
+            if (!slash[1])
+                continue;
+            bits = (int)strtol(slash + 1, &ep, 10);
+            if (!ep || *ep || bits < 0 || bits > 32)
+                continue;
         } else {
             bits = 32;
         }

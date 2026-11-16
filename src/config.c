@@ -341,7 +341,7 @@ static void apply_precision(susanin_config *c, unsigned seen)
  * читает: C берёт последнюю строку, datapath.sh — первую.
  * 0 = строка — ключ; *val указывает на значение (обрезать перевод строки
  * нужно вызывающему); комментарии и пустые строки дают -1. */
-static int cfg_split_line(const char *line, char *key, size_t kn, char **val)
+int config_line_split(const char *line, char *key, size_t kn, char **val)
 {
     char *p = (char *)line;
     size_t i = 0;
@@ -424,14 +424,26 @@ static int cfg_num_shape(susanin_config *c, const char *key, const char *val)
         cfg_note_bad_value(c, key);
         return 0;
     }
-    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X'))
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        /* Шестнадцатеричная форма легальна и используется (маски fwmark,
+         * метки профилей): прежняя проверка принимала только цифры и тем самым
+         * объявляла «mark_mask=0xffff0000» мусором, обнуляя маску меток. */
         p += 2;
-    if (!*p) {
-        cfg_note_bad_value(c, key);     /* одинокий «0x» */
-        return 0;
+        if (!*p) {
+            cfg_note_bad_value(c, key);     /* одинокий «0x» */
+            return 0;
+        }
+        while ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') ||
+               (*p >= 'A' && *p <= 'F'))
+            p++;
+    } else {
+        if (!*p) {
+            cfg_note_bad_value(c, key);
+            return 0;
+        }
+        while (*p >= '0' && *p <= '9')
+            p++;
     }
-    while (*p >= '0' && *p <= '9')
-        p++;
     if (*p)
         cfg_note_bad_value(c, key);     /* «5x», «12 сек» — прежний разбор молча
                                          * резал хвост и возвращал 5 и 12 */
@@ -449,8 +461,13 @@ static int cfg_dur_shape(susanin_config *c, const char *key, const char *val)
         cfg_note_bad_value(c, key);
         return 0;
     }
-    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X'))
-        p += 2;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        /* Для длительности шестнадцатеричной формы не существует: parse_dur
+         * читает десятичное число и на «0x10» вернул бы 0, что означает
+         * «не истекает». Молчать об этом нельзя. */
+        cfg_note_bad_value(c, key);
+        return 0;
+    }
     if (!*p) {
         cfg_note_bad_value(c, key);
         return 0;
@@ -473,6 +490,7 @@ static long cfg_num(susanin_config *c, const char *key, const char *val)
 
     if (!cfg_num_shape(c, key, val))
         return 0;
+    errno = 0;
     /* База по форме, а не 0: «0100» обязано означать 100. */
     v = strtol(val, &end,
                (val[0] == '0' && (val[1] == 'x' || val[1] == 'X')) ? 16 : 10);
@@ -480,8 +498,9 @@ static long cfg_num(susanin_config *c, const char *key, const char *val)
         return 0;
     /* Поля конфига — int; значение вне диапазона дало бы wrap-around вплоть до
      * отрицательного, то есть ровно ту семантику, которую проверка конфига и
-     * обещает не допускать. */
-    if (v > 2147483647L || v < -2147483648L) {
+     * обещает не допускать. На 32-битном MIPS переполнение выглядит как
+     * LONG_MAX, поэтому проверяем и ERANGE, а не только границы. */
+    if (errno == ERANGE || v > 2147483647L || v < -2147483648L) {
         cfg_note_bad_value(c, key);
         return 0;
     }
@@ -495,10 +514,21 @@ static unsigned long cfg_unum(susanin_config *c, const char *key, const char *va
 
     if (!cfg_num_shape(c, key, val))
         return 0;
+    errno = 0;
     v = strtoul(val, &end,
                 (val[0] == '0' && (val[1] == 'x' || val[1] == 'X')) ? 16 : 10);
     if (end == val)
         return 0;
+    /* Переполнение: strtoul возвращает ULONG_MAX и ставит ERANGE. Для маски
+     * fwmark значение «примерно бесконечность» хуже нуля, поэтому помечаем.
+     * Дополнительно ограничиваем 32 битами: fwmark в Linux — u32, и на
+     * 64-битной машине ERANGE не сработал бы вовсе (значение влезает в
+     * unsigned long), тогда как на MIPS сработал — проверка не должна зависеть
+     * от разрядности сборки. */
+    if (errno == ERANGE || v > 0xffffffffUL) {
+        cfg_note_bad_value(c, key);
+        return 0;
+    }
     return v;
 }
 
@@ -531,7 +561,7 @@ int config_load(const char *path, susanin_config *c)
         char key[64];
         char *val;
 
-        if (cfg_split_line(line, key, sizeof(key), &val) != 0)
+        if (config_line_split(line, key, sizeof(key), &val) != 0)
             continue;
         {
             char *q = val;
@@ -1256,8 +1286,16 @@ int config_save(const char *path, const susanin_config *c)
     /* Ошибка всплывает именно на fclose: буферы ещё не записаны на носитель.
      * Без проверки полный диск давал бы «успех», а setup уже успевал
      * обнулить рабочий конфиг (fopen "w") — то есть терял его молча. */
-    if (fflush(fp) != 0 || ferror(fp) || fclose(fp) != 0)
-        return -1;
+    /* fclose — безусловно: в записи «a || b || fclose()» короткое замыкание
+     * оставляло дескриптор открытым ровно в том случае, ради которого проверка
+     * и добавлена (диск полон, fflush падает). */
+    {
+        int werr = (fflush(fp) != 0) || ferror(fp);
+        int cerr = (fclose(fp) != 0);
+
+        if (werr || cerr)
+            return -1;
+    }
     return 0;
 }
 
@@ -1314,7 +1352,7 @@ int config_file_set(const char *path, const char *key, const char *val, int allo
          * «key = value» здесь не узнавалась, и вместо правки появлялась
          * вторая строка с тем же ключом. Заодно запись нормализуется к
          * канонической форме «key=value». */
-        if (cfg_split_line(line, k2, sizeof(k2), &v2) == 0 &&
+        if (config_line_split(line, k2, sizeof(k2), &v2) == 0 &&
             !strcmp(k2, key)) {
             fprintf(out, "%s=%s\n", key, val);
             found = 1;
@@ -1347,11 +1385,11 @@ int config_file_set(const char *path, const char *key, const char *val, int allo
 }
 
 /* Строка вида "key=" — вернуть имя ключа. Реализовано тем же разбором, что и
- * чтение конфига (cfg_split_line): именно расхождение этих двух мест теряло
+ * чтение конфига (config_line_split): именно расхождение этих двух мест теряло
  * значения в форме «key = value». */
 static int cfg_line_key(const char *line, char *out, size_t n)
 {
-    return cfg_split_line(line, out, n, NULL);
+    return config_line_split(line, out, n, NULL);
 }
 
 /* Ключи, которые задаёт пресет precision (см. apply_precision и биты PREC_*).

@@ -13,7 +13,7 @@ SRCS = src/main.c src/config.c src/discover.c src/conntrack.c src/state.c \
 OBJS = $(SRCS:.c=.o)
 
 TARGET = susanin-agent
-TESTS = tests/test_conntrack tests/test_config tests/test_ops tests/test_web_list tests/test_web_choices tests/test_state tests/test_backend_value tests/test_backend_lock tests/test_classifier_key tests/test_classifier_media tests/test_classifier_synfail tests/test_config_sync tests/test_dns_sniff_stats tests/test_web_token tests/test_release
+TESTS = tests/test_conntrack tests/test_config tests/test_ops tests/test_web_list tests/test_web_choices tests/test_state tests/test_backend_value tests/test_backend_lock tests/test_classifier_key tests/test_classifier_media tests/test_classifier_synfail tests/test_config_sync tests/test_dns_sniff_stats tests/test_socks_timeout tests/test_web_token tests/test_release
 SAMPLES = testdata/nf_conntrack.samples
 # Объекты для тестов, которые включают .c-файл в свой TU (тогда его .o линковать нельзя).
 TEST_OBJS = $(filter-out src/main.o,$(OBJS))
@@ -56,6 +56,7 @@ test: $(TESTS)
 	./tests/test_classifier_synfail
 	./tests/test_config_sync
 	./tests/test_dns_sniff_stats
+	./tests/test_socks_timeout
 	./tests/test_web_token
 	./tests/test_release
 	sh tests/test-egress-failover.sh
@@ -98,6 +99,11 @@ tests/test_config_sync: tests/test_config_sync.c src/config.c src/config.h src/l
 # поэтому его .o из линковки исключаем; в TU нет ни ipset, ни iptables (g_cfg=NULL).
 tests/test_dns_sniff_stats: tests/test_dns_sniff_stats.c src/dns_sniff.c src/dns_sniff.h $(TEST_OBJS)
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_dns_sniff_stats.c $(filter-out src/dns_sniff.o,$(TEST_OBJS))
+
+# Таймауты SOCKS: udp_relay.c включается в TU (static socks_associate), его .o
+# из линковки исключаем.
+tests/test_socks_timeout: tests/test_socks_timeout.c src/udp_relay.c src/udp_relay.h $(TEST_OBJS)
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_socks_timeout.c $(filter-out src/udp_relay.o,$(TEST_OBJS))
 
 tests/test_conntrack: tests/test_conntrack.c src/conntrack.c src/conntrack.h
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_conntrack.c src/conntrack.c

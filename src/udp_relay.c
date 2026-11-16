@@ -20,6 +20,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
@@ -28,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -136,6 +138,53 @@ static int rsock_get(const struct sockaddr_in *srv)
     }
 }
 
+/* connect() на блокирующем сокете не ограничивается ни SO_SNDTIMEO, ни
+ * SO_RCVTIMEO — только non-blocking + poll. Без этого воркер (он ОДИН) висел
+ * в TCP ровно столько, сколько соизволит отвечать локальный SOCKS: Xray жив,
+ * на запрос не отвечает — и весь UDP дома (включая DNS клиентов) стоит,
+ * освободить нечем кроме смерти процесса. */
+#define SOCKS_TIMEOUT_MS 5000
+
+static int socks_connect_timeout(int fd, const struct sockaddr *sa, socklen_t sl,
+                                 int ms)
+{
+    int fl = fcntl(fd, F_GETFL, 0), err = 0;
+    socklen_t el = sizeof(err);
+    struct pollfd pf;
+
+    if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0)
+        return -1;
+    if (connect(fd, sa, sl) != 0) {
+        /* errno значим ТОЛЬКО когда connect вернул ошибку: проверять его после
+         * успеха — читать мусор прошлого вызова. */
+        if (errno != EINPROGRESS) {
+            fcntl(fd, F_SETFL, fl);
+            return -1;
+        }
+        pf.fd = fd;
+        pf.events = POLLOUT;
+        pf.revents = 0;
+        if (poll(&pf, 1, ms) <= 0 ||
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &el) != 0 || err != 0) {
+            fcntl(fd, F_SETFL, fl);
+            return -1;
+        }
+    }
+    if (fcntl(fd, F_SETFL, fl) < 0)
+        return -1;
+    /* Чтение и запись тоже с границей: «соединился, но молчит» — тот же
+     * сценарий, только на полшага позже. */
+    {
+        struct timeval tv;
+
+        tv.tv_sec = ms / 1000;
+        tv.tv_usec = (ms % 1000) * 1000;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    }
+    return 0;
+}
+
 /* SOCKS5 UDP ASSOCIATE. Возвращает control-fd (держать открытым) и адрес
  * релея в *relay. */
 static int socks_associate(const char *host, int port, struct sockaddr_in *relay)
@@ -152,7 +201,8 @@ static int socks_associate(const char *host, int port, struct sockaddr_in *relay
     sa.sin_family = AF_INET;
     sa.sin_port = htons((uint16_t)port);
     if (inet_pton(AF_INET, host, &sa.sin_addr) != 1) { close(fd); return -1; }
-    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) { close(fd); return -1; }
+    if (socks_connect_timeout(fd, (struct sockaddr *)&sa, sizeof(sa),
+                              SOCKS_TIMEOUT_MS) != 0) { close(fd); return -1; }
 
     b[0] = 5; b[1] = 1; b[2] = 0;          /* VER, NMETHODS=1, noauth */
     if (write(fd, b, 3) != 3) { close(fd); return -1; }
@@ -163,7 +213,10 @@ static int socks_associate(const char *host, int port, struct sockaddr_in *relay
     memset(b + 4, 0, 4); b[8] = 0; b[9] = 0;
     if (write(fd, b, 10) != 10) { close(fd); return -1; }
     n = read(fd, b, 10);
-    if (n < 10 || b[1] != 0 || b[3] != 1) { close(fd); return -1; }
+    /* Версию в ответе проверяем обязательно: без этого чужой/обрезанный ответ
+     * (например, HTTP-порт вместо SOCKS) давал «успешный» ASSOCIATE с
+     * мусорным адресом релея. */
+    if (n < 10 || b[0] != 5 || b[1] != 0 || b[3] != 1) { close(fd); return -1; }
 
     memset(relay, 0, sizeof(*relay));
     relay->sin_family = AF_INET;

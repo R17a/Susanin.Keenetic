@@ -168,6 +168,53 @@ int main(int argc, char **argv)
         }
     }
 
+    printf("\n=== запись длиной ровно в буфер ===\n");
+    {
+        /* Прежняя детекция («нет \n и не feof») считала обрезком и строку
+         * длиной ровно CT_LINE_MAX-1, где не влез лишь перевод строки:
+         * корректный поток терялся и ещё и попадал в счётчик обрезанных. */
+        char rec[CT_LINE_MAX + 8];
+        char pad[CT_LINE_MAX + 8];
+        const char *base =
+            "ipv4     2 tcp      6 431995 ESTABLISHED src=192.0.2.7 "
+            "dst=192.0.2.51 sport=51236 dport=80 packets=12 bytes=4096 "
+            "src=192.0.2.51 dst=192.0.2.7 sport=80 dport=51236 packets=8 "
+            "bytes=2048 [ASSURED] mark=0 use=1 pad=";
+        char p3l[160];
+        FILE *f3;
+        unsigned long ob3 = conntrack_overlong();
+        int got3;
+
+        memset(pad, 'z', sizeof(pad) - 1);
+        pad[CT_LINE_MAX - 1 - strlen(base)] = '\0';
+        snprintf(rec, sizeof(rec), "%s%s\n", base, pad);
+        if (strlen(rec) - 1 != (size_t)(CT_LINE_MAX - 1)) {
+            printf("FAIL  не удалось собрать строку длиной %d (получилось %zu)\n",
+                   CT_LINE_MAX - 1, strlen(rec) - 1);
+            bad++;
+        } else {
+            snprintf(p3l, sizeof(p3l), "/tmp/susanin-ct-exact-%d.txt", (int)getpid());
+            f3 = fopen(p3l, "w");
+            fputs(rec, f3);
+            fclose(f3);
+            g_seen_n = 0;
+            got3 = conntrack_scan(p3l, collect_cb, NULL);
+            if (got3 == 1)
+                printf("ok  запись длиной ровно в буфер разобрана\n");
+            else {
+                printf("FAIL  разобрано %d, ожидалось 1\n", got3);
+                bad++;
+            }
+            if (conntrack_overlong() == ob3)
+                printf("ok  и не засчитана в обрезанные\n");
+            else {
+                printf("FAIL  счётчик обрезанных вырос ложно\n");
+                bad++;
+            }
+            remove(p3l);
+        }
+    }
+
     printf("\nстрок проверено: %d, ошибок: %d\n", n, bad);
     return bad ? 1 : 0;
 }

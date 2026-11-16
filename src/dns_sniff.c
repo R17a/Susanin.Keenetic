@@ -8,6 +8,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
 #include <net/if.h>
@@ -67,6 +68,8 @@ static unsigned g_list_gen = 1;
 
 static void reconcile_entry(const susanin_config *cfg, dns_entry *e, int i,
                             time_t now);
+static int other_entry_matches(time_t now, int skip, int slot,
+                               const susanin_config *cfg, const char *ip);
 
 static unsigned long dns_hash(const char *s)
 {
@@ -107,6 +110,31 @@ static int dns_store(const char *domain, const char *ip, int ttl)
         }
         if (!strcasecmp(e->domain, domain)) {
             if (strcmp(e->ip, ip) != 0) {
+                char old[16];
+
+                snprintf(old, sizeof(old), "%s", e->ip);
+                /* До сброса флагов снимаем пин СТАРОГО адреса. Иначе
+                 * бессрочная запись (never pin идёт с timeout 0) остаётся в
+                 * susanin_never навсегда: после ротации IP у CDN следующий
+                 * владелец прежнего адреса уходил бы мимо VPN, и никто бы его
+                 * обратно не вернул — флагов-то уже нет. */
+                if (g_cfg) {
+                    if (e->pinned &&
+                        !other_entry_matches(now, s, 0, g_cfg, old)) {
+                        backend_ok_pin_del(g_cfg, old);
+                        if (g_state) {
+                            state_remove(st_ok(g_state, 0), old);
+                            state_remove(st_ok(g_state, 1), old);
+                        }
+                    }
+                    if (e->pinned_never &&
+                        !other_entry_matches(now, s, 1, g_cfg, old)) {
+                        backend_set_del(g_cfg, "susanin_never", old);
+                        if (g_state)
+                            state_remove(&g_state->never, old);
+                        backend_ct_flush_ip(old);
+                    }
+                }
                 snprintf(e->ip, sizeof(e->ip), "%s", ip);
                 e->pinned = 0;
                 e->pinned_never = 0;
@@ -219,8 +247,16 @@ static int dns_parse(const uint8_t *p, int len)
             return stored;
         type = (p[off] << 8) | p[off + 1];
         cls = (p[off + 2] << 8) | p[off + 3];
-        ttl = (p[off + 4] << 24) | (p[off + 5] << 16) |
-              (p[off + 6] << 8) | p[off + 7];
+        {
+            /* Собрано в unsigned long: при старшем байте >= 0x80 запись вида
+             * (p[off+4] << 24) переполняет signed int — это формально UB, а на
+             * практике превращает огромный TTL в отрицательный. */
+            unsigned long tu = ((unsigned long)p[off + 4] << 24) |
+                               ((unsigned long)p[off + 5] << 16) |
+                               ((unsigned long)p[off + 6] << 8) |
+                               (unsigned long)p[off + 7];
+            ttl = (tu > (unsigned long)INT_MAX) ? INT_MAX : (int)tu;
+        }
         rdlen = (p[off + 8] << 8) | p[off + 9];
         off += 10;
         if (off + rdlen > len)
