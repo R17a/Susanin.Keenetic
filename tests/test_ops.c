@@ -30,11 +30,17 @@ static void make_fake_ip(const char *path)
 
 int main(void)
 {
-    const char *fakip = "/tmp/susanin-fake-ip";
-    const char *rules = "/tmp/susanin-fake-rule.txt";
+    char fakip[160], rules[160], fakeenv[224];
+
+    /* Уникальные на процесс имена: два параллельных прогона не должны делить
+     * один файл и одну переменную окружения. */
+    snprintf(fakip, sizeof(fakip), "/tmp/susanin-fake-ip-%d", (int)getpid());
+    snprintf(rules, sizeof(rules), "/tmp/susanin-fake-rule-%d.txt",
+             (int)getpid());
+    snprintf(fakeenv, sizeof(fakeenv), "FAKE_RULE=%s", rules);
 
     make_fake_ip(fakip);
-    putenv((char *)"FAKE_RULE=/tmp/susanin-fake-rule.txt");
+    putenv(fakeenv);
 
     printf("=== rule_fwmark_present ===\n");
     write_file(rules, "2000:\tfrom all fwmark 0x20000000/0x30000000 lookup 100\n"

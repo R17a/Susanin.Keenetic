@@ -168,7 +168,7 @@ int main(int argc, char **argv)
             return 0;
         }
         if (argc > 2 && !strcmp(argv[2], "sync")) {
-            int dry = 0, n;
+            int dry = 0, n, sk = 0;
             /* Не «всё, что не --dry-run, значит запись»: опечатка в третьем
              * аргументе не должна молча менять конфиг на рабочем роутере. */
             if (argc > 3) {
@@ -184,7 +184,7 @@ int main(int argc, char **argv)
                         cfg_path());
                 return 2;
             }
-            n = config_sync(cfg_path(), dry);
+            n = config_sync(cfg_path(), dry, &sk);
             if (n < 0) {
                 fprintf(stderr, "config sync: не удалось обновить %s\n", cfg_path());
                 return 1;
@@ -193,6 +193,9 @@ int main(int argc, char **argv)
                 printf("# config sync: не хватает %d ключ(ов) — выше то, что добавилось бы\n", n);
             else
                 printf("config sync: добавлено %d ключ(ов)\n", n);
+            if (sk > 0)
+                printf("config sync: пропущено %d ключ(ей) пресета precision "
+                       "(их дописывать нельзя — пресет перестанет действовать)\n", sk);
             return 0;
         }
         if (argc > 2 && !strcmp(argv[2], "check")) {

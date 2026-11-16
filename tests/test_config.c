@@ -8,23 +8,32 @@
 #include <string.h>
 #include <unistd.h>
 
+/* Имя уникально на процесс: два параллельных `make test` не должны писать в один файл. */
+static char tmp_name[160];
+static void tmp_init(const char *fmt)
+{
+    snprintf(tmp_name, sizeof(tmp_name), fmt, (int)getpid());
+}
+static const char *tmp_path(void) { return tmp_name; }
+
 static int failures = 0;
 #define CHECK(cond, msg) do { if (cond) printf("ok  %s\n", msg); \
     else { printf("FAIL %s\n", msg); failures++; } } while (0)
 
 static const char *write_cfg(const char *text)
 {
-    static const char *path = "/tmp/susanin-test.conf";
-    FILE *f = fopen(path, "wb");
+    FILE *f = fopen(tmp_path(), "wb");
     assert(f);
     fputs(text, f);
     fclose(f);
-    return path;
+    return tmp_path();
 }
 
 int main(void)
 {
     susanin_config cfg;
+
+    tmp_init("/tmp/susanin-test-%d.conf");
 
     printf("=== precision=strict (значения по умолчанию) ===\n");
     config_load(write_cfg("precision=strict\n"), &cfg);
@@ -235,12 +244,12 @@ int main(void)
 
         /* Правка такой строки не должна плодить второй ключ. */
         write_cfg("web_port = 8087\n");
-        if (config_file_set("/tmp/susanin-test.conf", "web_port", "9999", 1) == 0) {
+        if (config_file_set(tmp_path(), "web_port", "9999", 1) == 0) {
             int lines = 0;
             char ln[512];
-            config_load("/tmp/susanin-test.conf", &cfg);
+            config_load(tmp_path(), &cfg);
             CHECK(cfg.web_port == 9999, "config set изменил «web_port = 8087»");
-            f = fopen("/tmp/susanin-test.conf", "r");
+            f = fopen(tmp_path(), "r");
             if (f) {
                 while (fgets(ln, sizeof(ln), f))
                     if (strstr(ln, "web_port"))
@@ -276,7 +285,61 @@ int main(void)
               "проверка сообщает и про потерянные имена, а не только про влезшие");
     }
 
-    remove("/tmp/susanin-test.conf");
+    printf("=== round-trip длительностей (config_save -> config_load) ===\n");
+    {
+        susanin_config a, b;
+        char p2[200];
+
+        snprintf(p2, sizeof(p2), "%s.rt", tmp_path());
+        config_set_defaults(&a);
+        /* Минутные ключи: значение меньше минуты не должно превращаться в 0 —
+         * для TTL это «не истекает», то есть сохранение конфига молча меняло
+         * бы смысл с «45 секунд» на «бессрочно». */
+        a.test_ttl = 45;
+        a.cooldown_ttl = 90;
+        a.ok_refresh_below = 5400;         /* 1,5 ч */
+        CHECK(config_save(p2, &a) == 0, "config_save прошёл");
+        memset(&b, 0, sizeof(b));
+        CHECK(config_load(p2, &b) == 0, "сохранённый конфиг читается");
+        CHECK(b.test_ttl == 45, "test_ttl=45s пережил сохранение (не стал 0)");
+        CHECK(b.cooldown_ttl == 90, "cooldown_ttl=90s пережил сохранение");
+        CHECK(b.ok_refresh_below == 5400, "ok_refresh_below=1,5ч пережил сохранение");
+        CHECK(b.media_min_bytes == a.media_min_bytes, "обычные ключи без потерь");
+        remove(p2);
+    }
+
+    printf("=== разбор значения: мусор и переполнение ===\n");
+    {
+        char prob[4096];
+
+        /* «abc» для числового ключа раньше означало 0 молча. */
+        config_load(write_cfg("ok_ttl=abc\n"), &cfg);
+        CHECK(cfg.ok_ttl == 0, "не разобранное значение стало 0");
+        CHECK(cfg.n_bad_values == 1 && !strcmp(cfg.bad_values[0], "ok_ttl"),
+              "и зарегистрировано как отклонённое (а не потеряно)");
+        CHECK(config_validate(&cfg, prob, sizeof(prob)) > 0,
+              "проверка конфига об этом сообщает");
+
+        /* «5x» — прежний разбор молча резал хвост и возвращал 5. */
+        config_load(write_cfg("learn_min_op=5x\n"), &cfg);
+        CHECK(cfg.n_bad_values >= 1, "мусорный суффикс помечен");
+
+        /* Ведущий ноль — это десятичная система, а не восьмеричная. */
+        config_load(write_cfg("routing_table=0100\n"), &cfg);
+        CHECK(cfg.routing_table == 100, "«0100» прочитано как 100, а не как 64");
+
+        /* Гигантское значение не должно переполнять int. */
+        config_load(write_cfg("ok_ttl=99999999999\n"), &cfg);
+        CHECK(cfg.ok_ttl >= 0, "переполнение не стало отрицательным");
+        CHECK(cfg.n_bad_values >= 1, "выход за диапазон зарегистрирован");
+
+        /* Легальный суффикс не считается мусором. */
+        config_load(write_cfg("cooldown_ttl=5m\nok_ttl=6h\n"), &cfg);
+        CHECK(cfg.cooldown_ttl == 300 && cfg.ok_ttl == 21600, "s/m/h/d/w по-прежнему понятны");
+        CHECK(cfg.n_bad_values == 0, "и не помечаются как ошибка");
+    }
+
+    remove(tmp_path());
     printf("\n%s\n", failures ? "ЕСТЬ ОШИБКИ" : "все проверки пройдены");
     return failures ? 1 : 0;
 }

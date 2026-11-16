@@ -16,7 +16,11 @@ int main(void)
 {
     susanin_state s;
     char k[64], k2[64];
-    const char *path = "/tmp/susanin-state-test.txt";
+    char pathl[160];
+    const char *path = pathl;
+
+    snprintf(pathl, sizeof(pathl), "/tmp/susanin-state-%d.txt",
+             (int)getpid());
     time_t now = time(NULL);
 
     printf("=== state_key ===\n");

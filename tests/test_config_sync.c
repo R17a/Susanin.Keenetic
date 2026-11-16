@@ -11,11 +11,19 @@
 #include <string.h>
 #include <unistd.h>
 
+/* Имя уникально на процесс: два параллельных `make test` не должны писать в один файл. */
+static char tmp_name[160];
+static void tmp_init(const char *fmt)
+{
+    snprintf(tmp_name, sizeof(tmp_name), fmt, (int)getpid());
+}
+static const char *tmp_path(void) { return tmp_name; }
+
 static int failures = 0;
 #define CHECK(cond, msg) do { if (cond) printf("ok  %s\n", msg); \
     else { printf("FAIL %s\n", msg); failures++; } } while (0)
 
-#define PATH_ "/tmp/susanin_test_conf_sync.conf"
+#define PATH_ tmp_path()
 
 static void write_seed(void)
 {
@@ -106,17 +114,18 @@ int main(void)
     char v[128];
 
     slog_init("quiet");
+    tmp_init("/tmp/susanin-sync-%d.conf");
 
     write_seed();
     sz0 = filesize();
 
     printf("=== dry-run не трогает файл ===\n");
-    n = config_sync(PATH_, 1);
+    n = config_sync(PATH_, 1, NULL);
     CHECK(n > 0, "dry-run сообщает о недостающих ключах");
     CHECK(filesize() == sz0, "dry-run не изменил файл");
 
     printf("=== sync дописывает ===\n");
-    n2 = config_sync(PATH_, 0);
+    n2 = config_sync(PATH_, 0, NULL);
     CHECK(n2 == n, "число добавленных совпадает с dry-run");
     CHECK(filesize() > sz0, "файл вырос");
 
@@ -149,12 +158,12 @@ int main(void)
 
     printf("=== идемпотентность ===\n");
     sz1 = filesize();
-    CHECK(config_sync(PATH_, 0) == 0, "второй sync ничего не добавляет");
+    CHECK(config_sync(PATH_, 0, NULL) == 0, "второй sync ничего не добавляет");
     CHECK(filesize() == sz1, "файл не изменился при повторе");
 
     printf("=== отсутствующий файл: не создаём молча ===\n");
     remove(PATH_);
-    CHECK(config_sync(PATH_, 0) < 0 || filesize() < 0,
+    CHECK(config_sync(PATH_, 0, NULL) < 0 || filesize() < 0,
           "без файла sync не пишет новый конфиг");
 
     remove(PATH_);

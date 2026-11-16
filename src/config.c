@@ -16,24 +16,41 @@
 
 /* Разбор длительности. Голое число трактуется в единицах параметра (unit —
  * сколько секунд в единице). Суффиксы s/m/h/d/w поддержаны для совместимости
- * со старыми конфигами (напр. cooldown_ttl=5m). */
-static int parse_dur(const char *s, int unit)
+ * со старыми конфигами (напр. cooldown_ttl=5m).
+ *
+ * Умножение — в long long с ограничением: `(int)(v * 604800)` на большом v
+ * давало wrap-around вплоть до отрицательного значения, а для TTL отрицательный
+ * путь кончается «не истекает». */
+static int parse_dur(const char *s, int unit, int *overflow)
 {
     char *end = NULL;
     long v;
+    long long mul = unit;
+
+    if (overflow)
+        *overflow = 0;
     if (!s)
         return 0;
     v = strtol(s, &end, 10);
     if (end == s || v < 0)
         return 0;
-    if (end) {
-        if (*end == 's') return (int)v;
-        if (*end == 'm') return (int)(v * 60);
-        if (*end == 'h') return (int)(v * 3600);
-        if (*end == 'd') return (int)(v * 86400);
-        if (*end == 'w') return (int)(v * 604800);
+    if (end && *end) {
+        if (*end == 's') mul = 1;
+        else if (*end == 'm') mul = 60;
+        else if (*end == 'h') mul = 3600;
+        else if (*end == 'd') mul = 86400;
+        else if (*end == 'w') mul = 604800;
+        else return 0;            /* суффикс не из нашего набора */
     }
-    return (int)(v * unit);
+    {
+        long long r = (long long)v * mul;
+        if (r > 2147483647LL) {
+            if (overflow)
+                *overflow = 1;
+            r = 2147483647LL;
+        }
+        return (int)r;
+    }
 }
 
 /* Обратное преобразование: секунды -> значение в единицах параметра. */
@@ -42,6 +59,26 @@ static int out_dur(int secs, int unit)
     if (unit <= 0)
         unit = 1;
     return secs / unit;
+}
+
+/* Точная запись длительности — в единице параметра, а если значение ей не
+ * делится целочно, то суффиксом (parse_dur понимает s/m/h/d/w).
+ *
+ * Нужен потому, что целочисленное out_dur() на «test_ttl=45s» выдавал 0,
+ * а 0 для TTL в state.c означает «не истекает»: одно сохранение конфига
+ * молча превращало полторы минуты в бессрочность. Нуль сохраняем нулём —
+ * иначе не выразить явный «0 = выключено» там, где он документирован. */
+static void out_dur_exact(int secs, int unit, char *out, size_t n)
+{
+    if (secs <= 0) {
+        snprintf(out, n, "0");
+        return;
+    }
+    if (unit <= 1 || secs % unit == 0) {
+        snprintf(out, n, "%d", secs / unit);
+        return;
+    }
+    snprintf(out, n, "%ds", secs);
 }
 
 /* Копирование строки с ограничением (без -Wformat-truncation). */
@@ -223,8 +260,8 @@ void config_set_defaults(susanin_config *c)
     /* P5: proxy_uid/proxy_egress по умолчанию выключены. */
     c->proxy_uid[0] = '\0';
     c->proxy_egress[0] = '\0';
-    c->proxy_table = 110;
-    c->proxy_mark = 0x01000000UL;
+    c->proxy_table = CFG_DEF_PROXY_TABLE;
+    c->proxy_mark = CFG_DEF_PROXY_MARK;
     c->egress_race = 0;
     c->auto_direct = 1;
     c->direct_pref_ttl = 3600;
@@ -359,6 +396,115 @@ static void cfg_note_bad_value(susanin_config *c, const char *key)
     }
 }
 
+/* Числовая форма значения. Проверяется ДО разбора, потому что прежний
+ * `strtol(val, NULL, 0)` имел две неприятности:
+ *   - «abc» превращалось в 0 молча, а 0 для немалого числа ключей — законный
+ *     сенсор: опечатка становилась настройкой («ok_ttl=abc» = «не истекает»);
+ *   - база 0 трактовала «0100» как восьмеричное 64 — в конфиге этого никто не
+ *     ожидает.
+ * Здесь: ведущий минус (регистрируется как отклонённое), явный префикс 0x,
+ * иначе — только десятичные цифры, и хвост из букв не игнорируется, а
+ * помечается. */
+static int cfg_num_shape(susanin_config *c, const char *key, const char *val)
+{
+    const char *p = val;
+
+    if (!*p)
+        return 1;                       /* пусто = значение по умолчанию */
+    if (*p == '-' || *p == '+') {
+        cfg_note_bad_value(c, key);
+        return 0;
+    }
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X'))
+        p += 2;
+    if (!*p) {
+        cfg_note_bad_value(c, key);     /* одинокий «0x» */
+        return 0;
+    }
+    while (*p >= '0' && *p <= '9')
+        p++;
+    if (*p)
+        cfg_note_bad_value(c, key);     /* «5x», «12 сек» — прежний разбор молча
+                                         * резал хвост и возвращал 5 и 12 */
+    return !*p ? 1 : 0;
+}
+
+/* Длительность: то же, но суффикс s/m/h/d/w легален (он и раньше понимался). */
+static int cfg_dur_shape(susanin_config *c, const char *key, const char *val)
+{
+    const char *p = val;
+
+    if (!*p)
+        return 1;
+    if (*p == '-' || *p == '+') {
+        cfg_note_bad_value(c, key);
+        return 0;
+    }
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X'))
+        p += 2;
+    if (!*p) {
+        cfg_note_bad_value(c, key);
+        return 0;
+    }
+    while (*p >= '0' && *p <= '9')
+        p++;
+    if (*p) {
+        if (!(p[1] == '\0' && strchr("smhdw", *p)))
+            cfg_note_bad_value(c, key);   /* «5хв», «10ms» и т.п. */
+        else
+            return 1;
+    }
+    return !*p ? 1 : 0;
+}
+
+static long cfg_num(susanin_config *c, const char *key, const char *val)
+{
+    char *end = NULL;
+    long v;
+
+    if (!cfg_num_shape(c, key, val))
+        return 0;
+    /* База по форме, а не 0: «0100» обязано означать 100. */
+    v = strtol(val, &end,
+               (val[0] == '0' && (val[1] == 'x' || val[1] == 'X')) ? 16 : 10);
+    if (end == val)
+        return 0;
+    /* Поля конфига — int; значение вне диапазона дало бы wrap-around вплоть до
+     * отрицательного, то есть ровно ту семантику, которую проверка конфига и
+     * обещает не допускать. */
+    if (v > 2147483647L || v < -2147483648L) {
+        cfg_note_bad_value(c, key);
+        return 0;
+    }
+    return v;
+}
+
+static unsigned long cfg_unum(susanin_config *c, const char *key, const char *val)
+{
+    char *end = NULL;
+    unsigned long v;
+
+    if (!cfg_num_shape(c, key, val))
+        return 0;
+    v = strtoul(val, &end,
+                (val[0] == '0' && (val[1] == 'x' || val[1] == 'X')) ? 16 : 10);
+    if (end == val)
+        return 0;
+    return v;
+}
+
+static int cfg_dur(susanin_config *c, const char *key, const char *val, int unit)
+{
+    int ovf = 0, v;
+
+    if (!cfg_dur_shape(c, key, val))
+        return 0;
+    v = parse_dur(val, unit, &ovf);
+    if (ovf)
+        cfg_note_bad_value(c, key);   /* значение заведомо больше любого TTL */
+    return v;
+}
+
 int config_load(const char *path, susanin_config *c)
 {
     FILE *fp;
@@ -386,9 +532,9 @@ int config_load(const char *path, susanin_config *c)
                 *--q = '\0';
         }
 
-        /* Отрицательное число до того, как его «съест» разбор. */
-        if (val[0] == '-' && val[1] >= '0' && val[1] <= '9')
-            cfg_note_bad_value(c, key);
+        /* Отрицательное и неразобранное значение фиксирует сам разбор числа
+         * (cfg_num_shape / cfg_dur_shape): отдельная проверка здесь раньше
+         * удваивала запись для ключей, не попавших в удержанный список. */
 
         {
             int handled = 0, pi;
@@ -416,17 +562,17 @@ int config_load(const char *path, susanin_config *c)
                 }
                 snprintf(pk, sizeof(pk), "profile%d_auto", pi);
                 if (!strcmp(key, pk)) {
-                    c->profile_auto[pi - 1] = (int)strtol(val, NULL, 0);
+                    c->profile_auto[pi - 1] = (int)cfg_num(c, key, val);
                     handled = 1; break;
                 }
                 snprintf(pk, sizeof(pk), "profile%d_table", pi);
                 if (!strcmp(key, pk)) {
-                    c->profile_table[pi - 1] = (int)strtol(val, NULL, 0);
+                    c->profile_table[pi - 1] = (int)cfg_num(c, key, val);
                     handled = 1; break;
                 }
                 snprintf(pk, sizeof(pk), "profile%d_mark", pi);
                 if (!strcmp(key, pk)) {
-                    c->profile_mark[pi - 1] = strtoul(val, NULL, 0);
+                    c->profile_mark[pi - 1] = cfg_unum(c, key, val);
                     handled = 1; break;
                 }
             }
@@ -443,64 +589,64 @@ int config_load(const char *path, susanin_config *c)
         else if (!strcmp(key, "lan_subnets"))
             set_str(c->lan_subnets, sizeof(c->lan_subnets), val);
         else if (!strcmp(key, "routing_table"))
-            c->routing_table = (int)strtol(val, NULL, 0);
+            c->routing_table = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "mark_test"))
-            c->mark_test = strtoul(val, NULL, 0);
+            c->mark_test = cfg_unum(c, key, val);
         else if (!strcmp(key, "mark_ok"))
-            c->mark_ok = strtoul(val, NULL, 0);
+            c->mark_ok = cfg_unum(c, key, val);
         else if (!strcmp(key, "mark_mask"))
-            c->mark_mask = strtoul(val, NULL, 0);
+            c->mark_mask = cfg_unum(c, key, val);
         else if (!strcmp(key, "ip_rule_priority_start"))
-            c->ip_rule_priority_start = (int)strtol(val, NULL, 0);
+            c->ip_rule_priority_start = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "fast_interval"))
-            c->fast_interval = parse_dur(val, U_SEC);
+            c->fast_interval = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "soft_interval"))
-            c->soft_interval = parse_dur(val, U_SEC);
+            c->soft_interval = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "judge_interval"))
-            c->judge_interval = parse_dur(val, U_SEC);
+            c->judge_interval = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "health_interval"))
-            c->health_interval = parse_dur(val, U_SEC);
+            c->health_interval = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "fast_syn_min_op")) {
-            c->fast_syn_min_op = (int)strtol(val, NULL, 0);
+            c->fast_syn_min_op = (int)cfg_num(c, key, val);
             seen |= PREC_FAST_SYN;
         }
         else if (!strcmp(key, "udp_min_op")) {
-            c->udp_min_op = (int)strtol(val, NULL, 0);
+            c->udp_min_op = (int)cfg_num(c, key, val);
         }
         else if (!strcmp(key, "synfail_quorum"))
-            c->synfail_quorum = (int)strtol(val, NULL, 0);
+            c->synfail_quorum = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "synfail_window"))
-            c->synfail_window = parse_dur(val, U_SEC);
+            c->synfail_window = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "ok_ttl"))
-            c->ok_ttl = parse_dur(val, U_SEC);
+            c->ok_ttl = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "ok_refresh_below"))
-            c->ok_refresh_below = parse_dur(val, U_HOUR);
+            c->ok_refresh_below = cfg_dur(c, key, val, U_HOUR);
         else if (!strcmp(key, "ok_max_entries"))
-            c->ok_max_entries = (int)strtol(val, NULL, 0);
+            c->ok_max_entries = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "ok_evict_misses")) {
-            c->ok_evict_misses = (int)strtol(val, NULL, 0);
+            c->ok_evict_misses = (int)cfg_num(c, key, val);
             seen |= PREC_EVICT;
         }
         else if (!strcmp(key, "promo_per_min"))
-            c->promo_per_min = (int)strtol(val, NULL, 0);
+            c->promo_per_min = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "test_ttl"))
-            c->test_ttl = parse_dur(val, U_MIN);
+            c->test_ttl = cfg_dur(c, key, val, U_MIN);
         else if (!strcmp(key, "ipset_batch"))
-            c->ipset_batch = (int)strtol(val, NULL, 0);
+            c->ipset_batch = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "cooldown_ttl"))
-            c->cooldown_ttl = parse_dur(val, U_MIN);
+            c->cooldown_ttl = cfg_dur(c, key, val, U_MIN);
         else if (!strcmp(key, "cooldown_ok_ttl"))
-            c->cooldown_ok_ttl = parse_dur(val, U_SEC);
+            c->cooldown_ok_ttl = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "watch_ttl"))
-            c->watch_ttl = parse_dur(val, U_SEC);
+            c->watch_ttl = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "watch_retry_below"))
-            c->watch_retry_below = parse_dur(val, U_SEC);
+            c->watch_retry_below = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "health_miss_debounce"))
-            c->health_miss_debounce = (int)strtol(val, NULL, 0);
+            c->health_miss_debounce = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "health_mode"))
             set_str(c->health_mode, sizeof(c->health_mode), val);
         else if (!strcmp(key, "health_tcp_port"))
-            c->health_tcp_port = (int)strtol(val, NULL, 0);
+            c->health_tcp_port = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "health_probe"))
             set_str(c->health_probe, sizeof(c->health_probe), val);
         else if (!strcmp(key, "vpn_always_file"))
@@ -508,13 +654,13 @@ int config_load(const char *path, susanin_config *c)
         else if (!strcmp(key, "vpn_always_dns"))
             set_str(c->vpn_always_dns, sizeof(c->vpn_always_dns), val);
         else if (!strcmp(key, "vpn_always_interval"))
-            c->vpn_always_interval = parse_dur(val, U_SEC);
+            c->vpn_always_interval = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "vpn_never_file"))
             set_str(c->vpn_never_file, sizeof(c->vpn_never_file), val);
         else if (!strcmp(key, "vpn_never_interval"))
-            c->vpn_never_interval = parse_dur(val, U_SEC);
+            c->vpn_never_interval = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "vpn_refresh_budget_ms"))
-            c->vpn_refresh_budget_ms = (int)strtol(val, NULL, 0);
+            c->vpn_refresh_budget_ms = (int)cfg_num(c, key, val);
             else if (!strcmp(key, "log_level"))
                 set_str(c->log_level, sizeof(c->log_level), val);
             else if (!strcmp(key, "xray_loglevel"))
@@ -524,15 +670,15 @@ int config_load(const char *path, susanin_config *c)
             else if (!strcmp(key, "xray_gomemlimit"))
                 set_str(c->xray_gomemlimit, sizeof(c->xray_gomemlimit), val);
             else if (!strcmp(key, "xray_watchdog"))
-                c->xray_watchdog = (int)strtol(val, NULL, 0);
+                c->xray_watchdog = (int)cfg_num(c, key, val);
             else if (!strcmp(key, "xray_min_mem_kb"))
-                c->xray_min_mem_kb = (int)strtol(val, NULL, 0);
+                c->xray_min_mem_kb = (int)cfg_num(c, key, val);
             else if (!strcmp(key, "xray_log_max_kb"))
-                c->xray_log_max_kb = (int)strtol(val, NULL, 0);
+                c->xray_log_max_kb = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "disk_mode"))
             set_str(c->disk_mode, sizeof(c->disk_mode), val);
         else if (!strcmp(key, "soft_state_interval"))
-            c->soft_state_interval = parse_dur(val, U_HOUR);
+            c->soft_state_interval = cfg_dur(c, key, val, U_HOUR);
         else if (!strcmp(key, "learn_exclude_ports"))
             set_str(c->learn_exclude_ports, sizeof(c->learn_exclude_ports), val);
         else if (!strcmp(key, "discover_exclude"))
@@ -540,25 +686,25 @@ int config_load(const char *path, susanin_config *c)
         else if (!strcmp(key, "lan_server_interfaces"))
             set_str(c->lan_server_interfaces, sizeof(c->lan_server_interfaces), val);
         else if (!strcmp(key, "dp_check_interval"))
-            c->dp_check_interval = parse_dur(val, U_SEC);
+            c->dp_check_interval = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "learn_min_op")) {
-            c->learn_min_op = (int)strtol(val, NULL, 0);
+            c->learn_min_op = (int)cfg_num(c, key, val);
             seen |= PREC_LEARN_OP;
         }
         else if (!strcmp(key, "learn_min_bytes")) {
-            c->learn_min_bytes = (int)strtol(val, NULL, 0);
+            c->learn_min_bytes = (int)cfg_num(c, key, val);
             seen |= PREC_LEARN_BYTES;
         }
         else if (!strcmp(key, "confirm_min_bytes")) {
-            c->confirm_min_bytes = (int)strtol(val, NULL, 0);
+            c->confirm_min_bytes = (int)cfg_num(c, key, val);
             seen |= PREC_CONFIRM;
         }
         else if (!strcmp(key, "learn_strict")) {
-            c->learn_strict = (int)strtol(val, NULL, 0);
+            c->learn_strict = (int)cfg_num(c, key, val);
             seen |= PREC_STRICT;
         }
         else if (!strcmp(key, "port_aware"))
-            c->port_aware = (int)strtol(val, NULL, 0);
+            c->port_aware = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "precision"))
             set_str(c->precision, sizeof(c->precision), val);
         else if (!strcmp(key, "cdn_ranges_file"))
@@ -566,129 +712,136 @@ int config_load(const char *path, susanin_config *c)
         else if (!strcmp(key, "cdn_ranges_url"))
             set_str(c->cdn_ranges_url, sizeof(c->cdn_ranges_url), val);
         else if (!strcmp(key, "cdn_ranges_interval"))
-            c->cdn_ranges_interval = parse_dur(val, U_SEC);
+            c->cdn_ranges_interval = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "cdn_prefix_learn"))
-            c->cdn_prefix_learn = (int)strtol(val, NULL, 0);
+            c->cdn_prefix_learn = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "cdn_prefix_ttl"))
-            c->cdn_prefix_ttl = parse_dur(val, U_SEC);
+            c->cdn_prefix_ttl = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "aggregate_confirm"))
-            c->aggregate_confirm = (int)strtol(val, NULL, 0);
+            c->aggregate_confirm = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "frozen_net_enabled"))
-            c->frozen_net_enabled = (int)strtol(val, NULL, 0);
+            c->frozen_net_enabled = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "frozen_net_min_ips"))
-            c->frozen_net_min_ips = (int)strtol(val, NULL, 0);
+            c->frozen_net_min_ips = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "frozen_net_prefix"))
-            c->frozen_net_prefix = (int)strtol(val, NULL, 0);
+            c->frozen_net_prefix = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "frozen_net_ttl"))
-            c->frozen_net_ttl = parse_dur(val, U_SEC);
+            c->frozen_net_ttl = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "test_net_enabled"))
-            c->test_net_enabled = (int)strtol(val, NULL, 0);
+            c->test_net_enabled = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "test_net_min_ips"))
-            c->test_net_min_ips = (int)strtol(val, NULL, 0);
+            c->test_net_min_ips = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "test_net_prefix"))
-            c->test_net_prefix = (int)strtol(val, NULL, 0);
+            c->test_net_prefix = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "test_net_window"))
-            c->test_net_window = parse_dur(val, U_SEC);
+            c->test_net_window = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "test_net_ttl"))
-            c->test_net_ttl = parse_dur(val, U_SEC);
+            c->test_net_ttl = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "ru_guard"))
-            c->ru_guard = (int)strtol(val, NULL, 0);
+            c->ru_guard = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "ru_guard_direct"))
-            c->ru_guard_direct = (int)strtol(val, NULL, 0);
+            c->ru_guard_direct = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "ru_guard_tlds"))
             set_str(c->ru_guard_tlds, sizeof(c->ru_guard_tlds), val);
         else if (!strcmp(key, "tz"))
             set_str(c->tz, sizeof(c->tz), val);
         else if (!strcmp(key, "cdn_prefix_max"))
-            c->cdn_prefix_max = (int)strtol(val, NULL, 0);
+            c->cdn_prefix_max = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "ipv6_block"))
-            c->ipv6_block = (int)strtol(val, NULL, 0);
+            c->ipv6_block = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "quic_block"))
-            c->quic_block = (int)strtol(val, NULL, 0);
+            c->quic_block = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "mss_clamp"))
             set_str(c->mss_clamp, sizeof(c->mss_clamp), val);
         else if (!strcmp(key, "mss_clamp_lan"))
-            c->mss_clamp_lan = (int)strtol(val, NULL, 0);
+            c->mss_clamp_lan = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "egress_failback"))
-            c->egress_failback = (int)strtol(val, NULL, 0);
+            c->egress_failback = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "egress_failback_debounce"))
-            c->egress_failback_debounce = parse_dur(val, U_SEC);
+            c->egress_failback_debounce = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "dns_sniff"))
-            c->dns_sniff = (int)strtol(val, NULL, 0);
+            c->dns_sniff = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "dns_sniff_ttl"))
-            c->dns_sniff_ttl = parse_dur(val, U_SEC);
+            c->dns_sniff_ttl = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "dns_sniff_iface"))
             set_str(c->dns_sniff_iface, sizeof(c->dns_sniff_iface), val);
         else if (!strcmp(key, "dns_hijack"))
-            c->dns_hijack = (int)strtol(val, NULL, 0);
+            c->dns_hijack = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "dns_hijack_target"))
             set_str(c->dns_hijack_target, sizeof(c->dns_hijack_target), val);
         else if (!strcmp(key, "vpn_always_cdn_prefix"))
-            c->vpn_always_cdn_prefix = (int)strtol(val, NULL, 0);
+            c->vpn_always_cdn_prefix = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "pin_reassert"))
-            c->pin_reassert = (int)strtol(val, NULL, 0);
+            c->pin_reassert = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "kernel_offload"))
-            c->kernel_offload = (int)strtol(val, NULL, 0);
+            c->kernel_offload = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "kernel_egress"))
             set_str(c->kernel_egress, sizeof(c->kernel_egress), val);
         else if (!strcmp(key, "kernel_offload_max"))
-            c->kernel_offload_max = (int)strtol(val, NULL, 0);
+            c->kernel_offload_max = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "proxy_uid"))
             set_str(c->proxy_uid, sizeof(c->proxy_uid), val);
         else if (!strcmp(key, "proxy_egress"))
             set_str(c->proxy_egress, sizeof(c->proxy_egress), val);
-        else if (!strcmp(key, "proxy_table"))
-            c->proxy_table = (int)strtol(val, NULL, 0);
-        else if (!strcmp(key, "proxy_mark"))
-            c->proxy_mark = strtoul(val, NULL, 0);
+        else if (!strcmp(key, "proxy_table")) {
+            /* Обещание из config.h: 0 = значение по умолчанию. Нормализуем
+             * сразу при разборе, чтобы И проверка готовности, и статус, и
+             * datapath.sh видели одно и то же число. */
+            int v = (int)cfg_num(c, key, val);
+            c->proxy_table = v > 0 ? v : CFG_DEF_PROXY_TABLE;
+        }
+        else if (!strcmp(key, "proxy_mark")) {
+            unsigned long v = cfg_unum(c, key, val);
+            c->proxy_mark = v ? v : CFG_DEF_PROXY_MARK;
+        }
         else if (!strcmp(key, "egress_race"))
-            c->egress_race = (int)strtol(val, NULL, 0);
+            c->egress_race = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "auto_direct"))
-            c->auto_direct = (int)strtol(val, NULL, 0);
+            c->auto_direct = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "direct_pref_ttl"))
-            c->direct_pref_ttl = parse_dur(val, U_SEC);
+            c->direct_pref_ttl = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "media_enabled"))
-            c->media_enabled = (int)strtol(val, NULL, 0);
+            c->media_enabled = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "media_ports"))
             set_str(c->media_ports, sizeof(c->media_ports), val);
         else if (!strcmp(key, "media_min_bytes"))
-            c->media_min_bytes = (int)strtol(val, NULL, 0);
+            c->media_min_bytes = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "media_ratio"))
-            c->media_ratio = (int)strtol(val, NULL, 0);
+            c->media_ratio = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "media_min_rate"))
-            c->media_min_rate = (int)strtol(val, NULL, 0);
+            c->media_min_rate = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "media_min_age"))
-            c->media_min_age = parse_dur(val, U_SEC);
+            c->media_min_age = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "media_ttl"))
-            c->media_ttl = parse_dur(val, U_SEC);
+            c->media_ttl = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "media_prefix_max"))
-            c->media_prefix_max = (int)strtol(val, NULL, 0);
+            c->media_prefix_max = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "profile_failover"))
-            c->profile_failover = (int)strtol(val, NULL, 0);
+            c->profile_failover = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "egress_type"))
             set_str(c->egress_type, sizeof(c->egress_type), val);
         else if (!strcmp(key, "tproxy_port"))
-            c->tproxy_port = (int)strtol(val, NULL, 0);
+            c->tproxy_port = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "udp_relay"))
-            c->udp_relay = (int)strtol(val, NULL, 0);
+            c->udp_relay = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "udp_relay_port"))
-            c->udp_relay_port = (int)strtol(val, NULL, 0);
+            c->udp_relay_port = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "socks_addr"))
             set_str(c->socks_addr, sizeof(c->socks_addr), val);
         else if (!strcmp(key, "socks_port"))
-            c->socks_port = (int)strtol(val, NULL, 0);
+            c->socks_port = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "web_enable"))
-            c->web_enable = (int)strtol(val, NULL, 0);
+            c->web_enable = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "web_listen"))
             set_str(c->web_listen, sizeof(c->web_listen), val);
         else if (!strcmp(key, "web_port"))
-            c->web_port = (int)strtol(val, NULL, 0);
+            c->web_port = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "web_token"))
             set_str(c->web_token, sizeof(c->web_token), val);
         else if (!strcmp(key, "release_check"))
-            c->release_check = (int)strtol(val, NULL, 0);
+            c->release_check = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "release_check_interval"))
-            c->release_check_interval = parse_dur(val, U_SEC);
+            c->release_check_interval = cfg_dur(c, key, val, U_SEC);
     }
 
     fclose(fp);
@@ -792,12 +945,15 @@ int config_load(const char *path, susanin_config *c)
 int config_save(const char *path, const susanin_config *c)
 {
     FILE *fp = fopen(path, "w");
+    char dv[32];
     int i;
     if (!fp)
         return -1;
     fprintf(fp, "# Susanin.Keenetic configuration (generated)\n");
-    fprintf(fp, "# Формат: key=value. Длительности — числом БЕЗ букв, в единицах,\n");
-    fprintf(fp, "# указанных в описании параметра (сек / мин / ч).\n");
+    fprintf(fp, "# Формат: key=value. Длительности — числом в единицах, указанных в\n");
+    fprintf(fp, "# описании параметра (сек / мин / ч); если значение в эту единицу не\n");
+    fprintf(fp, "# делится, оно записано с суффиксом (напр. 45s) — иначе округление\n");
+    fprintf(fp, "# превратило бы «меньше минуты» в 0, а 0 для TTL значит «не истекает».\n");
 
     fprintf(fp, "\n# Интерфейс(ы) туннеля (egress), через запятую; несколько включают фейловер.\n");
     fprintf(fp, "egress_interface=%s\n", c->egress_interface);
@@ -842,7 +998,8 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "# TTL выученных ok-адресов, сек; 0 = никогда не истекает (наборы растут).\n");
     fprintf(fp, "ok_ttl=%d\n", out_dur(c->ok_ttl, U_SEC));
     fprintf(fp, "# Обновлять ok-адрес, если до истечения меньше заданного, ч.\n");
-    fprintf(fp, "ok_refresh_below=%d\n", out_dur(c->ok_refresh_below, U_HOUR));
+    out_dur_exact(c->ok_refresh_below, U_HOUR, dv, sizeof(dv));
+    fprintf(fp, "ok_refresh_below=%s\n", dv);
     fprintf(fp, "# Лимит записей ok-кэша на протокол; 0 = без лимита.\n");
     fprintf(fp, "ok_max_entries=%d\n", c->ok_max_entries);
     fprintf(fp, "# Сколько подряд сбоев по адресу нужно для снятия из ok.\n");
@@ -850,10 +1007,12 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "# Лимит новых переводов в VPN в минуту; 0 = без лимита.\n");
     fprintf(fp, "promo_per_min=%d\n", c->promo_per_min);
     fprintf(fp, "# TTL «test»-состояния (проба через VPN), мин.\n");
-    fprintf(fp, "test_ttl=%d\n", out_dur(c->test_ttl, U_MIN));
+    out_dur_exact(c->test_ttl, U_MIN, dv, sizeof(dv));
+    fprintf(fp, "test_ttl=%s\n", dv);
     fprintf(fp, "# «Остывание» после снятия адреса из ok, мин.\n");
-    fprintf(fp, "cooldown_ttl=%d\n", out_dur(c->cooldown_ttl, U_MIN));
-    fprintf(fp, "# Применять ipset-операции пачкой (ipset restore): 1 = да, 0 = поштучно.\\n");
+    out_dur_exact(c->cooldown_ttl, U_MIN, dv, sizeof(dv));
+    fprintf(fp, "cooldown_ttl=%s\n", dv);
+    fprintf(fp, "# Применять ipset-операции пачкой (`ipset restore`): 1 = да, 0 = поштучно.\n");
     fprintf(fp, "ipset_batch=%d\n", c->ipset_batch);
     fprintf(fp, "# «Остывание» успешно подтверждённого адреса, сек.\n");
     fprintf(fp, "cooldown_ok_ttl=%d\n", out_dur(c->cooldown_ok_ttl, U_SEC));
@@ -900,7 +1059,8 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "# Режим носителя: normal | soft (минимум записей на NAND/flash).\n");
     fprintf(fp, "disk_mode=%s\n", c->disk_mode);
     fprintf(fp, "# Период сохранения состояния в soft-режиме, ч; 0 = никогда.\n");
-    fprintf(fp, "soft_state_interval=%d\n", out_dur(c->soft_state_interval, U_HOUR));
+    out_dur_exact(c->soft_state_interval, U_HOUR, dv, sizeof(dv));
+    fprintf(fp, "soft_state_interval=%s\n", dv);
     fprintf(fp, "# Порты, исключённые из быстрого автообучения (скан-шум), через запятую.\n");
     fprintf(fp, "learn_exclude_ports=%s\n", c->learn_exclude_ports);
     fprintf(fp, "# Интерфейсы, которые НИКОГДА не берём как egress/LAN, через запятую.\n");
@@ -1082,7 +1242,11 @@ int config_save(const char *path, const susanin_config *c)
         fprintf(fp, "profile%d_mark=0x%lx\n", i + 1, c->profile_mark[i]);
         fprintf(fp, "profile%d_auto=%d\n", i + 1, c->profile_auto[i]);
     }
-    fclose(fp);
+    /* Ошибка всплывает именно на fclose: буферы ещё не записаны на носитель.
+     * Без проверки полный диск давал бы «успех», а setup уже успевал
+     * обнулить рабочий конфиг (fopen "w") — то есть терял его молча. */
+    if (fflush(fp) != 0 || ferror(fp) || fclose(fp) != 0)
+        return -1;
     return 0;
 }
 
@@ -1179,6 +1343,23 @@ static int cfg_line_key(const char *line, char *out, size_t n)
     return cfg_split_line(line, out, n, NULL);
 }
 
+/* Ключи, которые задаёт пресет precision (см. apply_precision и биты PREC_*).
+ * Дописывать их дефолтом нельзя: пресет применяется только к тем из них,
+ * которых в файле нет, и появление явной строки молча отменило бы настройку. */
+static int cfg_key_precision_managed(const char *k)
+{
+    static const char *const kp[] = {
+        "fast_syn_min_op", "ok_evict_misses", "learn_min_op",
+        "learn_min_bytes", "confirm_min_bytes", "learn_strict", NULL
+    };
+    int i;
+
+    for (i = 0; kp[i]; i++)
+        if (!strcmp(kp[i], k))
+            return 1;
+    return 0;
+}
+
 /* Дописать в конфиг отсутствующие ключи со значениями по умолчанию.
  *
  * Единственный источник истины — config_save(): он перечисляет все ключи, а
@@ -1190,15 +1371,17 @@ static int cfg_line_key(const char *line, char *out, size_t n)
  *
  * Существующие строки не перезаписываются: значение пользователя важнее
  * дефолта. dry_run=1 — только напечатать то, что добавилось бы.
- * Возвращает число добавленных (напечатанных) ключей, -1 при ошибке. */
-int config_sync(const char *path, int dry_run)
+ * Возвращает число добавленных (напечатанных) ключей, -1 при ошибке.
+ * skipped_preset (может быть NULL) получает число ключей, пропущенных из-за
+ * активного пресета precision — их молча дописать нельзя (см. выше). */
+int config_sync(const char *path, int dry_run, int *skipped_preset)
 {
     susanin_config c;
     char gen[CFG_PATH_MAX + 16], line[1024], key[96];
     char *kname[512], *kline[512];
     char *have[512];
     FILE *f, *g, *out;
-    int nhave = 0, nmiss = 0, i, found;
+    int nhave = 0, nmiss = 0, i, found, prec_active;
     size_t tmpl;
     char tmp[CFG_PATH_MAX + 16];
 
@@ -1206,6 +1389,11 @@ int config_sync(const char *path, int dry_run)
         return -1;
     if (config_load(path, &c) != 0)
         config_set_defaults(&c);
+    /* Пресет активен, только если он задан и не «normal» (normal = дефолты). */
+    prec_active = (!strcmp(c.precision, "strict") ||
+                   !strcmp(c.precision, "aggressive"));
+    if (skipped_preset)
+        *skipped_preset = 0;
     snprintf(gen, sizeof(gen), "%s.gen.tmp", path);
     if (config_save(gen, &c) != 0)
         return -1;
@@ -1252,6 +1440,15 @@ int config_sync(const char *path, int dry_run)
         }
         if (found)
             continue;
+        /* Ключи, которые задаёт пресет precision, дописывать нельзя: пресет
+         * применяется только к тем из них, которых в файле НЕТ (см.
+         * apply_precision), и появись они здесь — строгость у пользователя
+         * пропала бы молча, ровно в момент обновления. */
+        if (prec_active && cfg_key_precision_managed(key)) {
+            if (skipped_preset)
+                (*skipped_preset)++;
+            continue;
+        }
         /* один и тот же ключ в генераторе не повторяется, но на всякий случай
          * не добавляем дубль и в список недостающих */
         {
@@ -1386,12 +1583,12 @@ int config_validate(const susanin_config *c, char *out, size_t n)
         }                                                     \
     } while (0)
 
-    /* Первым делом — значения, которых в структуре уже нет: разбор заменил их
-     * нулём. Это не «странное число», а потерянное намерение оператора. */
+    /* Первым делом — значений, которых в структуре уже нет: разбор отбросил их
+     * и записал 0. Это не «странное число», а потерянное намерение оператора. */
     for (i = 0; i < c->n_bad_values && i < CFG_MAX_BAD_VALUES; i++)
-        CFGV("%s: в файле значение отрицательное — разбор его не применяет: "
-             "одни ключи при этом становятся 0 (а 0 для них = «по умолчанию»), "
-             "другие сохраняют бессмысленный порог",
+        CFGV("%s: значение не разобрано (минус, буквы или вне диапазона) — "
+             "в параметр записан 0, а 0 для этого ключа значит не то, что было "
+             "написано в файле",
              c->bad_values[i]);
     if (c->n_bad_dropped > 0)
         CFGV("и ещё %d ключ(ей) с отрицательным значением не попали в список "
@@ -1413,19 +1610,11 @@ int config_validate(const susanin_config *c, char *out, size_t n)
         CFGV("health_interval=%d: меньше 1 с — пробы чаще, чем успевает ответить туннель",
              c->health_interval);
 
-    /* А здесь 0 = «взять действующий default» (CFG_DEF_* в config.h): значение
-     * подставляется в месте потребления, поэтому нуль законен и замечанием не
-     * является. Отрицательное — наоборот: ни «выключено», ни «default», а
-     * неопределённый период. */
-    if (c->dp_check_interval < 0)
-        CFGV("dp_check_interval=%d: отрицательный период (0 = %d с)",
-             c->dp_check_interval, CFG_DEF_DP_CHECK_INTERVAL);
-    if (c->vpn_always_interval < 0)
-        CFGV("vpn_always_interval=%d: отрицательный период (0 = %d с)",
-             c->vpn_always_interval, CFG_DEF_VPN_LIST_INTERVAL);
-    if (c->vpn_never_interval < 0)
-        CFGV("vpn_never_interval=%d: отрицательный период (0 = %d с)",
-             c->vpn_never_interval, CFG_DEF_VPN_LIST_INTERVAL);
+    /* А здесь 0 = «взять действующий default» (CFG_DEF_* в config.h), и та же
+     * подстановка сделана в месте потребления — то есть ноль законен.
+     * Отрицательное сюда не доходит: его отбрасывает разбор и регистрирует в
+     * bad_values (первый блок), поэтому отдельная проверка «< 0» была бы
+     * недостижимым кодом. */
 
     /* Маршрутизация и метки: здесь неверное значение не «хуже», а не работает. */
     if (c->routing_table < 1 || c->routing_table > 252)
@@ -1446,41 +1635,27 @@ int config_validate(const susanin_config *c, char *out, size_t n)
                  c->mark_ok);
     }
 
-    /* Пороги учёта и media: уходят в беззнаковый контекст. */
-    if (c->media_min_bytes < 0)
-        CFGV("media_min_bytes=%d: отрицательное станет гигантским беззнаковым — класс media молча выключится",
-             c->media_min_bytes);
-    if (c->media_ratio < 0)
-        CFGV("media_ratio=%d: отрицательное отношение даст «не медиа» на каждом потоке",
-             c->media_ratio);
-    if (c->media_min_rate < 0)
-        CFGV("media_min_rate=%d: отрицательная скорость бессмысленна", c->media_min_rate);
-    if (c->media_min_age < 0)
-        CFGV("media_min_age=%d: отрицательный возраст бессмысленен", c->media_min_age);
-    if (c->learn_min_op < 0 || c->learn_min_bytes < 0 || c->confirm_min_bytes < 0)
-        CFGV("learn_min_op/learn_min_bytes/confirm_min_bytes: отрицательные пороги учёта (%d/%d/%d)",
-             c->learn_min_op, c->learn_min_bytes, c->confirm_min_bytes);
-    if (c->ok_max_entries < 0)
-        CFGV("ok_max_entries=%d: лимит не может быть отрицательным (0 = без лимита)",
-             c->ok_max_entries);
-    if (c->xray_log_max_kb < 0)
-        CFGV("xray_log_max_kb=%d: отрицательный размер подрезки (0 = не подрезать)",
-             c->xray_log_max_kb);
-    if (c->soft_state_interval < 0)
-        CFGV("soft_state_interval=%d: отрицательный период сохранения (0 = никогда)",
-             c->soft_state_interval);
+    /* P5 (прокси на роутере): метка не должна пересекаться с метками LAN —
+     * иначе трафик прокси попадёт в правила, написанные для клиентов, и
+     * наоборот. Таблица должна быть годна для ip rule. */
+    if (c->proxy_uid[0] && c->proxy_egress[0]) {
+        if (c->proxy_table < 1 || c->proxy_table > 252)
+            CFGV("proxy_table=%d: для ip rule годятся 1..252", c->proxy_table);
+        if (c->proxy_mark & (c->mark_ok | c->mark_test))
+            CFGV("proxy_mark=0x%lx пересекается с mark_ok=0x%lx/mark_test=0x%lx — "
+                 "трафик прокси и клиентов различить нельзя",
+                 c->proxy_mark, c->mark_ok, c->mark_test);
+    }
+
+    /* Пороги учёта и media здесь НЕ проверяются на знак: cfg_num_shape/cfg_num
+     * отбрасывают минус, буквы и значение вне int-диапазона ещё на разборе и
+     * регистрируют имя в bad_values (первый блок выше). Проверка «< 0» здесь
+     * была бы недостижимым кодом — ровно тот класс, который мы убираем. */
 
     /* Учёт погибших соединений. */
-    if (c->synfail_quorum < 0)
-        CFGV("synfail_quorum=%d: не может быть отрицательным (0 = механизм выключен)",
-             c->synfail_quorum);
-    else if (c->synfail_quorum > CFG_SYNFAIL_QUORUM_MAX)
+    if (c->synfail_quorum > CFG_SYNFAIL_QUORUM_MAX)
         CFGV("synfail_quorum=%d недостижим как «разных соединений»: клампим до %d",
              c->synfail_quorum, CFG_SYNFAIL_QUORUM_MAX);
-    if (c->synfail_window < 0)
-        CFGV("synfail_window=%d: отрицательное окно (0 = %d с, выключает не окно, а quorum)",
-             c->synfail_window, CFG_DEF_SYNFAIL_WINDOW);
-
     /* Порты. Разбор по способу подстановки, а не «нуль везде плох»:
      *   - tproxy_port и udp_relay_port уходят в сравнение и bind как есть,
      *     поэтому 0 там = сломанный порт (у релеев ещё и ephemeral-bind);
@@ -1514,14 +1689,8 @@ int config_validate(const susanin_config *c, char *out, size_t n)
     CFGV_PREFIX("media_prefix_max", c->media_prefix_max, c->media_enabled == 1);
     CFGV_PREFIX("kernel_offload_max", c->kernel_offload_max,
                 c->kernel_offload == 1 && c->kernel_egress[0] != '\0');
-    /* Окно и TTL списков: при 0 подставляется default, поэтому проверяем
-     * только знак. */
-    if (c->test_net_enabled == 1 && c->test_net_window < 0)
-        CFGV("test_net_window=%d: отрицательное окно (0 = %d с)",
-             c->test_net_window, CFG_DEF_TEST_NET_WINDOW);
-    if (c->dns_sniff == 1 && c->dns_sniff_ttl < 0)
-        CFGV("dns_sniff_ttl=%d: отрицательный TTL (0 = %d с)",
-             c->dns_sniff_ttl, CFG_DEF_DNS_SNIFF_TTL);
+    /* Окно и TTL списков: при 0 подставляется default, отрицательное не
+     * доходит до сюда (отбрасывает разбор) — проверять нечего. */
 
     /* Ключ, который без egress-интерфейса означает «всё напрямую». */
     if (!strcmp(c->egress_type, "interface") && !c->egress_interface[0])
@@ -1543,6 +1712,7 @@ int config_validate(const susanin_config *c, char *out, size_t n)
 void config_print(const susanin_config *c)
 {
     int i;
+    char dv[32];
     printf("egress_interface=%s\n", c->egress_interface);
     printf("egress_address=%s\n", c->egress_address);
     printf("lan_interfaces=%s\n", c->lan_interfaces);
@@ -1561,12 +1731,15 @@ void config_print(const susanin_config *c)
     printf("synfail_quorum=%d\n", c->synfail_quorum);
     printf("synfail_window=%d\n", out_dur(c->synfail_window, U_SEC));
     printf("ok_ttl=%d\n", out_dur(c->ok_ttl, U_SEC));
-    printf("ok_refresh_below=%d\n", out_dur(c->ok_refresh_below, U_HOUR));
+    out_dur_exact(c->ok_refresh_below, U_HOUR, dv, sizeof(dv));
+    printf("ok_refresh_below=%s\n", dv);
     printf("ok_max_entries=%d\n", c->ok_max_entries);
     printf("ok_evict_misses=%d\n", c->ok_evict_misses);
     printf("promo_per_min=%d\n", c->promo_per_min);
-    printf("test_ttl=%d\n", out_dur(c->test_ttl, U_MIN));
-    printf("cooldown_ttl=%d\n", out_dur(c->cooldown_ttl, U_MIN));
+    out_dur_exact(c->test_ttl, U_MIN, dv, sizeof(dv));
+    printf("test_ttl=%s\n", dv);
+    out_dur_exact(c->cooldown_ttl, U_MIN, dv, sizeof(dv));
+    printf("cooldown_ttl=%s\n", dv);
     printf("ipset_batch=%d\n", c->ipset_batch);
     printf("cooldown_ok_ttl=%d\n", out_dur(c->cooldown_ok_ttl, U_SEC));
     printf("watch_ttl=%d\n", out_dur(c->watch_ttl, U_SEC));
@@ -1589,7 +1762,8 @@ void config_print(const susanin_config *c)
     printf("xray_min_mem_kb=%d\n", c->xray_min_mem_kb);
     printf("xray_log_max_kb=%d\n", c->xray_log_max_kb);
     printf("disk_mode=%s\n", c->disk_mode);
-    printf("soft_state_interval=%d\n", out_dur(c->soft_state_interval, U_HOUR));
+    out_dur_exact(c->soft_state_interval, U_HOUR, dv, sizeof(dv));
+    printf("soft_state_interval=%s\n", dv);
     printf("learn_exclude_ports=%s\n", c->learn_exclude_ports);
     printf("discover_exclude=%s\n", c->discover_exclude);
     printf("lan_server_interfaces=%s\n", c->lan_server_interfaces);

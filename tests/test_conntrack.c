@@ -9,6 +9,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
 
 static int split_line(char *s)   /* обрезает перевод строки, возвращает длину */
@@ -110,7 +111,11 @@ int main(int argc, char **argv)
     fclose(fp);
     printf("\n=== запись длиннее CT_LINE_MAX ===\n");
     {
-        const char *p2 = "/tmp/susanin-ct-trunc.txt";
+        char p2l[160];
+        const char *p2 = p2l;
+
+        snprintf(p2l, sizeof(p2l), "/tmp/susanin-ct-trunc-%d.txt",
+                 (int)getpid());
         unsigned long before = conntrack_overlong();
         FILE *w = fopen(p2, "w");
         int got, i;

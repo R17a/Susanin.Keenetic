@@ -42,6 +42,12 @@
  * Названо здесь, потому что место потребления и описание ключа должны
  * ссылаться на одну величину, а не на литерал в теле классификатора. */
 #define CFG_LEGACY_UDP_MIN_OP         12
+/* P5: 0 в этих ключах означает «взять действующее значение по умолчанию»
+ * (обещание выполняется кодом, а не только комментарием): правило
+ * `ip rule fwmark 0x0/0x0` матчит ВЕСЬ трафик, а таблица 0 — это «не задано»,
+ * поэтому ноль здесь не осмысленная настройка, а опечатка. */
+#define CFG_DEF_PROXY_TABLE         110
+#define CFG_DEF_PROXY_MARK   0x01000000UL
 
 typedef struct {
     char egress_interface[CFG_PATH_MAX];
@@ -228,8 +234,8 @@ typedef struct {
      * proxy_uid пусто = выключено; proxy_egress пусто = тоже выключено. */
     char proxy_uid[32];
     char proxy_egress[64];
-    int proxy_table;            /* таблица маршрутизации для proxy_uid (0 = 110) */
-    unsigned long proxy_mark;   /* метка для proxy_uid (0 = 0x01000000) */
+    int proxy_table;            /* таблица для proxy_uid (0 = CFG_DEF_PROXY_TABLE) */
+    unsigned long proxy_mark;   /* метка для proxy_uid (0 = CFG_DEF_PROXY_MARK) */
     /* N3: race-пробинг egress — параллельно замерить кандидатов
      * (кандидаты — все интерфейсы из egress_interface). */
     int egress_race;
@@ -306,8 +312,11 @@ int config_file_set(const char *path, const char *key, const char *val, int allo
  * комментарии не трогаются, запись атомарная. dry_run=1 — только напечатать.
  * Возвращает число добавленных (напечатанных) ключей, -1 при ошибке.
  * Нужно для обновления: рукописный перечень ключей в update.sh неизбежно
- * отстаёт от кода и со старыми дефолтами. */
-int config_sync(const char *path, int dry_run);
+ * отстаёт от кода и со старыми дефолтами.
+ * skipped_preset (можно NULL) — сколько ключей пропущено, потому что их
+ * задаёт пресет precision: дописать их дефолтом означало бы молча отменить
+ * настройку пользователя. */
+int config_sync(const char *path, int dry_run, int *skipped_preset);
 
 /* Проверка загруженного конфига на значения, которые код прочтёт иначе, чем
  * задумано (отрицательные пороги в беззнаковом контексте, нулевые периоды,
