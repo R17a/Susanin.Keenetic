@@ -335,8 +335,26 @@ int main(void)
 
         /* Легальный суффикс не считается мусором. */
         config_load(write_cfg("cooldown_ttl=5m\nok_ttl=6h\n"), &cfg);
-        CHECK(cfg.cooldown_ttl == 300 && cfg.ok_ttl == 21600, "s/m/h/d/w по-прежнему понятны");
+        CHECK(cfg.cooldown_ttl == 300 && cfg.ok_ttl == 21600,
+              "s/m/h/d/w по-прежнему понятны");
         CHECK(cfg.n_bad_values == 0, "и не помечаются как ошибка");
+
+        /* Ключ, которого агент не знает: строка в файле выглядит настройкой и
+         * не действует ни на что. */
+        config_load(write_cfg("ok_tll=6h\nforis_ra=1\nok_ttl=21600\n"), &cfg);
+        CHECK(cfg.ok_ttl == 21600, "правильный ключ рядом с опечаткой применён");
+        CHECK(cfg.n_unknown_keys == 2, "обе опечатки распознаны как неизвестные");
+        CHECK(cfg.n_unknown_keys == 2 &&
+              !strcmp(cfg.unknown_keys[0], "ok_tll") &&
+              !strcmp(cfg.unknown_keys[1], "foris_ra"),
+              "имена сохранены для отчёта");
+        CHECK(config_validate(&cfg, prob, sizeof(prob)) > 0 &&
+              strstr(prob, "ok_tll") != NULL,
+              "config check показывает нераспознанный ключ");
+        /* Обычный конфиг не должен ничего такого выдавать. */
+        config_load(write_cfg("ok_ttl=21600\ndns_sniff=1\nprecision=strict\n"), &cfg);
+        CHECK(cfg.n_unknown_keys == 0 && cfg.n_bad_values == 0,
+              "корректный конфиг — ни неизвестных, ни отклонённых ключей");
     }
 
     remove(tmp_path());

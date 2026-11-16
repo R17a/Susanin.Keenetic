@@ -158,6 +158,9 @@ int main(int argc, char **argv)
             return 0;
         }
         if (argc > 4 && !strcmp(argv[2], "set")) {
+            susanin_config after;
+            int i, unkn = 0;
+
             if (config_file_set(cfg_path(), argv[3], argv[4], 1) != 0) {
                 fprintf(stderr, "config set: не удалось записать %s "
                                 "(имя ключа — [a-z0-9_], значение — без переводов строк)\n",
@@ -165,6 +168,21 @@ int main(int argc, char **argv)
                 return 2;
             }
             printf("%s=%s\n", argv[3], argv[4]);
+            /* Строка записана — но неизвестно, читает ли её агент. Ключ с
+             * опечаткой выглядит настройкой и игнорируется молча; молчать об
+             * этом после явной команды оператора нельзя. */
+            if (config_load(cfg_path(), &after) == 0) {
+                for (i = 0; i < after.n_unknown_keys && i < CFG_MAX_BAD_VALUES; i++)
+                    if (!strcmp(after.unknown_keys[i], argv[3]))
+                        unkn = 1;
+            }
+            if (unkn) {
+                fprintf(stderr, "config set: ВНИМАНИЕ — ключ «%s» агентом не "
+                                "распознан: он записан, но ни на что не влияет "
+                                "(проверьте имя; susanin-agent config check)\n",
+                        argv[3]);
+                return 1;
+            }
             return 0;
         }
         if (argc > 2 && !strcmp(argv[2], "sync")) {

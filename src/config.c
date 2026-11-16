@@ -370,30 +370,39 @@ static int cfg_split_line(const char *line, char *key, size_t kn, char **val)
     return 0;
 }
 
-/* Запомнить ключ со значением, которое разбор не принял. Без этого факта
- * опечатка «interval=-5» и осознанный «interval=0» неразличимы: parse_dur()
- * обошляет в 0, а для многих ключей 0 — законный сенсор.
- *
- * Граница обязательна: прежняя версия после заполнения списка продолжала
- * растить n_bad_values, а цикл дедупликации ходил по нему до конца —
- * чтение bad_values[16] за границей массива (AddressSanitizer это и
- * показал). Теперь за край не ходим, а потерянные имена считаются отдельно. */
+/* Запомнить имя ключа в ограниченный список: дедупликация по удержанным, за
+ * границу не ходим никогда (прежняя версия именно так и читала чужую память),
+ * а непоместившиеся считаются в отдельном счётчике, чтобы потерю было видно. */
+static void cfg_note_name(char tab[][48], int *held, int *dropped, const char *key)
+{
+    int i;
+
+    for (i = 0; i < *held; i++)
+        if (!strcmp(tab[i], key))
+            return;                       /* уже запомнено */
+    if (*held < CFG_MAX_BAD_VALUES) {
+        snprintf(tab[*held], 48, "%.47s", key);
+        (*held)++;
+    } else {
+        (*dropped)++;
+    }
+}
+
+/* Ключ со значением, которое разбор не принял: опечатка «interval=-5» и
+ * осознанный «interval=0» иначе неразличимы — parse_dur() приводит минус к 0,
+ * а для многих ключей 0 — законный сенсор. */
 static void cfg_note_bad_value(susanin_config *c, const char *key)
 {
-    int i, n = c->n_bad_values;
+    cfg_note_name(c->bad_values, &c->n_bad_values, &c->n_bad_dropped, key);
+}
 
-    if (n > CFG_MAX_BAD_VALUES)
-        n = CFG_MAX_BAD_VALUES;
-    for (i = 0; i < n; i++)
-        if (!strcmp(c->bad_values[i], key))
-            return;                    /* не плодить на повторной строке */
-    if (c->n_bad_values < CFG_MAX_BAD_VALUES) {
-        snprintf(c->bad_values[c->n_bad_values], sizeof(c->bad_values[0]),
-                 "%.47s", key);
-        c->n_bad_values++;
-    } else {
-        c->n_bad_dropped++;            /* список полон: имя не запомнено */
-    }
+/* Ключ, которого агент не знает вовсе: строка вида «foris_ra=1» или опечатка
+ * «ok_tll=6h» молча игнорируется, и до этой правки единственный способ её
+ * заметить был — глазами сравнить файл со списком параметров. */
+static void cfg_note_unknown_key(susanin_config *c, const char *key)
+{
+    cfg_note_name(c->unknown_keys, &c->n_unknown_keys, &c->n_unknown_dropped,
+                  key);
 }
 
 /* Числовая форма значения. Проверяется ДО разбора, потому что прежний
@@ -842,6 +851,8 @@ int config_load(const char *path, susanin_config *c)
             c->release_check = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "release_check_interval"))
             c->release_check_interval = cfg_dur(c, key, val, U_SEC);
+        else
+            cfg_note_unknown_key(c, key);
     }
 
     fclose(fp);
@@ -1591,9 +1602,19 @@ int config_validate(const susanin_config *c, char *out, size_t n)
              "написано в файле",
              c->bad_values[i]);
     if (c->n_bad_dropped > 0)
-        CFGV("и ещё %d ключ(ей) с отрицательным значением не попали в список "
+        CFGV("и ещё %d ключ(ей) с отклонённым значением не попали в список "
              "(вместе с перечисленными — %d)",
              c->n_bad_dropped, c->n_bad_values + c->n_bad_dropped);
+
+    /* Ключи, которых агент не знает вовсе: строка лежит в файле, выглядит как
+     * настройка и не действует ни на что. Опечатка в имени — самый частый
+     * способ получить «я же выставил, а не работает». */
+    for (i = 0; i < c->n_unknown_keys && i < CFG_MAX_BAD_VALUES; i++)
+        CFGV("%s: ключ агентом не распознан, значение не применяется",
+             c->unknown_keys[i]);
+    if (c->n_unknown_dropped > 0)
+        CFGV("и ещё %d нераспознанного ключа не показаны (список полон)",
+             c->n_unknown_dropped);
 
     /* Периоды, где 0 НЕ является сенсором: они подставляются в сравнение как
      * есть, и `now - last >= 0` истинно всегда — то есть 0 означает «каждый

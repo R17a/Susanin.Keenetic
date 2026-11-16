@@ -292,6 +292,11 @@ typedef struct {
     /* Сколько имён не поместилось в bad_values (список ограничен). Отдельно от
      * n_bad_values, чтобы первый не использовался как индекс. */
     int n_bad_dropped;
+    /* Ключи, которые агент НЕ распознал (опечатка в имени, устаревший или
+     * чужой параметр). Игнорируются молча — без списка это нечем проверить. */
+    int n_unknown_keys;
+    char unknown_keys[CFG_MAX_BAD_VALUES][48];
+    int n_unknown_dropped;
 } susanin_config;
 
 void config_set_defaults(susanin_config *c);
