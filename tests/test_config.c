@@ -205,6 +205,77 @@ int main(void)
         }
     }
 
+    printf("=== разбор строки: «key = value» и границы списка отклонённого ===\n");
+    {
+        static const char *many[] = {
+            "fast_interval", "soft_interval", "judge_interval", "health_interval",
+            "dp_check_interval", "vpn_always_interval", "vpn_never_interval",
+            "synfail_window", "synfail_quorum", "ok_ttl", "ok_refresh_below",
+            "ok_max_entries", "ok_evict_misses", "promo_per_min", "test_ttl",
+            "cooldown_ttl", "cooldown_ok_ttl", "watch_ttl", "watch_retry_below",
+            "health_miss_debounce", "health_tcp_port"
+        };
+        char big[4096];
+        char prob[8192];
+        FILE *f;
+        int i, sz, n;
+
+        /* Значение в форме «ключ = значение» обязано примениться. Прежний
+         * разбор включал пробел в имя ключа, строка молча игнорировалась, а
+         * config_sync считал такой ключ присутствующим — то есть настройка
+         * терялась навсегда, и даже дефолт не дописывался. */
+        config_load(write_cfg("lan_interfaces = br0, br1\n"), &cfg);
+        CHECK(!strcmp(cfg.lan_interfaces, "br0, br1"),
+              "«lan_interfaces = br0, br1» применено");
+        config_load(write_cfg("  tz = IST-8  \n"), &cfg);
+        CHECK(!strcmp(cfg.tz, "IST-8"), "пробелы с обеих сторон применены");
+        /* Комментарий не должен читаться как ключ. */
+        config_load(write_cfg("#ok_ttl=1\nok_ttl=120\n"), &cfg);
+        CHECK(cfg.ok_ttl == 120, "закомментированный ключ не применяется");
+
+        /* Правка такой строки не должна плодить второй ключ. */
+        write_cfg("web_port = 8087\n");
+        if (config_file_set("/tmp/susanin-test.conf", "web_port", "9999", 1) == 0) {
+            int lines = 0;
+            char ln[512];
+            config_load("/tmp/susanin-test.conf", &cfg);
+            CHECK(cfg.web_port == 9999, "config set изменил «web_port = 8087»");
+            f = fopen("/tmp/susanin-test.conf", "r");
+            if (f) {
+                while (fgets(ln, sizeof(ln), f))
+                    if (strstr(ln, "web_port"))
+                        lines++;
+                fclose(f);
+            }
+            CHECK(lines == 1, "и не создала вторую строку с тем же ключом");
+        } else {
+            CHECK(0, "config set над «web_port = 8087»");
+        }
+
+        /* Больше CFG_MAX_BAD_VALUES отрицательных ключей: список обязан
+         * остаться в границах (раньше счётчик рос, и цикл дедупликации читал
+         * за массивом), а потеря не должна стать невидимой. */
+        big[0] = '\0';
+        sz = (int)sizeof(many) / (int)sizeof(many[0]);
+        for (i = 0; i < sz; i++) {
+            char one[96];
+            snprintf(one, sizeof(one), "%s=-1\n", many[i]);
+            strncat(big, one, sizeof(big) - strlen(big) - 1);
+        }
+        strncat(big, "fast_interval=-1\n", sizeof(big) - strlen(big) - 1); /* повтор */
+        config_load(write_cfg(big), &cfg);
+        CHECK(cfg.n_bad_values == CFG_MAX_BAD_VALUES,
+              "список отклонённых ключей не вырос за границу");
+        /* Потерянных ровно «различных ключей минус места в списке»: повтор уже
+         * запомненного имени не должен увеличивать счётчик даже тогда, когда
+         * список полон (имя ищется по удержанной части списка). */
+        CHECK(cfg.n_bad_dropped == sz - CFG_MAX_BAD_VALUES,
+              "потерянные имена посчитаны, повтор запомненного — не повторно");
+        n = config_validate(&cfg, prob, sizeof(prob));
+        CHECK(n > CFG_MAX_BAD_VALUES,
+              "проверка сообщает и про потерянные имена, а не только про влезшие");
+    }
+
     remove("/tmp/susanin-test.conf");
     printf("\n%s\n", failures ? "ЕСТЬ ОШИБКИ" : "все проверки пройдены");
     return failures ? 1 : 0;

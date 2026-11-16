@@ -1873,9 +1873,14 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             }
         }
 
+        /* Периоды списков берём с той же подстановкой, что и модули: голый
+         * vpn_always_interval=0 давал `now - last >= 0`, то есть перечитывание
+         * и резолв списков на КАЖДОМ проходе цикла — при том, что проверка
+         * конфига трактует 0 как «взять действующий default». */
         if (tunnel_up && va &&
             (force_pending ||
-             now - last_force >= (time_t)cfg->vpn_always_interval ||
+             now - last_force >= (time_t)(cfg->vpn_always_interval > 0
+                        ? cfg->vpn_always_interval : CFG_DEF_VPN_LIST_INTERVAL) ||
              va_changed(va, cfg))) {
             time_t prev = last_force;
             last_force = now;
@@ -1888,7 +1893,8 @@ int engine_run(susanin_config *cfg, const char *conf_path)
 
         if (nv &&
             (never_pending ||
-             now - last_never >= (time_t)cfg->vpn_never_interval ||
+             now - last_never >= (time_t)(cfg->vpn_never_interval > 0
+                        ? cfg->vpn_never_interval : CFG_DEF_VPN_LIST_INTERVAL) ||
              vn_changed(nv, cfg))) {
             time_t prev = last_never;
             int nchanged = 0;

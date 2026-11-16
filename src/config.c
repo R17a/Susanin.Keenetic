@@ -295,23 +295,68 @@ static void apply_precision(susanin_config *c, unsigned seen)
     }
 }
 
+/* Разбор строки конфига на имя ключа и начало значения — ЕДИНЫЙ для чтения
+ * (config_load), проверки наличия (cfg_line_key -> config_sync) и записи
+ * (config_file_set). Пока три места делали это по-своему, «key = value»
+ * терялся молча: load считал именем «key » (с пробелом) и ключ не узнавал,
+ * sync считал его присутствующим и дефолт не дописывал, а set дописывал
+ * вторую строку с тем же ключом — и кто победит, зависело от того, кто
+ * читает: C берёт последнюю строку, datapath.sh — первую.
+ * 0 = строка — ключ; *val указывает на значение (обрезать перевод строки
+ * нужно вызывающему); комментарии и пустые строки дают -1. */
+static int cfg_split_line(const char *line, char *key, size_t kn, char **val)
+{
+    char *p = (char *)line;
+    size_t i = 0;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (*p == '\0' || *p == '\n' || *p == '\r' || *p == '#')
+        return -1;
+    while (*p && *p != '=' && *p != ' ' && *p != '\t' && *p != '\n' &&
+           *p != '\r' && i + 1 < kn) {
+        char ch = *p++;
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_'))
+            return -1;
+        key[i++] = ch;
+    }
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (i == 0 || *p != '=')
+        return -1;
+    key[i] = '\0';
+    p++;
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (val)
+        *val = p;
+    return 0;
+}
+
 /* Запомнить ключ со значением, которое разбор не принял. Без этого факта
  * опечатка «interval=-5» и осознанный «interval=0» неразличимы: parse_dur()
- * обошляет в 0, а для многих ключей 0 — законный сенсор. */
+ * обошляет в 0, а для многих ключей 0 — законный сенсор.
+ *
+ * Граница обязательна: прежняя версия после заполнения списка продолжала
+ * растить n_bad_values, а цикл дедупликации ходил по нему до конца —
+ * чтение bad_values[16] за границей массива (AddressSanitizer это и
+ * показал). Теперь за край не ходим, а потерянные имена считаются отдельно. */
 static void cfg_note_bad_value(susanin_config *c, const char *key)
 {
-    int i;
+    int i, n = c->n_bad_values;
 
-    for (i = 0; i < c->n_bad_values; i++)
+    if (n > CFG_MAX_BAD_VALUES)
+        n = CFG_MAX_BAD_VALUES;
+    for (i = 0; i < n; i++)
         if (!strcmp(c->bad_values[i], key))
             return;                    /* не плодить на повторной строке */
-    if (c->n_bad_values >= CFG_MAX_BAD_VALUES) {
-        c->n_bad_values++;             /* счётчик продолжает расти, список — нет */
-        return;
+    if (c->n_bad_values < CFG_MAX_BAD_VALUES) {
+        snprintf(c->bad_values[c->n_bad_values], sizeof(c->bad_values[0]),
+                 "%.47s", key);
+        c->n_bad_values++;
+    } else {
+        c->n_bad_dropped++;            /* список полон: имя не запомнено */
     }
-    snprintf(c->bad_values[c->n_bad_values], sizeof(c->bad_values[0]),
-             "%.47s", key);
-    c->n_bad_values++;
 }
 
 int config_load(const char *path, susanin_config *c)
@@ -328,25 +373,17 @@ int config_load(const char *path, susanin_config *c)
         return -1;
 
     while (fgets(line, sizeof(line), fp)) {
-        char *p = line, *key, *val;
-        while (*p == ' ' || *p == '\t') p++;
-        if (*p == '#' || *p == '\n' || *p == '\0')
+        char key[64];
+        char *val;
+
+        if (cfg_split_line(line, key, sizeof(key), &val) != 0)
             continue;
-        key = p;
-        while (*p && *p != '=' && *p != '\n') p++;
-        if (*p != '=')
-            continue;
-        *p++ = '\0';
-        while (*p == ' ' || *p == '\t') p++;
-        val = p;
         {
             char *q = val;
             while (*q && *q != '\n') q++;
             *q = '\0';
-        }
-        {
-            char *q = val + strlen(val) - 1;
-            while (q >= val && (*q == ' ' || *q == '\t' || *q == '\r')) *q-- = '\0';
+            while (q > val && (q[-1] == ' ' || q[-1] == '\t' || q[-1] == '\r'))
+                *--q = '\0';
         }
 
         /* Отрицательное число до того, как его «съест» разбор. */
@@ -1079,7 +1116,6 @@ int config_file_set(const char *path, const char *key, const char *val, int allo
 {
     FILE *in, *out;
     char line[1024], tmp[CFG_PATH_MAX + 8];
-    size_t kl;
     int found = 0, last_nl = 1;
 
     if (!path || !key || !val)
@@ -1096,9 +1132,15 @@ int config_file_set(const char *path, const char *key, const char *val, int allo
         fclose(in);
         return -1;
     }
-    kl = strlen(key);
     while (fgets(line, sizeof(line), in)) {
-        if (!strncmp(line, key, kl) && line[kl] == '=') {
+        char k2[64], *v2;
+
+        /* Сравнение тем же разбором, что и чтение: раньше строка вида
+         * «key = value» здесь не узнавалась, и вместо правки появлялась
+         * вторая строка с тем же ключом. Заодно запись нормализуется к
+         * канонической форме «key=value». */
+        if (cfg_split_line(line, k2, sizeof(k2), &v2) == 0 &&
+            !strcmp(k2, key)) {
             fprintf(out, "%s=%s\n", key, val);
             found = 1;
             last_nl = 1;
@@ -1129,29 +1171,12 @@ int config_file_set(const char *path, const char *key, const char *val, int allo
     return 0;
 }
 
-/* Строка вида "key=" — вернуть имя ключа. Коментарии, пустые строки и строки
- * с нелегальными символами дают -1. Пробелы до имени и перед '=' допускаются
- * ровно как их допускает config_load(): иначе строка "tz = 1" не попала бы в
- * список имеющихся ключей, и config_sync дописал бы второй "tz=" — дубль,
- * где победитель зависит от порядка строк в файле. */
+/* Строка вида "key=" — вернуть имя ключа. Реализовано тем же разбором, что и
+ * чтение конфига (cfg_split_line): именно расхождение этих двух мест теряло
+ * значения в форме «key = value». */
 static int cfg_line_key(const char *line, char *out, size_t n)
 {
-    size_t i = 0;
-    const char *p = line;
-    while (*p == ' ' || *p == '\t')
-        p++;
-    while (*p && *p != '=' && *p != ' ' && *p != '\t' && *p != '\n' && i + 1 < n) {
-        char ch = *p++;
-        if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_'))
-            return -1;
-        out[i++] = ch;
-    }
-    while (*p == ' ' || *p == '\t')
-        p++;
-    if (i == 0 || *p != '=')
-        return -1;
-    out[i] = '\0';
-    return 0;
+    return cfg_split_line(line, out, n, NULL);
 }
 
 /* Дописать в конфиг отсутствующие ключи со значениями по умолчанию.
@@ -1368,9 +1393,10 @@ int config_validate(const susanin_config *c, char *out, size_t n)
              "одни ключи при этом становятся 0 (а 0 для них = «по умолчанию»), "
              "другие сохраняют бессмысленный порог",
              c->bad_values[i]);
-    if (c->n_bad_values > CFG_MAX_BAD_VALUES)
-        CFGV("и ещё %d ключ(ей) с отклонённым значением (список полон)",
-             c->n_bad_values - CFG_MAX_BAD_VALUES);
+    if (c->n_bad_dropped > 0)
+        CFGV("и ещё %d ключ(ей) с отрицательным значением не попали в список "
+             "(вместе с перечисленными — %d)",
+             c->n_bad_dropped, c->n_bad_values + c->n_bad_dropped);
 
     /* Периоды, где 0 НЕ является сенсором: они подставляются в сравнение как
      * есть, и `now - last >= 0` истинно всегда — то есть 0 означает «каждый

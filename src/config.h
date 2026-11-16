@@ -38,6 +38,10 @@
 #define CFG_DEF_HEALTH_TCP_PORT     443  /* health_tcp_port=0 */
 #define CFG_DEF_SOCKS_PORT         1080  /* socks_port=0 */
 #define CFG_DEF_WEB_PORT           8087  /* web_port=0 */
+/* udp_min_op=0 возвращает ПРЕЖНЕЕ жёсткое значение порога UDP (не «выключено»).
+ * Названо здесь, потому что место потребления и описание ключа должны
+ * ссылаться на одну величину, а не на литерал в теле классификатора. */
+#define CFG_LEGACY_UDP_MIN_OP         12
 
 typedef struct {
     char egress_interface[CFG_PATH_MAX];
@@ -279,6 +283,9 @@ typedef struct {
      * запоминается здесь — в месте, где он ещё виден. */
     int n_bad_values;
     char bad_values[CFG_MAX_BAD_VALUES][48];
+    /* Сколько имён не поместилось в bad_values (список ограничен). Отдельно от
+     * n_bad_values, чтобы первый не использовался как индекс. */
+    int n_bad_dropped;
 } susanin_config;
 
 void config_set_defaults(susanin_config *c);

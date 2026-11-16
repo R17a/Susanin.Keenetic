@@ -82,7 +82,27 @@ CONF_FILE=${SUSANIN_CONF:-/opt/susanin/etc/susanin.conf}
 cfg_val() { # cfg_val <ключ> [значение по умолчанию]
     _v=""
     if [ -r "$CONF_FILE" ]; then
-        _v=$(awk -F= -v k="$1" '$1==k {sub(/^[^=]*=/,""); print; exit}' "$CONF_FILE" 2>/dev/null || true)
+        # Разбор совпадает с C (config.c: cfg_split_line): пробелы вокруг '='
+        # допустимы, комментарии пропускаются, а при дубле побеждает ПОСЛЕДНЯЯ
+        # строка. Прежний `$1==k` не видел «key = value» и брал первую строку —
+        # то есть скрипт и агент могли читать один файл по-разному.
+        _v=$(awk -v k="$1" '
+            {
+                l = $0
+                sub(/^[ \t]+/, "", l)
+                if (l == "" || l ~ /^#/) next
+                i = index(l, "=")
+                if (i == 0) next
+                key = substr(l, 1, i - 1)
+                sub(/[ \t]+$/, "", key)
+                if (key != k) next
+                val = substr(l, i + 1)
+                sub(/^[ \t]+/, "", val)
+                sub(/[ \t\r]+$/, "", val)
+                got = val
+            }
+            END { if (got != "") print got }
+        ' "$CONF_FILE" 2>/dev/null || true)
     fi
     if [ -n "$_v" ]; then printf '%s' "$_v"; else printf '%s' "${2:-}"; fi
 }

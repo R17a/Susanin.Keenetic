@@ -1386,7 +1386,8 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                  * адрес голосового сервера не попадал в susanin_test_udp, поток
                  * шёл напрямую и «маршрут не строился». */
                 unsigned long umin = (cfg->udp_min_op > 0)
-                                         ? (unsigned long)cfg->udp_min_op : 12UL;
+                                         ? (unsigned long)cfg->udp_min_op
+                                         : (unsigned long)CFG_LEGACY_UDP_MIN_OP;
                 if (f->dport != 443 && f->dport != 53 && f->dport != 67 &&
                     f->dport != 68 && f->dport != 123 &&
                     !port_excluded(cfg, f->dport) &&
