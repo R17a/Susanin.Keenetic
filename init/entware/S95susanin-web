@@ -5,7 +5,7 @@
 # Test: /opt/etc/init.d/S95susanin-web start|stop|restart
 
 # r7.1: локальное время логов (POSIX-пояс из конфига, напр. IST-8)
-_tz=$(sed -n "s/^[[:space:]]*tz[[:space:]]*=[[:space:]]*//p" /opt/susanin/etc/susanin.conf 2>/dev/null | head -n1)
+_tz=$(sed -n "s/^[[:space:]]*tz[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p" /opt/susanin/etc/susanin.conf 2>/dev/null | head -n1)
 [ -n "$_tz" ] && export TZ="$_tz"
 AGENT=/opt/susanin/bin/susanin-agent
 CONF=/opt/susanin/etc/susanin.conf
@@ -15,7 +15,7 @@ LOGFILE=/opt/susanin/var/susanin-web.log
 start() {
     [ -x "$AGENT" ] || { echo "susanin-web: no agent"; return 1; }
     [ -f "$CONF" ] || { echo "susanin-web: no config"; return 1; }
-    _en=$(sed -n 's/^[[:space:]]*web_enable[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | tail -n 1)
+    _en=$(sed -n 's/^[[:space:]]*web_enable[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$CONF" 2>/dev/null | tail -n 1)
     [ "$_en" = "1" ] || { echo "susanin-web: web_enable!=1, skip"; return 0; }
     if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
         echo "susanin-web: already running (pid $(cat "$PIDFILE"))"

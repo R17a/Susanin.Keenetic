@@ -54,7 +54,7 @@ is_web_running() {
 }
 
 web_enabled() {
-    [ "$(sed -n 's/^[[:space:]]*web_enable[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | tail -n1)" = "1" ]
+    [ "$(sed -n 's/^[[:space:]]*web_enable[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$CONF" 2>/dev/null | tail -n1)" = "1" ]
 }
 
 # disk_mode=soft по документации означает, что ЛОГ НЕ ВЕДЁТСЯ. Раньше это
@@ -63,7 +63,7 @@ web_enabled() {
 # лога отказывала. Итог был худший из возможных: флешка стерлась записями,
 # которые никто не мог прочитать. Теперь в soft вывод идёт в /dev/null.
 disk_mode_of() {
-    sed -n 's/^[[:space:]]*disk_mode[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | tail -n1
+    sed -n 's/^[[:space:]]*disk_mode[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$CONF" 2>/dev/null | tail -n1
 }
 
 # log_dest <обычный_файл> — куда привязывать вывод процессов

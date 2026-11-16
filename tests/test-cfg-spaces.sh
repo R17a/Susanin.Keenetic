@@ -35,6 +35,18 @@ for f in $FILES; do
 done
 [ "$bad" = "0" ] && ok "все поставляемые читатели толерантны к пробелам"
 
+echo "=== 1b. хвост значения срезается читателем (как в config_load) ==="
+for f in $FILES; do
+    p="$ROOT/$f"
+    [ -f "$p" ] || continue
+    hits=$(grep -nE 's/\^\[\[:space:\]\]\*(\$?[a-zA-Z_0-9]+)\[\[:space:\]\]\*=\[\[:space:\]\]\*//p' "$p" 2>/dev/null || true)
+    if [ -n "$hits" ]; then
+        echo "$hits" | sed 's/^/     /'
+        fail "$f: читатель возвращает значение с хвостовыми пробелами"
+    fi
+done
+ok "ни один читатель не оставляет хвост у значения"
+
 echo
 echo "=== 2. живое решение susanin.sh (функции взяты из самого скрипта) ==="
 P=$(mktemp -d "${TMPDIR:-/tmp}/susanin-spaces.XXXXXX") || exit 1
@@ -59,6 +71,17 @@ printf '# web_enable = 1\nweb_enable = 0\n' > "$CONF"
 if web_enabled; then fail "закомментированное значение прочитано"; else ok "комментарий не считается значением"; fi
 printf 'tz = Europe/Moscow\ndisk_mode = soft\n' > "$CONF"
 check "«disk_mode = soft» прочитан" '[ "$(disk_mode_of)" = "soft" ]'
+
+echo
+echo "=== 2b. хвостовые пробелы значения (агент их срезает — и shell обязан) ==="
+printf 'disk_mode=soft   \n' > "$CONF"
+check "«disk_mode=soft   » читается как soft" '[ "$(disk_mode_of)" = "soft" ]'
+printf 'disk_mode=soft\t\n' > "$CONF"
+check "табуляция в хвосте не мешает" '[ "$(disk_mode_of)" = "soft" ]'
+printf 'web_enable = 1\t \n' > "$CONF"
+check "«web_enable = 1 » с хвостом включает панель" 'web_enabled'
+printf 'disk_mode=\n' > "$CONF"
+check "пустое значение остаётся пустым" '[ -z "$(disk_mode_of)" ]'
 
 echo
 echo "=== 3. совпадение с агентом на той же форме ==="

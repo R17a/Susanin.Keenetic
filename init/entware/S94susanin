@@ -6,7 +6,7 @@
 # Test: /opt/etc/init.d/S94susanin start|stop|restart|status
 
 # r7.1: локальное время логов (POSIX-пояс из конфига, напр. IST-8)
-_tz=$(sed -n "s/^[[:space:]]*tz[[:space:]]*=[[:space:]]*//p" /opt/susanin/etc/susanin.conf 2>/dev/null | head -n1)
+_tz=$(sed -n "s/^[[:space:]]*tz[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p" /opt/susanin/etc/susanin.conf 2>/dev/null | head -n1)
 [ -n "$_tz" ] && export TZ="$_tz"
 SUSANIN_SH=/opt/susanin/tools/susanin.sh
 

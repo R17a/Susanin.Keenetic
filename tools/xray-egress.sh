@@ -34,20 +34,20 @@ INITD=/opt/etc/init.d
 SH=$PREFIX/tools/susanin.sh
 DP=$PREFIX/tools/datapath.sh
 
-port=$(sed -n 's/^[[:space:]]*tproxy_port[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | tail -n1)
+port=$(sed -n 's/^[[:space:]]*tproxy_port[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$CONF" 2>/dev/null | tail -n1)
 [ -n "$port" ] || port=12345
-urp=$(sed -n 's/^[[:space:]]*udp_relay_port[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | tail -n1)
+urp=$(sed -n 's/^[[:space:]]*udp_relay_port[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$CONF" 2>/dev/null | tail -n1)
 [ -n "$urp" ] || urp=1081
-et=$(sed -n 's/^[[:space:]]*egress_type[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | tail -n1)
+et=$(sed -n 's/^[[:space:]]*egress_type[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$CONF" 2>/dev/null | tail -n1)
 [ -n "$et" ] || et=interface
 # Уровень логов Xray — ОТДЕЛЬНО от log_level Susanin.Keenetic. Применяется к
 # xray-tproxy.json при enable/run (Xray читает уровень только при старте).
-xlog=$(sed -n 's/^[[:space:]]*xray_loglevel[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | tail -n1)
+xlog=$(sed -n 's/^[[:space:]]*xray_loglevel[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$CONF" 2>/dev/null | tail -n1)
 [ -n "$xlog" ] || xlog=warning
 # Память Xray (роутер без swap): агрессивнее GC + мягкий лимит.
-xgogc=$(sed -n 's/^[[:space:]]*xray_gogc[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | tail -n1)
+xgogc=$(sed -n 's/^[[:space:]]*xray_gogc[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$CONF" 2>/dev/null | tail -n1)
 [ -n "$xgogc" ] || xgogc=50
-xgomem=$(sed -n 's/^[[:space:]]*xray_gomemlimit[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | tail -n1)
+xgomem=$(sed -n 's/^[[:space:]]*xray_gomemlimit[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$CONF" 2>/dev/null | tail -n1)
 [ -n "$xgomem" ] || xgomem=64MiB
 
 say() { echo "[xray-egress] $*"; }
