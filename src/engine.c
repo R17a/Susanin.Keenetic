@@ -711,13 +711,96 @@ static long mem_available_kb(void)
     return kb;
 }
 
+/* Что было в конце прошлого запуска. Нужено потому, что после обрыва питания
+ * или OOM-убийства первая строка нового лога — единственное, что оператор
+ * видит, а последняя строка старого («почему всё встало») остаётся необработанной
+ * где-то в середине файла. Читаем только то, что было в файле ДО нас. */
+static void log_prev_run(off_t upto)
+{
+    char buf[4096];
+    char l1[256], l2[256];
+    size_t got = 0, len;
+    off_t from;
+    int clean = 0, n = 0;
+    char *p;
+    FILE *f;
+
+    if (upto <= 0 || !g_agentlog[0])
+        return;
+    f = fopen(g_agentlog, "rb");
+    if (!f)
+        return;
+    from = upto - (off_t)sizeof(buf);
+    if (from < 0)
+        from = 0;
+    if (fseek(f, (long)from, SEEK_SET) != 0) {
+        fclose(f);
+        return;
+    }
+    got = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (!got)
+        return;
+    buf[got] = '\0';
+    if (strstr(buf, "engine stopped"))
+        clean = 1;
+
+    /* две последние непустые строки того запуска (идём с конца) */
+    l1[0] = l2[0] = '\0';
+    p = buf + got;
+    while (p > buf && n < 2) {
+        char *e = p;
+        char *dst;
+
+        while (p > buf && *(p - 1) != '\n')
+            p--;
+        if (e - p > 1) {
+            dst = (n == 0) ? l1 : l2;
+            len = (size_t)(e - p);
+            if (len >= sizeof(l1))
+                len = sizeof(l1) - 1;
+            memcpy(dst, p, len);
+            dst[len] = '\0';
+            n++;
+        }
+        if (p > buf)
+            p--;                       /* пропустить перевод строки */
+    }
+
+    if (clean)
+        slogf(SL_INFO, "прошлый запуск завершён штатно; его последняя строка: %s", l1);
+    else
+        slogf(SL_WARN, "прошлый запуск не завершался штатно (обрыв питания, kill или "
+              "зависание). Строки того запуска: [%s]%s%s",
+              l1, l2[0] ? " | " : "", l2);
+}
+
+/* Сколько device работает: по /proc/uptime. Отделяет «упал сервис» от
+ * «перезагрузилось устройство» — без этого в логе эти два случая выглядят
+ * одинаково («engine started»). */
+static void log_boot_age(void)
+{
+    double up = 0;
+    FILE *f = fopen("/proc/uptime", "r");
+
+    if (f) {
+        if (fscanf(f, "%lf", &up) != 1)
+            up = 0;
+        fclose(f);
+    }
+    slogf(SL_INFO, "uptime устройства: %.0f с%s", up,
+          up < 120 ? " (устройство только что загрузилось)" : "");
+}
+
 /* Обрезка лога Xray до max_kb. На роутере без swap большой лог — это прямая
  * потеря памяти: /tmp/xray.log вырос до 15 МБ в tmpfs, свободная
  * память ушла ниже watermark и OOM-killer убил сам Xray (интернет встал).
  * max_kb <= 0 — не трогаем. */
+#define XRAY_LOG_PATH "/opt/susanin/var/xray.log"
+
 static void xray_log_trim(int max_kb)
 {
-    const char *path = "/opt/susanin/var/xray.log";
+    const char *path = XRAY_LOG_PATH;
     struct stat st;
     int fd;
 
@@ -1139,6 +1222,8 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     time_t last_release = 0;
     time_t next_xray_try = 0;
     time_t last_logrot = 0;
+    off_t log_prev_size = 0;   /* размер лога до наших записей (для разбора прошлого запуска) */
+    time_t last_xlogrot = 0;   /* рантайм-ротация xray.log (раз в минуту) */
     int xray_tries = 0;
     int stuck_tries = 0;      /* подряд «процесс есть, но порт не слушается» */
     int idle_mult = 1;        /* адаптивный период проходов классификатора (1 или 2) */
@@ -1153,17 +1238,28 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     signal(SIGHUP, on_hup);     /* reload конфига */
     {
         const char *lf = getenv("SUSANIN_LOG");
-        /* disk_mode=soft: файл лога не ведём (минимум записей на носитель). */
-        if (lf && *lf && strcmp(cfg->disk_mode, "soft") != 0) {
-            int fd = open(lf, O_WRONLY | O_CREAT | O_APPEND, 0644);
-            if (fd >= 0) {
-                dup2(fd, 1);
-                dup2(fd, 2);
-                if (fd > 2)
-                    close(fd);
-                snprintf(g_agentlog, sizeof(g_agentlog), "%s", lf);
+        struct stat lst;
+        off_t prev_sz = (lf && *lf && stat(lf, &lst) == 0) ? lst.st_size : 0;
+
+        /* disk_mode=soft: агентовский fd не открываем (минимум СВОИХ записей на
+         * носитель), но путь запоминаем всегда. Причина: susanin.sh перенаправляет
+         * stdout демона в тот же файл редиректом оболочки, то есть writes в него
+         * идут и в soft. Прежняя связка «soft => не открываем => не ротируем»
+         * означала бесконечный рост файла на флешке ровно в том режиме, который
+         * должен был её беречь, и упор был уже не в логи, а в ENOSPC. */
+        if (lf && *lf) {
+            if (strcmp(cfg->disk_mode, "soft") != 0) {
+                int fd = open(lf, O_WRONLY | O_CREAT | O_APPEND, 0644);
+                if (fd >= 0) {
+                    dup2(fd, 1);
+                    dup2(fd, 2);
+                    if (fd > 2)
+                        close(fd);
+                }
             }
+            snprintf(g_agentlog, sizeof(g_agentlog), "%s", lf);
         }
+        log_prev_size = prev_sz;
     }
     slog_init(cfg->log_level);
     backend_batch_enable(cfg->ipset_batch);
@@ -1172,7 +1268,12 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                        "при reboot улики исчезают. Держите лог на flash (так дешевле "
                        "для носителя, чем кажется) или disk_mode=soft", g_agentlog);
     if (strcmp(cfg->disk_mode, "soft") == 0)
-        slogf(SL_INFO, "disk_mode=soft: log file off, state not saved, no backups");
+        /* Прежняя формулировка «log file off» была неверной: файл лога продолжает
+         * писаться редиректом оболочки. Врать про это опасно — оператор решал,
+         * что логов нет, и не искал их при разборе. */
+        slogf(SL_INFO, "disk_mode=soft: свой fd лога не открываем, state не сохраняем "
+              "(кроме soft_state_interval), бэкапов нет; файл лога пишет оболочка, "
+              "ротация по размеру работает");
     if (cfg->ok_ttl == 0)
         slogf(SL_WARN, "ok_ttl=0: выученные адреса не истекают (наборы будут расти); "
                        "рекомендуется конечный TTL, напр. ok_ttl=21600");
@@ -1263,6 +1364,8 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     if (cfg->vpn_never_file[0])
         nv = vn_new();
     slogf(SL_INFO, "engine started (egress=%s table=%d)", cfg->egress_interface, cfg->routing_table);
+    log_boot_age();
+    log_prev_run(log_prev_size);
     cfg_check(cfg, "старт");
     if (va && tunnel_up) {
         last_force = time(NULL);
@@ -1961,11 +2064,24 @@ int engine_run(susanin_config *cfg, const char *conf_path)
          * писатели с O_APPEND продолжают с нового EOF. */
         if (now - last_logrot >= 300) {
             last_logrot = now;
-            if (strcmp(cfg->disk_mode, "soft") != 0) {
-                if (g_agentlog[0])
-                    log_rotate_if_big(g_agentlog, 4096, 1024);
-                log_rotate_if_big("/opt/susanin/var/susanin-web.log", 2048, 512);
-            }
+            /* Ограничение по размеру нужно и в soft: файл пишет оболочка, и
+             * без ротации он растёт на флешке бесконечно. */
+            if (g_agentlog[0])
+                log_rotate_if_big(g_agentlog, 4096, 1024);
+            log_rotate_if_big("/opt/susanin/var/susanin-web.log", 2048, 512);
+        }
+
+        /* xray.log раньше урезался только при спавне Xray. Долгоживой Xray с
+         * поднятым loglevel раздувал tmpfs ровно тем способом, из-за которого
+         * порог и появился (OOM-killer убивает Xray — интернет в доме встаёт).
+         * Здесь ротация чаще и с сохранением хвоста: обнуление файла теряло и
+         * тот контекст, ради которого лог и читают. */
+        if (cfg->xray_log_max_kb > 0 && now - last_xlogrot >= 60) {
+            long keep = cfg->xray_log_max_kb / 4;
+
+            last_xlogrot = now;
+            log_rotate_if_big(XRAY_LOG_PATH, cfg->xray_log_max_kb,
+                              keep > 0 ? keep : 64);
         }
 
         usleep(200000);
