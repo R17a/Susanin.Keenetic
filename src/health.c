@@ -186,7 +186,7 @@ int health_probe_dev(const susanin_config *c, const char *dev, const char *src,
         psrc = srcbuf;
     }
     int tcp_mode = !strcmp(c->health_mode, "tcp");
-    int tcp_port = c->health_tcp_port > 0 ? c->health_tcp_port : 443;
+    int tcp_port = c->health_tcp_port > 0 ? c->health_tcp_port : CFG_DEF_HEALTH_TCP_PORT;
     if (ok) *ok = 0;
     if (total) *total = 0;
     snprintf(buf, sizeof(buf), "%s", c->health_probe);
@@ -238,7 +238,7 @@ int health_probe_via_socks(const susanin_config *c, const char *dst, int port,
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
-    sa.sin_port = htons((uint16_t)(c->socks_port > 0 ? c->socks_port : 1080));
+    sa.sin_port = htons((uint16_t)(c->socks_port > 0 ? c->socks_port : CFG_DEF_SOCKS_PORT));
     if (inet_pton(AF_INET, c->socks_addr[0] ? c->socks_addr : "127.0.0.1",
                   &sa.sin_addr) != 1) {
         close(fd);
@@ -289,7 +289,7 @@ int health_probe_tcp_egress(const susanin_config *c, const char *dev,
         psrc = srcbuf;
     }
     if (port <= 0)
-        port = c->health_tcp_port > 0 ? c->health_tcp_port : 443;
+        port = c->health_tcp_port > 0 ? c->health_tcp_port : CFG_DEF_HEALTH_TCP_PORT;
     snprintf(buf, sizeof(buf), "%s", c->health_probe);
     for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
         while (*tok == ' ' || *tok == '\t')

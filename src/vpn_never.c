@@ -499,7 +499,7 @@ int vn_refresh2(vpn_never *v, const susanin_config *cfg, int *changed)
     int nfail = 0, nex = 0;
     char exa[3][64] = { "", "", "" };
     long long t0 = now_ms();
-    int interval = cfg->vpn_never_interval > 0 ? cfg->vpn_never_interval : 300;
+    int interval = cfg->vpn_never_interval > 0 ? cfg->vpn_never_interval : CFG_DEF_VPN_LIST_INTERVAL;
     /* Бюджет одного прохода (см. vpn_refresh_budget_ms в susanin.conf):
      * короткие проходы не держат главный цикл и не задерживают метки. */
     long long budget = (cfg->vpn_refresh_budget_ms > 0)

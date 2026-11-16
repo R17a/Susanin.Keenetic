@@ -480,7 +480,7 @@ int udp_relay_start(const susanin_config *cfg)
     g_next_try = 0;
     snprintf(g_socks_host, sizeof(g_socks_host), "%s",
              cfg->socks_addr[0] ? cfg->socks_addr : "127.0.0.1");
-    g_socks_port = cfg->socks_port > 0 ? cfg->socks_port : 1080;
+    g_socks_port = cfg->socks_port > 0 ? cfg->socks_port : CFG_DEF_SOCKS_PORT;
     g_pid = relay_spawn(cfg);
     return (int)g_pid;
 }
@@ -529,7 +529,7 @@ void udp_relay_reload(const susanin_config *cfg)
         return;
     }
     nh = cfg->socks_addr[0] ? cfg->socks_addr : "127.0.0.1";
-    np = cfg->socks_port > 0 ? cfg->socks_port : 1080;
+    np = cfg->socks_port > 0 ? cfg->socks_port : CFG_DEF_SOCKS_PORT;
     if (strcmp(g_socks_host, nh) == 0 && g_socks_port == np &&
         g_rcfg.udp_relay_port == cfg->udp_relay_port) {
         g_rcfg = *cfg;              /* значимые поля те же — обновить снимок */

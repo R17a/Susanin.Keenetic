@@ -822,7 +822,7 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
     int nfail = 0, nex = 0;
     char exa[3][64] = { "", "", "" };
     long long t0 = now_ms();
-    int interval = cfg->vpn_always_interval > 0 ? cfg->vpn_always_interval : 300;
+    int interval = cfg->vpn_always_interval > 0 ? cfg->vpn_always_interval : CFG_DEF_VPN_LIST_INTERVAL;
     /* Бюджет одного прохода: по умолчанию 250 мс (см. vpn_refresh_budget_ms).
      * Раньше жёсткие 4000 мс держали главный цикл — в это время классификатор
      * не работал и метки не ставились. 0 в конфиге = прежние 4 с. */

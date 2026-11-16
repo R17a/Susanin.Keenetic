@@ -125,6 +125,76 @@ int main(void)
         CHECK(config_validate(&cfg, prob, sizeof(prob)) > 0,
               "fast_interval=0 помечен (полный скан каждый проход)");
 
+        /* Семантика нуля закрепляется тестом. Причина: 0 в этом конфиге значит
+         * ТРИ разные вещи — «выключено», «никогда» и «взять действующий
+         * default», — и для каждого ключа это решается в месте потребления.
+         * Угадать нельзя, поэтому проверяем обе стороны списка, а не одно
+         * общее правило. */
+        {
+            static const char *zero_ok[] = {
+                "synfail_window=0\n",
+                "test_net_enabled=1\ntest_net_window=0\n",
+                "test_net_enabled=1\ntest_net_ttl=0\n",
+                "dns_sniff=1\ndns_sniff_ttl=0\n",
+                "vpn_always_interval=0\n",
+                "vpn_never_interval=0\n",
+                "dp_check_interval=0\n",
+                "web_enable=1\nweb_port=0\n",
+                "udp_relay=1\nsocks_port=0\n",
+                "health_mode=tcp\nhealth_tcp_port=0\n",
+                "soft_state_interval=0\n",
+                "ok_ttl=0\n",
+                "promo_per_min=0\n",
+                NULL
+            };
+            static const char *zero_bad[] = {
+                "fast_interval=0\n",
+                "soft_interval=0\n",
+                "judge_interval=0\n",
+                "health_interval=0\n",
+                "egress_type=tproxy\ntproxy_port=0\n",
+                "udp_relay=1\nudp_relay_port=0\n",
+                NULL
+            };
+            /* Те же ключи, что выше в zero_ok, но с отрицательным значением:
+             * ноль законен, минус — нет. */
+            static const char *neg_bad[] = {
+                "synfail_window=-1\n",
+                "test_net_enabled=1\ntest_net_window=-1\n",
+                "dns_sniff=1\ndns_sniff_ttl=-1\n",
+                "vpn_always_interval=-1\n",
+                "vpn_never_interval=-1\n",
+                "dp_check_interval=-1\n",
+                "web_enable=1\nweb_port=-1\n",
+                "health_mode=tcp\nhealth_tcp_port=-1\n",
+                "udp_relay=1\nsocks_port=-1\n",
+                NULL
+            };
+            int z;
+            char msg[192];
+
+            for (z = 0; zero_ok[z]; z++) {
+                int got;
+                config_load(write_cfg(zero_ok[z]), &cfg);
+                got = config_validate(&cfg, prob, sizeof(prob));
+                snprintf(msg, sizeof(msg), "законный ноль: %.60s", zero_ok[z]);
+                CHECK(got == 0, msg);
+                if (got)
+                    printf("     (замечание: %s)", prob);
+            }
+            for (z = 0; zero_bad[z]; z++) {
+                config_load(write_cfg(zero_bad[z]), &cfg);
+                snprintf(msg, sizeof(msg), "ноль ломает поведение: %.60s", zero_bad[z]);
+                CHECK(config_validate(&cfg, prob, sizeof(prob)) > 0, msg);
+            }
+            for (z = 0; neg_bad[z]; z++) {
+                config_load(write_cfg(neg_bad[z]), &cfg);
+                snprintf(msg, sizeof(msg), "отрицательное значение помечено: %.60s",
+                         neg_bad[z]);
+                CHECK(config_validate(&cfg, prob, sizeof(prob)) > 0, msg);
+            }
+        }
+
         /* Малый буфер: число проблем возвращается, текст не вылезает за границу. */
         {
             char tiny[32];

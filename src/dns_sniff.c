@@ -191,7 +191,7 @@ static void dns_parse(const uint8_t *p, int len)
         return;
     off += 4;                       /* qtype + qclass */
 
-    ttlcap = (g_cfg && g_cfg->dns_sniff_ttl > 0) ? g_cfg->dns_sniff_ttl : 300;
+    ttlcap = (g_cfg && g_cfg->dns_sniff_ttl > 0) ? g_cfg->dns_sniff_ttl : CFG_DEF_DNS_SNIFF_TTL;
     for (i = 0; i < an && off + 10 <= len; i++) {
         int type, cls, rdlen, ttl;
         char aname[DNS_DOMAIN_MAX];

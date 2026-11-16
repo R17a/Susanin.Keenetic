@@ -1654,7 +1654,7 @@ int web_run(const susanin_config *cfg)
     struct sockaddr_in sa;
     int sfd, opt = 1;
     const char *listen_addr = cfg->web_listen;
-    int port = cfg->web_port > 0 ? cfg->web_port : 8087;
+    int port = cfg->web_port > 0 ? cfg->web_port : CFG_DEF_WEB_PORT;
 
     if (!cfg->web_enable) {
         fprintf(stderr, "web: disabled (set web_enable=1 in config)\n");

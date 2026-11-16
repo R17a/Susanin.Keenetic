@@ -10,12 +10,34 @@
 #define CFG_PATH_MAX 256
 #define CFG_MAX_EGRESS 4
 #define CFG_MAX_PROFILES 4
+/* Сколько ключей с отклонённым значением помещается в запись о загрузке.
+ * Больше — только счётчик: смысл не в полном списке, а в том, чтобы факт не
+ * потерялся. */
+#define CFG_MAX_BAD_VALUES 16
 /* Верх synfail_quorum: столько различных погибших соединений на одно
  * назначение модуль обучения различает. Порог выше этого значения был бы
  * недостижим как «разных соединений» (вытесненное из кольца соединение при
  * возврате засчиталось бы заново), поэтому он клампится — и об этом говорится
  * при загрузке конфига, а не молча. */
 #define CFG_SYNFAIL_QUORUM_MAX 8
+
+/* Значение 0 в этом конфиге означает ТРИ разные вещи, и какое именно —
+ * решается не «правилом для нуля», а каждым ключом отдельно:
+ *   - выключено (udp_relay, web_enable, dns_sniff, ok_ttl, promo_per_min…);
+ *   - «никогда» (soft_state_interval = не сохранять состояние);
+ *   - «взять действующий default» (перечислено ниже).
+ * Третье раньше было записано литералом в каждом месте потребления, и именно
+ * поэтому проверка конфига могла понять 0 превратно. Теперь величина
+ * названа здесь, и и код, и проверка ссылаются на одно имя. */
+#define CFG_DEF_SYNFAIL_WINDOW      120  /* synfail_window=0 */
+#define CFG_DEF_TEST_NET_WINDOW      60  /* test_net_window=0 */
+#define CFG_DEF_TEST_NET_TTL        600  /* test_net_ttl=0 */
+#define CFG_DEF_DNS_SNIFF_TTL       300  /* dns_sniff_ttl=0 */
+#define CFG_DEF_VPN_LIST_INTERVAL   300  /* vpn_always_interval/vpn_never_interval=0 */
+#define CFG_DEF_DP_CHECK_INTERVAL    15  /* dp_check_interval=0 */
+#define CFG_DEF_HEALTH_TCP_PORT     443  /* health_tcp_port=0 */
+#define CFG_DEF_SOCKS_PORT         1080  /* socks_port=0 */
+#define CFG_DEF_WEB_PORT           8087  /* web_port=0 */
 
 typedef struct {
     char egress_interface[CFG_PATH_MAX];
@@ -250,6 +272,13 @@ typedef struct {
      * панели. Сеть опрашивается не чаще release_check_interval (сек). */
     int release_check;
     int release_check_interval;
+    /* Ключи, значение которых ОТКЛОНЕНО разбором: parse_dur() приводит
+     * отрицательное и неразобранное к 0 молча, а для немалого числа ключей 0 —
+     * законный сенсор («взять default», «никогда», «выключено»). Значение
+     * поля при этом не отличить от намеренного нуля, поэтому оригинал
+     * запоминается здесь — в месте, где он ещё виден. */
+    int n_bad_values;
+    char bad_values[CFG_MAX_BAD_VALUES][48];
 } susanin_config;
 
 void config_set_defaults(susanin_config *c);

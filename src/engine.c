@@ -487,7 +487,7 @@ static void probe_job_start(const susanin_config *cfg, int n)
              * fail-open/failover-механизм. */
             char buf[512], *save = NULL, *tok;
             int ok = 0, total = 0, lat = 0, naddr = 0;
-            int port = cfg->health_tcp_port > 0 ? cfg->health_tcp_port : 443;
+            int port = cfg->health_tcp_port > 0 ? cfg->health_tcp_port : CFG_DEF_HEALTH_TCP_PORT;
             struct timespec t0, t1;
             snprintf(buf, sizeof(buf), "%s", cfg->health_probe);
             clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -526,7 +526,7 @@ static void probe_job_start(const susanin_config *cfg, int n)
                 /* Резервный путь через Xray: проверяем апстрим по SOCKS. */
                 char pb[512], *save = NULL, *tok;
                 int naddr = 0;
-                int tport = cfg->health_tcp_port > 0 ? cfg->health_tcp_port : 443;
+                int tport = cfg->health_tcp_port > 0 ? cfg->health_tcp_port : CFG_DEF_HEALTH_TCP_PORT;
                 clock_gettime(CLOCK_MONOTONIC, &t0);
                 snprintf(pb, sizeof(pb), "%s", cfg->health_probe);
                 for (tok = strtok_r(pb, ",", &save); tok && naddr < 3;
@@ -564,7 +564,7 @@ static void probe_job_start(const susanin_config *cfg, int n)
                                             cfg->health_tcp_port)) {
                     slogf(SL_DEBUG, "health %s: ICMP 0/%d, TCP %d — считаю живым",
                           cfg->egress_list[i], total,
-                          cfg->health_tcp_port > 0 ? cfg->health_tcp_port : 443);
+                          cfg->health_tcp_port > 0 ? cfg->health_tcp_port : CFG_DEF_HEALTH_TCP_PORT);
                     ok = total;
                 }
                 clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -1659,7 +1659,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             }
         }
 
-        if (now - last_recon >= (cfg->dp_check_interval > 0 ? cfg->dp_check_interval : 15)) {
+        if (now - last_recon >= (cfg->dp_check_interval > 0 ? cfg->dp_check_interval : CFG_DEF_DP_CHECK_INTERVAL)) {
             int tproxy = (strcmp(cfg->egress_type, "tproxy") == 0);
             int tp_ok = !tproxy || backend_local_listen(cfg->tproxy_port);
             last_recon = now;

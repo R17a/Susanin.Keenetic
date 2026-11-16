@@ -295,6 +295,25 @@ static void apply_precision(susanin_config *c, unsigned seen)
     }
 }
 
+/* Запомнить ключ со значением, которое разбор не принял. Без этого факта
+ * опечатка «interval=-5» и осознанный «interval=0» неразличимы: parse_dur()
+ * обошляет в 0, а для многих ключей 0 — законный сенсор. */
+static void cfg_note_bad_value(susanin_config *c, const char *key)
+{
+    int i;
+
+    for (i = 0; i < c->n_bad_values; i++)
+        if (!strcmp(c->bad_values[i], key))
+            return;                    /* не плодить на повторной строке */
+    if (c->n_bad_values >= CFG_MAX_BAD_VALUES) {
+        c->n_bad_values++;             /* счётчик продолжает расти, список — нет */
+        return;
+    }
+    snprintf(c->bad_values[c->n_bad_values], sizeof(c->bad_values[0]),
+             "%.47s", key);
+    c->n_bad_values++;
+}
+
 int config_load(const char *path, susanin_config *c)
 {
     FILE *fp;
@@ -329,6 +348,10 @@ int config_load(const char *path, susanin_config *c)
             char *q = val + strlen(val) - 1;
             while (q >= val && (*q == ' ' || *q == '\t' || *q == '\r')) *q-- = '\0';
         }
+
+        /* Отрицательное число до того, как его «съест» разбор. */
+        if (val[0] == '-' && val[1] >= '0' && val[1] <= '9')
+            cfg_note_bad_value(c, key);
 
         {
             int handled = 0, pi;
@@ -1301,9 +1324,12 @@ int config_sync(const char *path, int dry_run)
  * отрицательные пороги уходят в беззнаковый контекст и превращаются в
  * гигантские (агрегация при этом молча выключается), нулевые периоды
  * превращают редкий скан в каждый проход, метка вне маски не различается
- * ядром вообще. Документированные сенсоры (0 = выключено / 0 = никогда)
- * намеренно НЕ считаются ошибкой: иначе проверка стала бы шумом, который
- * оператор перестаёт читать.
+ * ядром вообще. Документированные сенсоры нуля
+ * оцениваются по смыслу конкретного ключа: «выключено», «никогда» и «взять
+ * действующий default» — три разных законных случая, единого правила для нуля
+ * нет. Исключение сделано там, где нуля-сенсора нет и 0 обращает редкий скан в
+ * каждый проход — только такой ноль и помечается. Иначе проверка стала бы
+ * шумом, который оператор перестаёт читать.
  *
  * Возвращает число проблем; в out — по строке на проблему (что влезло).
  * Приложение к загрузке: движок повторяет проверку на старте и на Reload,
@@ -1312,7 +1338,10 @@ int config_validate(const susanin_config *c, char *out, size_t n)
 {
     size_t used = 0;
     int bad = 0, full = 0, i;
-    char line[256];
+    /* Буфер обязан вместить самую длинную формулировку ниже: при 256 текст
+     * обрезался бы посреди предложения, а число проблем от обрезки не
+     * меняется — тест этого бы не поймал, поймал только компилятор. */
+    char line[512];
 
     if (!c || !out || n == 0)
         return 0;
@@ -1332,8 +1361,21 @@ int config_validate(const susanin_config *c, char *out, size_t n)
         }                                                     \
     } while (0)
 
-    /* Периоды сканов: 0 превращает «раз в N секунд» в каждый проход цикла —
-     * на MIPS это полная загрузка CPU на пустом месте. */
+    /* Первым делом — значения, которых в структуре уже нет: разбор заменил их
+     * нулём. Это не «странное число», а потерянное намерение оператора. */
+    for (i = 0; i < c->n_bad_values && i < CFG_MAX_BAD_VALUES; i++)
+        CFGV("%s: в файле значение отрицательное — разбор его не применяет: "
+             "одни ключи при этом становятся 0 (а 0 для них = «по умолчанию»), "
+             "другие сохраняют бессмысленный порог",
+             c->bad_values[i]);
+    if (c->n_bad_values > CFG_MAX_BAD_VALUES)
+        CFGV("и ещё %d ключ(ей) с отклонённым значением (список полон)",
+             c->n_bad_values - CFG_MAX_BAD_VALUES);
+
+    /* Периоды, где 0 НЕ является сенсором: они подставляются в сравнение как
+     * есть, и `now - last >= 0` истинно всегда — то есть 0 означает «каждый
+     * проход цикла», а не «выключено». Это единственный класс, где нуль
+     * реально ломает поведение, и его мы и помечаем. */
     if (c->fast_interval < 1)
         CFGV("fast_interval=%d: не может быть меньше 1 с (полный скан conntrack каждый проход)",
              c->fast_interval);
@@ -1344,15 +1386,20 @@ int config_validate(const susanin_config *c, char *out, size_t n)
     if (c->health_interval < 1)
         CFGV("health_interval=%d: меньше 1 с — пробы чаще, чем успевает ответить туннель",
              c->health_interval);
+
+    /* А здесь 0 = «взять действующий default» (CFG_DEF_* в config.h): значение
+     * подставляется в месте потребления, поэтому нуль законен и замечанием не
+     * является. Отрицательное — наоборот: ни «выключено», ни «default», а
+     * неопределённый период. */
     if (c->dp_check_interval < 0)
-        CFGV("dp_check_interval=%d: отрицательный период сверки датаплейна (0 = по умолчанию)",
-             c->dp_check_interval);
-    if (c->vpn_always_interval < 1)
-        CFGV("vpn_always_interval=%d: меньше 1 с — перечитывание и резолв без паузы",
-             c->vpn_always_interval);
-    if (c->vpn_never_interval < 1)
-        CFGV("vpn_never_interval=%d: меньше 1 с — перечитывание без паузы",
-             c->vpn_never_interval);
+        CFGV("dp_check_interval=%d: отрицательный период (0 = %d с)",
+             c->dp_check_interval, CFG_DEF_DP_CHECK_INTERVAL);
+    if (c->vpn_always_interval < 0)
+        CFGV("vpn_always_interval=%d: отрицательный период (0 = %d с)",
+             c->vpn_always_interval, CFG_DEF_VPN_LIST_INTERVAL);
+    if (c->vpn_never_interval < 0)
+        CFGV("vpn_never_interval=%d: отрицательный период (0 = %d с)",
+             c->vpn_never_interval, CFG_DEF_VPN_LIST_INTERVAL);
 
     /* Маршрутизация и метки: здесь неверное значение не «хуже», а не работает. */
     if (c->routing_table < 1 || c->routing_table > 252)
@@ -1405,28 +1452,35 @@ int config_validate(const susanin_config *c, char *out, size_t n)
         CFGV("synfail_quorum=%d недостижим как «разных соединений»: клампим до %d",
              c->synfail_quorum, CFG_SYNFAIL_QUORUM_MAX);
     if (c->synfail_window < 0)
-        CFGV("synfail_window=%d: отрицательное окно (0 = по умолчанию 120 с)",
-             c->synfail_window);
-    else if (c->synfail_quorum > 0 && c->synfail_window < 1)
-        CFGV("synfail_window=%d при synfail_quorum=%d: в окно меньше секунды quorum не набрать",
-             c->synfail_window, c->synfail_quorum);
+        CFGV("synfail_window=%d: отрицательное окно (0 = %d с, выключает не окно, а quorum)",
+             c->synfail_window, CFG_DEF_SYNFAIL_WINDOW);
 
-    /* Порты — проверяем только у включённых механизмов, иначе 0 законен. */
-#define CFGV_PORT(key, val, on) do {                              \
+    /* Порты. Разбор по способу подстановки, а не «нуль везде плох»:
+     *   - tproxy_port и udp_relay_port уходят в сравнение и bind как есть,
+     *     поэтому 0 там = сломанный порт (у релеев ещё и ephemeral-bind);
+     *   - socks_port, web_port и health_tcp_port при 0 подменяются default-ом
+     *     (CFG_DEF_* в config.h) — ноль законен, а вне диапазона уже нет. */
+#define CFGV_PORT_STRICT(key, val, on) do {                       \
         if ((on) && ((val) < 1 || (val) > 65535))                 \
             CFGV("%s=%d: вне 1..65535", (key), (int)(val));      \
     } while (0)
-    CFGV_PORT("tproxy_port", c->tproxy_port,
-              !strcmp(c->egress_type, "tproxy") || !strcmp(c->egress_type, "xray"));
-    CFGV_PORT("udp_relay_port", c->udp_relay_port, c->udp_relay == 1);
-    CFGV_PORT("socks_port", c->socks_port, c->udp_relay == 1);
-    CFGV_PORT("web_port", c->web_port, c->web_enable == 1);
-    CFGV_PORT("health_tcp_port", c->health_tcp_port, !strcmp(c->health_mode, "tcp"));
+#define CFGV_PORT_DEFAULT(key, val, def) do {                     \
+        if ((val) != 0 && ((val) < 1 || (val) > 65535))           \
+            CFGV("%s=%d: вне 1..65535 (0 = %d)", (key), (int)(val), (def)); \
+    } while (0)
+    CFGV_PORT_STRICT("tproxy_port", c->tproxy_port,
+                     !strcmp(c->egress_type, "tproxy") || !strcmp(c->egress_type, "xray"));
+    CFGV_PORT_STRICT("udp_relay_port", c->udp_relay_port, c->udp_relay == 1);
+    CFGV_PORT_DEFAULT("socks_port", c->socks_port, CFG_DEF_SOCKS_PORT);
+    CFGV_PORT_DEFAULT("web_port", c->web_port, CFG_DEF_WEB_PORT);
+    CFGV_PORT_DEFAULT("health_tcp_port", c->health_tcp_port, CFG_DEF_HEALTH_TCP_PORT);
 
-    /* Длины префиксов агрегации: вне 8..32 сдвиг маски не определён. */
+    /* Длины префиксов агрегации: код клампит их в 8..32, поэтому значение вне
+     * диапазона — не поломка, а «будет применён другой предел»: о нём говорим,
+     * но только у включённого механизма. */
 #define CFGV_PREFIX(key, val, on) do {                            \
         if ((on) && ((val) < 8 || (val) > 32))                    \
-            CFGV("%s=%d: длина префикса вне 8..32", (key), (int)(val)); \
+            CFGV("%s=%d: длина префикса вне 8..32 — будет кламплена", (key), (int)(val)); \
     } while (0)
     CFGV_PREFIX("cdn_prefix_max", c->cdn_prefix_max, c->cdn_prefix_learn == 1);
     CFGV_PREFIX("frozen_net_prefix", c->frozen_net_prefix, c->frozen_net_enabled == 1);
@@ -1434,11 +1488,14 @@ int config_validate(const susanin_config *c, char *out, size_t n)
     CFGV_PREFIX("media_prefix_max", c->media_prefix_max, c->media_enabled == 1);
     CFGV_PREFIX("kernel_offload_max", c->kernel_offload_max,
                 c->kernel_offload == 1 && c->kernel_egress[0] != '\0');
-    if (c->test_net_enabled == 1 && c->test_net_window < 1)
-        CFGV("test_net_window=%d: окно серии меньше секунды", c->test_net_window);
-    if (c->dns_sniff == 1 && c->dns_sniff_ttl < 1)
-        CFGV("dns_sniff_ttl=%d: пары домен->IP протухают раньше, чем успевают пригодиться",
-             c->dns_sniff_ttl);
+    /* Окно и TTL списков: при 0 подставляется default, поэтому проверяем
+     * только знак. */
+    if (c->test_net_enabled == 1 && c->test_net_window < 0)
+        CFGV("test_net_window=%d: отрицательное окно (0 = %d с)",
+             c->test_net_window, CFG_DEF_TEST_NET_WINDOW);
+    if (c->dns_sniff == 1 && c->dns_sniff_ttl < 0)
+        CFGV("dns_sniff_ttl=%d: отрицательный TTL (0 = %d с)",
+             c->dns_sniff_ttl, CFG_DEF_DNS_SNIFF_TTL);
 
     /* Ключ, который без egress-интерфейса означает «всё напрямую». */
     if (!strcmp(c->egress_type, "interface") && !c->egress_interface[0])

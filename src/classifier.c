@@ -720,7 +720,7 @@ static void test_net_aggregate(classifier_ctx *ctx, const ct_flow *f, time_t now
     if (state_has(&ctx->st->net, cidr, now))
         return;
     want = cfg->test_net_min_ips >= 1 ? cfg->test_net_min_ips : 2;
-    win = cfg->test_net_window > 0 ? cfg->test_net_window : 60;
+    win = cfg->test_net_window > 0 ? cfg->test_net_window : CFG_DEF_TEST_NET_WINDOW;
     if (!tn_confirm(want, win, cidr, f->dst)) {
         slogf(SL_DEBUG, "TEST-NET: %s копит подтверждения (нужно %d разных IP за %d с)",
               cidr, want, win);
@@ -731,7 +731,7 @@ static void test_net_aggregate(classifier_ctx *ctx, const ct_flow *f, time_t now
         slogf(SL_DEBUG, "TEST-NET: не агрегирую %s — адрес в vpn_never", f->dst);
         return;
     }
-    ttl = cfg->test_net_ttl > 0 ? cfg->test_net_ttl : 600;
+    ttl = cfg->test_net_ttl > 0 ? cfg->test_net_ttl : CFG_DEF_TEST_NET_TTL;
     backend_net_add(cfg, cidr, ttl);
     state_touch(&ctx->st->net, cidr, now, ttl);
     slogf(SL_INFO, "TEST-NET: %s -> vpn (%d IP в test за %d с, последний %s, ttl=%ds)",
@@ -1076,7 +1076,7 @@ static int sf_note(const susanin_config *cfg, const char *key,
                    const char *flow, time_t now)
 {
     sf_slot *s;
-    int i, q, win = cfg->synfail_window > 0 ? cfg->synfail_window : 120;
+    int i, q, win = cfg->synfail_window > 0 ? cfg->synfail_window : CFG_DEF_SYNFAIL_WINDOW;
 
     if (cfg->synfail_quorum <= 0)
         return 0;                    /* механизм выключен — прежнее поведение */

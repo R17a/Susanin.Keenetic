@@ -272,10 +272,10 @@ static int fetch_payload(const susanin_config *c)
      * него (тот же путь, что работает для загрузки обновлений). Прямые
      * wget/curl остаются фолбэком (interface-режим, отсутствие curl/SOCKS). */
     if (c && strcmp(c->egress_type, "tproxy") == 0 &&
-        backend_local_listen(c->socks_port > 0 ? c->socks_port : 1080)) {
+        backend_local_listen(c->socks_port > 0 ? c->socks_port : CFG_DEF_SOCKS_PORT)) {
         snprintf(socks_url, sizeof(socks_url), "socks5h://%.60s:%d",
                  c->socks_addr[0] ? c->socks_addr : "127.0.0.1",
-                 c->socks_port > 0 ? c->socks_port : 1080);
+                 c->socks_port > 0 ? c->socks_port : CFG_DEF_SOCKS_PORT);
         curl_socks_argv[0] = "curl";
         curl_socks_argv[1] = "-fsS";
         curl_socks_argv[2] = "--max-time";
