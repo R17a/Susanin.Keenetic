@@ -54,7 +54,7 @@ CONF_FOR_FETCH="$PREFIX/etc/susanin.conf"
 # r7.2: локальный SOCKS доступен? Только tproxy-конфиг и слушающийся socks-in
 # (127.0.0.1:1080 = 0x0438, состояние LISTEN 0A в /proc/net/tcp).
 susanin_socks_avail() {
-    _et=$(sed -n 's/^egress_type=//p' "$CONF_FOR_FETCH" 2>/dev/null | head -n1)
+    _et=$(sed -n 's/^[[:space:]]*egress_type[[:space:]]*=[[:space:]]*//p' "$CONF_FOR_FETCH" 2>/dev/null | head -n1)
     [ "$_et" = "tproxy" ] || return 1
     awk '$2 ~ /:0438$/ && $4 == "0A" { f=1 } END { exit !f }' /proc/net/tcp 2>/dev/null
 }
@@ -753,7 +753,7 @@ merge_csv() {
 }
 
 _cfg_val() { # значение ключа из уже установленного конфига
-    sed -n "s/^$1=[ \t]*//p" "$PREFIX/etc/susanin.conf" 2>/dev/null | head -1
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$PREFIX/etc/susanin.conf" 2>/dev/null | head -1
 }
 
 if [ ! -f "$PREFIX/etc/susanin.conf" ]; then

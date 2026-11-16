@@ -340,6 +340,20 @@ int main(void)
         config_load(write_cfg("mark_ok=0xffffffffffffffff\n"), &cfg);
         CHECK(cfg.n_bad_values == 1, "переполнение значения метки помечено");
 
+        /* Пресет вне списка: раньше config check о нём молчал, хотя агент
+         * именно это значение и не применяет. Значение могло попасть в конфиг
+         * из вывода config show прежних версий. */
+        config_load(write_cfg("precision=(выкл)\n"), &cfg);
+        CHECK(cfg.precision[0] && !strcmp(cfg.precision, "(выкл)"),
+              "значение пресета сохранено как написано");
+        CHECK(config_validate(&cfg, prob, sizeof(prob)) == 1 &&
+              strstr(prob, "precision=(выкл)") != NULL,
+              "config check называет неизвестный пресет");
+        /* Легальные имена не должны шуметь. */
+        config_load(write_cfg("precision=strict\n"), &cfg);
+        CHECK(config_validate(&cfg, prob, sizeof(prob)) == 0,
+              "известный пресет замечаний не вызывает");
+
         /* Ведущий ноль — это десятичная система, а не восьмеричная. */
         config_load(write_cfg("routing_table=0100\n"), &cfg);
         CHECK(cfg.routing_table == 100, "«0100» прочитано как 100, а не как 64");

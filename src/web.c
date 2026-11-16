@@ -321,7 +321,9 @@ static void serve_log(int fd, const susanin_config *cfg, const char *query, int 
     }
     if (query) {
         const char *p = strstr(query, "lines=");
-        if (p) {
+        /* Граница параметра: без неё «?xlines=50» читалось как lines=50 —
+         * тот же класс, что уже исправлен для token= и name=. */
+        if (p && (p == query || p[-1] == '&')) {
             int v = atoi(p + 6);
             if (v > 0 && v <= 1000)
                 want = v;

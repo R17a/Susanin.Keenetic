@@ -185,8 +185,13 @@ void config_set_defaults(susanin_config *c)
              "/opt/susanin/etc/vpn_never.txt");
     c->vpn_never_interval = 300;
     c->vpn_refresh_budget_ms = 250;
-    snprintf(c->log_level, sizeof(c->log_level), "%s", "info");
-    snprintf(c->xray_loglevel, sizeof(c->xray_loglevel), "%s", "warning");
+    /* По умолчанию — минимум записей на носитель: агент пишет только ошибки и
+     * предупреждения, Xray — только ошибки. Диагностика и обучение при этом не
+     * теряются:
+     * всё, что раньше объяснялось INFO-строками, теперь объясняется командами
+     * status/why/config check и счётчиками, а INFO включается явно. */
+    snprintf(c->log_level, sizeof(c->log_level), "%s", "warn");
+    snprintf(c->xray_loglevel, sizeof(c->xray_loglevel), "%s", "error");
     snprintf(c->xray_gogc, sizeof(c->xray_gogc), "%s", "50");
     snprintf(c->xray_gomemlimit, sizeof(c->xray_gomemlimit), "%s", "64MiB");
     c->xray_watchdog = 1;
@@ -1676,6 +1681,15 @@ int config_validate(const susanin_config *c, char *out, size_t n)
     if (c->n_unknown_dropped > 0)
         CFGV("и ещё %d нераспознанного ключа не показаны (список полон)",
              c->n_unknown_dropped);
+
+    /* Пресет вне списка. Значение вроде «(выкл)» могло попасть в конфиг, его
+     * когда-то печатал вывод config show. Прежняя проверка о таком молчала:
+     * предупреждение было только в stderr при загрузке, а config check
+     * выдавал «замечаний нет» — то есть ровно тот случай, ради которого
+     * проверка и делалась, оставался за её пределами. */
+    if (c->precision[0] && !precision_known(c->precision))
+        CFGV("precision=%s: пресета с таким именем нет (strict|normal|aggressive), "
+             "ни один порог не применён", c->precision);
 
     /* Периоды, где 0 НЕ является сенсором: они подставляются в сравнение как
      * есть, и `now - last >= 0` истинно всегда — то есть 0 означает «каждый

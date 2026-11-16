@@ -61,6 +61,7 @@ test: $(TESTS)
 	./tests/test_release
 	sh tests/test-egress-failover.sh
 	sh tests/test-installer-sync.sh
+	sh tests/test-cfg-spaces.sh
 
 tests/test_state: tests/test_state.c src/state.c src/state.h
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_state.c src/state.c

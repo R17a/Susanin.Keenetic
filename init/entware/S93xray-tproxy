@@ -8,7 +8,7 @@
 # Управление: S93xray-tproxy start|stop|restart
 
 # r7.1: локальное время логов (POSIX-пояс из конфига, напр. IST-8)
-_tz=$(sed -n "s/^tz=//p" /opt/susanin/etc/susanin.conf 2>/dev/null | head -n1)
+_tz=$(sed -n "s/^[[:space:]]*tz[[:space:]]*=[[:space:]]*//p" /opt/susanin/etc/susanin.conf 2>/dev/null | head -n1)
 [ -n "$_tz" ] && export TZ="$_tz"
 XRAY=/opt/sbin/xray
 XCFG=/opt/susanin/etc/xray-tproxy.json
@@ -49,7 +49,7 @@ start() {
     # Ранние версии скриптов и ручные запуски писали именно туда — подчищаем.
     rm -f /tmp/xray.log 2>/dev/null || true
     # Обрезка штатного лога: при loglevel=debug он растёт на мегабайты.
-    _logkb=$(sed -n 's/^xray_log_max_kb=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
+    _logkb=$(sed -n 's/^[[:space:]]*xray_log_max_kb[[:space:]]*=[[:space:]]*//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
     [ -n "$_logkb" ] || _logkb=2048
     if [ "$_logkb" -gt 0 ] 2>/dev/null && [ -f "$LOGF" ]; then
         _sz=$(wc -c < "$LOGF" 2>/dev/null || echo 0)
@@ -63,7 +63,7 @@ start() {
     # Порог включается ТОЛЬКО явным xray_min_mem_kb>0 в susanin.conf: по
     # умолчанию 0 (выключено), как в 0.4.4. Зашитый 12288 блокировал подъём
     # Xray на 122 МБ роутерах (регресс 0.4.6, откатан в 0.4.5-redo).
-    _memmin=$(sed -n 's/^xray_min_mem_kb=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
+    _memmin=$(sed -n 's/^[[:space:]]*xray_min_mem_kb[[:space:]]*=[[:space:]]*//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
     [ -n "$_memmin" ] || _memmin=0
     if [ "$_memmin" -gt 0 ] 2>/dev/null; then
         _av=$(awk '/MemAvailable:/ {print $2; exit}' /proc/meminfo 2>/dev/null)
@@ -76,8 +76,8 @@ start() {
     # Уровень логов Xray (независимо от log_level Susanin.Keenetic) — из susanin.conf.
     # Xray читает уровень только при старте, поэтому применяем его до запуска,
     # а для уже запущенного процесса нужен restart.
-    _lvl=$(sed -n 's/^xray_loglevel=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
-    [ -n "$_lvl" ] || _lvl=warning
+    _lvl=$(sed -n 's/^[[:space:]]*xray_loglevel[[:space:]]*=[[:space:]]*//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
+    [ -n "$_lvl" ] || _lvl=error
     if grep -q '"loglevel"' "$XCFG" 2>/dev/null; then
         sed -i "s|\"loglevel\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"loglevel\": \"$_lvl\"|" "$XCFG" 2>/dev/null || true
     fi
@@ -90,9 +90,9 @@ start() {
     # Память Xray: агрессивнее GC и мягкий лимит (роутер без swap, ~120 МБ RAM).
     # Ключи xray_gogc / xray_gomemlimit в susanin.conf; значения по умолчанию
     # безопасны для mipsel/aarch64.
-    _gogc=$(sed -n 's/^xray_gogc=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
+    _gogc=$(sed -n 's/^[[:space:]]*xray_gogc[[:space:]]*=[[:space:]]*//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
     [ -n "$_gogc" ] || _gogc=50
-    _gomem=$(sed -n 's/^xray_gomemlimit=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
+    _gomem=$(sed -n 's/^[[:space:]]*xray_gomemlimit[[:space:]]*=[[:space:]]*//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
     [ -n "$_gomem" ] || _gomem=64MiB
     # r7.7: pidfile мог потеряться (носитель был read-only / сбой журнала) —
     # ищем наши процессы по cmdline (-config наш XCFG), усыновляем первого,

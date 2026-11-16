@@ -138,11 +138,17 @@ vpn_refresh_budget_ms=250
 
 # --- Логи и режим носителя ---
 # Уровень логов агента Susanin.Keenetic: quiet | error | warn | info | debug | trace.
-log_level=info
-# Уровень логов Xray (ОТДЕЛЬНО от log_level агента): debug | info | warning | none.
+log_level=warn
+# Уровень логов Xray (ОТДЕЛЬНО от log_level агента): error | warning | info |
+# debug. По умолчанию error — минимум записей на носитель.
 # Читается xray-egress.sh / S93xray-tproxy, самим агентом не разбирается.
-xray_loglevel=warning
-# Режим носителя: normal (лог/бэкапы) | soft (минимум записей на NAND/flash).
+xray_loglevel=error
+# Режим носителя: normal = ведутся лог и бэкапы; soft = лог НЕ ведётся (вывод
+# демона и панели уходит в /dev/null), бэкапов нет, состояние сохраняется раз в
+# soft_state_interval. Минимум записей на NAND/flash достигается именно так:
+# раньше в soft файл всё равно рос, хотя панель отказывался его показывать.
+# ВНИМАНИЕ: install.sh выбирает soft автоматически, когда /opt на внутренней
+# памяти роутера, — на таких устройствах лог по умолчанию не ведётся.
 disk_mode=normal
 # Период сохранения состояния в soft-режиме, ч; 0 = никогда.
 soft_state_interval=12

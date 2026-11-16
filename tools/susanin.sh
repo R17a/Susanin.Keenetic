@@ -54,7 +54,7 @@ is_web_running() {
 }
 
 web_enabled() {
-    [ "$(sed -n 's/^web_enable=//p' "$CONF" 2>/dev/null | tail -n1)" = "1" ]
+    [ "$(sed -n 's/^[[:space:]]*web_enable[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | tail -n1)" = "1" ]
 }
 
 # disk_mode=soft по документации означает, что ЛОГ НЕ ВЕДЁТСЯ. Раньше это
