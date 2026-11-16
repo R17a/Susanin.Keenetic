@@ -551,8 +551,8 @@ dmesg | grep -A3 "Mem-Info"
 
 - убрать лог из RAM: `rm -f /tmp/xray.log`; если файл держит открытым живой
   процесс, место вернётся только после его остановки (`/opt/etc/init.d/S93xray-tproxy restart`);
-- держать `xray_loglevel=none` (или `warning`): debug на 122 МБ роутере
-  недопустим;
+- держать `xray_loglevel=error` (значение по умолчанию) или `none`: debug на
+  роутере с 128 МБ RAM недопустим;
 - действуют `xray_log_max_kb=2048` (обрезка `/opt/susanin/var/xray.log` перед
   запуском) и `S93xray-tproxy` при старте удаляет `/tmp/xray.log`;
 - ключ `xray_min_mem_kb` (при свободной памяти ниже порога Xray не поднимается,
