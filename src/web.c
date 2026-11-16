@@ -413,7 +413,10 @@ static void cookie_encode(const char *s, char *out, size_t n)
     out[j] = '\0';
 }
 
-static void cookie_decode(char *s)
+/* Раскодировка %XX — общая для cookie и для значения из query. Названа
+ * нейтрально: прежний «cookie_decode» вызывался только из разбора cookie, и
+ * токен из ?token= оставался незакодированным. */
+static void pct_decode(char *s)
 {
     char *r = s, *w = s;
     while (*r) {
@@ -498,7 +501,7 @@ static int cookie_value(const char *req, const char *name, char *out, size_t n)
             while (*p && *p != ';' && i + 1 < n)
                 out[i++] = *p++;
             out[i] = '\0';
-            cookie_decode(out);
+            pct_decode(out);
             return 1;
         }
         p = strchr(p, ';');
@@ -543,6 +546,10 @@ static int token_ok(const susanin_config *cfg, const char *req, const char *quer
                 i++;
             }
             need[i] = '\0';
+            /* Браузер присылает токен закодированным (%3D, %20 и т.п.); без
+             * раскодировки сравнение с реальным токеном неизбежно провалилось
+             * бы — отказ доступа, который выглядит как «сломанная панель». */
+            pct_decode(need);
             if (token_eq(need, tok)) {
                 if (via_query)
                     *via_query = 1;
@@ -1484,9 +1491,17 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
     }
 
     {
-        const char *cl = strstr(req, "Content-Length:");
-        if (!cl)
-            cl = strstr(req, "content-length:");
+        /* Поиск только по блоку заголовков: req вмещает и начало тела, а
+         * strstr по всему буферу нашёл бы «Content-Length:» внутри POST-данных
+         * (для запроса без этого заголовка) и взял бы длину из чужой строки. */
+        char *hdr_end = strstr(req, "\r\n\r\n");
+        size_t hlen = hdr_end ? (size_t)(hdr_end - req) : strlen(req);
+        const char *cl = NULL;
+        size_t off;
+
+        for (off = 0; off + 15 <= hlen && !cl; off++)
+            if (!strncasecmp(req + off, "content-length:", 15))
+                cl = req + off;
         if (cl) {
             int want = atoi(cl + 15);
             char *end = strstr(req, "\r\n\r\n");
