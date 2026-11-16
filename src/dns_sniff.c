@@ -185,6 +185,8 @@ static int dns_name(const uint8_t *p, int len, int off, char *out, unsigned outn
             if (o + 1 >= len)
                 return -1;
             ptr = ((l & 0x3f) << 8) | p[o + 1];
+            if (ptr >= len)      /* указатель за пределы пакета — некорректный ответ */
+                return -1;
             if (first) { *nextoff = o + 2; first = 0; }
             if (++jumps > 20)
                 return -1;
@@ -686,9 +688,19 @@ static int other_entry_matches(time_t now, int skip, int slot,
         dns_entry *e = &g_tab[i];
         if (i == skip || !e->domain[0] || e->expire <= now || strcmp(e->ip, ip) != 0)
             continue;
-        if (slot == 0 ? (e->pinned && list_match(0, cfg->vpn_always_file, e->domain))
-                      : (e->pinned_never && list_match(1, cfg->vpn_never_file, e->domain)))
-            return 1;
+        if (slot == 0) {
+            if (e->pinned && list_match(0, cfg->vpn_always_file, e->domain))
+                return 1;
+        } else {
+            /* never-пин ставится и по ru_guard_direct (без vpn_never) — учитываем,
+             * иначе при ротации общего CDN-IP снимали бы чужой RU-пин. */
+            int ru = cfg->ru_guard && cfg->ru_guard_direct &&
+                     dns_sniff_is_ru_domain(cfg, e->domain) &&
+                     !list_match(0, cfg->vpn_always_file, e->domain);
+            if (e->pinned_never &&
+                (list_match(1, cfg->vpn_never_file, e->domain) || ru))
+                return 1;
+        }
     }
     return 0;
 }

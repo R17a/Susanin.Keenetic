@@ -159,22 +159,22 @@ static void clients_audit(const susanin_config *cfg, const ct_flow *flows, int n
             if (fl->src4 && clf_is_private4(fl->src4)) {
                 char u24[20];
                 char *dot3;
-                int j;
+                int jj;
                 snprintf(u24, sizeof(u24), "%s", fl->src);
                 dot3 = strrchr(u24, '.');
                 if (dot3) {
                     dot3[1] = '0';
                     dot3[2] = '\0';
                 }
-                for (j = 0; j < unc_n; j++)
-                    if (!strcmp(unc[j], u24))
+                for (jj = 0; jj < unc_n; jj++)
+                    if (!strcmp(unc[jj], u24))
                         break;
-                if (j == unc_n && j < 8) {
-                    snprintf(unc[j], sizeof(unc[j]), "%s", u24);
+                if (jj == unc_n && jj < 8) {
+                    snprintf(unc[jj], sizeof(unc[jj]), "%s", u24);
                     unc_n++;
                 }
-                if (j < unc_n && now - unc_at[j] >= 3600) {
-                    unc_at[j] = now;
+                if (jj < unc_n && now - unc_at[jj] >= 3600) {
+                    unc_at[jj] = now;
                     slogf(SL_INFO, "AUTO-SUSANIN: подсеть %s — потоки из LAN, "
                           "не покрытой lan_subnets (клиенты там не обрабатываются; "
                           "добавьте подсеть в lan_subnets)", u24);
@@ -857,7 +857,11 @@ static void kid_track(pid_t p)
             return;
         }
     }
-    g_xray_kids[0] = p;     /* кольцо: самый старый слот освобождаем новым */
+    {
+        int st;
+        (void)waitpid(g_xray_kids[0], &st, WNOHANG);  /* не копим зомби при вытеснении */
+        g_xray_kids[0] = p;
+    }
 }
 
 /* Вызывается из главного цикла: собираем завершившихся детей без блокировки.
@@ -2036,8 +2040,8 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             if (!cfg->vpn_always_file[0])
                 slogf(SL_INFO, "vpn_always: список не задан (vpn_always_file пуст)");
             else if (!va)
-                slogf(SL_WARN, "vpn_always: путь к списку задан после старта службы — "
-                      "он не активен, требуется перезапуск (reload модуль не создаёт)");
+                slogf(SL_WARN, "vpn_always: модуль не создан (не выделена память) — "
+                      "список не активен до перезапуска");
             else if (!tunnel_up)
                 slogf(SL_INFO, "vpn_always: отложен до подъёма туннеля (fail-open)");
             else {
@@ -2054,8 +2058,8 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             if (!cfg->vpn_never_file[0])
                 slogf(SL_INFO, "vpn_never: список не задан (vpn_never_file пуст)");
             else if (!nv)
-                slogf(SL_WARN, "vpn_never: путь к списку задан после старта службы — "
-                      "он не активен, требуется перезапуск (reload модуль не создаёт)");
+                slogf(SL_WARN, "vpn_never: модуль не создан (не выделена память) — "
+                      "список не активен до перезапуска");
             else {
                 vn_counts(nv, &nnd, &nnt);
                 if (never_pending)

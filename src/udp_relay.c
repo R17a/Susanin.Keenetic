@@ -216,7 +216,7 @@ static int socks_associate(const char *host, int port, struct sockaddr_in *relay
     /* Версию в ответе проверяем обязательно: без этого чужой/обрезанный ответ
      * (например, HTTP-порт вместо SOCKS) давал «успешный» ASSOCIATE с
      * мусорным адресом релея. */
-    if (n < 10 || b[0] != 5 || b[1] != 0 || b[3] != 1) { close(fd); return -1; }
+    if (n < 10 || b[0] != 5 || b[1] != 0 || b[2] != 0 || b[3] != 1) { close(fd); return -1; }
 
     memset(relay, 0, sizeof(*relay));
     relay->sin_family = AF_INET;
@@ -280,6 +280,8 @@ static flow_t *flow_get(const struct sockaddr_in *server,
             fails++;
             for (i = 1; i < fails && bo < 60; i++)
                 bo *= 2;
+            if (bo > 60)
+                bo = 60;
             block_until = now + bo;
             if (fails == 1 || fails % 20 == 0)
                 slogf(SL_ERROR, "udp-relay: UDP ASSOCIATE к %s:%d не удался"
@@ -327,7 +329,7 @@ static int udp_hdr(unsigned char *b, const struct sockaddr_in *dst)
 /* Длина SOCKS5-UDP-заголовка в ответе (RSV(2) FRAG(1) ATYP(1) ADDR PORT). */
 static int socks_hdr_len(const unsigned char *b, ssize_t n)
 {
-    if (n < 4 || b[0] != 0 || b[1] != 0)
+    if (n < 4 || b[0] != 0 || b[1] != 0 || b[2] != 0)
         return -1;
     switch (b[3]) {
         case 1: return 10;              /* IPv4 */

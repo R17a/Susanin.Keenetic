@@ -107,8 +107,8 @@ static void reply_text(int fd, int code, const char *msg, int head_only)
 {
     char body[256];
     int n = snprintf(body, sizeof(body), "%s\n", msg ? msg : "");
-    if (n < 0)
-        n = 0;
+    if (n < 0 || (size_t)n >= sizeof(body))
+        n = (int)sizeof(body) - 1;
     reply(fd, code, "text/plain; charset=utf-8", body, (size_t)n, head_only);
 }
 
@@ -538,7 +538,7 @@ static int token_ok(const susanin_config *cfg, const char *req, const char *quer
      * и app.js (у <link>/<script> нет заголовков). */
     if (!is_write && query) {
         const char *p = strstr(query, "token=");
-        if (p) {
+        if (p && (p == query || p[-1] == '&')) {
             size_t i = 0;
             p += 6;
             while (p[i] && p[i] != '&' && i + 1 < sizeof(need)) {
@@ -793,6 +793,13 @@ static int config_value_ok(const char *k, const char *v)
      * раньше он уходил в skipped, и панель не могла сохранить его вообще. */
     if (strncmp(k, "profile", 7) == 0 && k[7] >= '1' && k[7] <= '4' && k[8] == '_')
         return profile_field_ok(k, v);
+    /* Общий фильтр: управляющие символы недопустимы ни в одном значении —
+     * перевод строки означал бы инъекцию новой строки конфига. */
+    for (; *v; v++) {
+        unsigned char c = (unsigned char)*v;
+        if (c < 0x20 || c == 0x7f)
+            return 0;
+    }
     return 1;
 }
 
@@ -1202,7 +1209,16 @@ static int list_replace(const char *path, const char *text, int *kept,
         }
         lines++;
         if (lines >= MAX_LIST_LINES) {
-            (*dropped)++;               /* лимит строк: остальное не принимаем */
+            if (nl && nl[1]) {          /* есть остаток — считаем его отброшенным */
+                const char *q = nl + 1;
+                while (*q) {
+                    const char *n2 = strchr(q, '\n');
+                    (*dropped)++;
+                    if (!n2)
+                        break;
+                    q = n2 + 1;
+                }
+            }
             break;
         }
         if (!nl)
@@ -1238,7 +1254,7 @@ static const char *list_path_from_query(const susanin_config *cfg, const char *q
         name[0] = '\0';
     if (query) {
         const char *p = strstr(query, "name=");
-        if (p) {
+        if (p && (p == query || p[-1] == '&')) {
             size_t i = 0;
             p += 5;
             while (p[i] && p[i] != '&' && i + 1 < namesz) {
@@ -1499,9 +1515,14 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
         const char *cl = NULL;
         size_t off;
 
-        for (off = 0; off + 15 <= hlen && !cl; off++)
-            if (!strncasecmp(req + off, "content-length:", 15))
-                cl = req + off;
+        {
+            const char *rline_end = strstr(req, "\r\n");
+            size_t start = rline_end ? (size_t)(rline_end - req) + 2 : 0;
+            for (off = start; off + 15 <= hlen && !cl; off++)
+                if ((off == start || req[off - 1] == '\n') &&
+                    !strncasecmp(req + off, "content-length:", 15))
+                    cl = req + off;
+        }
         if (cl) {
             int want = atoi(cl + 15);
             char *end = strstr(req, "\r\n\r\n");
@@ -1512,7 +1533,7 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
              * прежний лимит 4096. */
             char *big = NULL;
             size_t cap = sizeof(body);
-            if (want > 0 && (size_t)want >= sizeof(body) &&
+            if (!strcmp(method, "POST") && want > 0 && (size_t)want >= sizeof(body) &&
                 !strcmp(target, "/api/list/save")) {
                 if ((size_t)want > MAX_LIST_BODY) {
                     reply_text(fd, 413, "list body too large", head_only);
@@ -1524,6 +1545,12 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
                     return;
                 }
                 cap = MAX_LIST_BODY + 1;
+            }
+            if (want > 0 && (size_t)want >= cap) {
+                /* Тело больше, чем этот endpoint готов принять (не list/save). */
+                free(big);
+                reply_text(fd, 413, "body too large", head_only);
+                return;
             }
             {
                 char *bp = big ? big : body;

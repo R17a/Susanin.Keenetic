@@ -82,7 +82,7 @@ void log_rotate_if_big(const char *path, long max_kb, long keep_kb)
         free(buf);
         return;
     }
-    if (fseek(f, (long)from, SEEK_SET) != 0) {
+    if (fseeko(f, from, SEEK_SET) != 0) {
         fclose(f);
         free(buf);
         return;

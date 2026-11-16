@@ -51,6 +51,12 @@ int cdn_load(const susanin_config *c)
         if (h)
             *h = '\0';
         {
+            char *t = line + strlen(line);
+            while (t > line && (t[-1] == '\n' || t[-1] == '\r' ||
+                                t[-1] == ' ' || t[-1] == '\t'))
+                *--t = '\0';
+        }
+        {
             char *p = line;
             while (*p == ' ' || *p == '\t')
                 p++;
@@ -216,7 +222,7 @@ int cdn_poll(const susanin_config *c)
     if (w == 0) {
         if (time(NULL) - cdn_started > 120) {   /* завис — не ждём вечно */
             st = -1;
-            kill(cdn_pid, SIGKILL);
+            kill(-cdn_pid, SIGKILL);    /* вся группа: и обёртка, и wget/curl-внук */
             /* Дожидаемся обязательно: брошенный ребёнок — это зомби, а если
              * waitpid не вернуть статус, ниже читалось бы чужое значение. */
             if (waitpid(cdn_pid, &st, 0) < 0)

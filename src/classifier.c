@@ -542,7 +542,7 @@ static unsigned long cmin_bytes(const susanin_config *c)
 typedef struct { char cidr[64]; char last[AG_HIST][64]; int n; time_t at; } agslot;
 static agslot ag[AG_CONF];
 
-/* Вариант с явным порогом (frozen-наследию нужен свой, выше media/CDN). */
+/* Вариант с явным порогом для общей таблицы cdn/media (aggregate_confirm). */
 static int ag_confirm_n(int want, const char *cidr, const char *addr)
 {
     int i, k, free_i = -1, oldest = 0;
@@ -589,6 +589,56 @@ static int ag_confirm(const susanin_config *cfg, const char *cidr, const char *a
                         cidr, addr);
 }
 
+/* r4.2 (frozen): отдельная таблица подтверждений. Порог frozen_net_min_ips
+ * отличается от aggregate_confirm (cdn/media), а общий счётчик по ключу-cidr
+ * давал бы перекрёстное срабатывание: подтверждения CDN/media доводили бы
+ * счётчик до чужого (меньшего) порога и сеть агрегировалась бы раньше времени. */
+#define FR_CONF 64
+#define FR_HIST 3
+#define FR_WINDOW_S 600
+typedef struct { char cidr[64]; char last[FR_HIST][64]; int n; time_t at; } frslot;
+static frslot fr[FR_CONF];
+
+static int fr_confirm_n(int want, const char *cidr, const char *addr)
+{
+    int i, k, free_i = -1, oldest = 0;
+    if (want < 1)
+        want = 1;
+    time_t now = time(NULL);
+    for (i = 0; i < FR_CONF; i++) {
+        if (fr[i].cidr[0] && !strcmp(fr[i].cidr, cidr)) {
+            if (now - fr[i].at > FR_WINDOW_S) {
+                fr[i].n = 0;
+                for (k = 0; k < FR_HIST; k++)
+                    fr[i].last[k][0] = '\0';
+            }
+            for (k = 0; k < FR_HIST; k++)
+                if (fr[i].last[k][0] && !strcmp(fr[i].last[k], addr)) {
+                    fr[i].at = now;
+                    return fr[i].n >= want;
+                }
+            for (k = FR_HIST - 1; k > 0; k--)
+                memcpy(fr[i].last[k], fr[i].last[k - 1], sizeof(fr[i].last[k]));
+            snprintf(fr[i].last[0], sizeof(fr[i].last[0]), "%s", addr);
+            fr[i].n++;
+            fr[i].at = now;
+            return fr[i].n >= want;
+        }
+        if (!fr[i].cidr[0] && free_i < 0)
+            free_i = i;
+        if (fr[i].at < fr[oldest].at)
+            oldest = i;
+    }
+    i = free_i >= 0 ? free_i : oldest;
+    snprintf(fr[i].cidr, sizeof(fr[i].cidr), "%s", cidr);
+    for (k = 0; k < FR_HIST; k++)
+        fr[i].last[k][0] = '\0';
+    snprintf(fr[i].last[0], sizeof(fr[i].last[0]), "%s", addr);
+    fr[i].n = 1;
+    fr[i].at = now;
+    return want <= 1;
+}
+
 /* r4.2: ТСПУ замораживает не адреса, а целые
  * сети хостингов (Hetzner/OVH/DO/Vultr/M247...). Если N РАЗНЫХ IP одного
  * префикса подтвердились как «нужен VPN» — заморозка сетевая: заносим префикс
@@ -623,7 +673,7 @@ static void frozen_net_aggregate(classifier_ctx *ctx, const ct_flow *f)
         return;
     snprintf(cidr, sizeof(cidr), "%s/%d", ab, pre);
     want = cfg->frozen_net_min_ips >= 1 ? cfg->frozen_net_min_ips : 3;
-    if (!ag_confirm_n(want, cidr, f->dst)) {
+    if (!fr_confirm_n(want, cidr, f->dst)) {
         slogf(SL_DEBUG, "FROZEN-NET: %s копит подтверждения (нужно %d разных IP)",
               cidr, want);
         return;
@@ -915,6 +965,8 @@ static void media_aggregate(classifier_ctx *ctx, const ct_flow *f)
     if (inet_pton(AF_INET, f->dst, &a) != 1)
         return;
     pre = cfg->media_prefix_max > 0 ? cfg->media_prefix_max : 24;
+    if (pre < 8)
+        pre = 8;
     if (pre > 32)
         pre = 32;
     ah = ntohl(a.s_addr);

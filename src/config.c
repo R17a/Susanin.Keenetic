@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* Единицы длительностей (в секундах). У каждого временного параметра своя
  * единица; в файле значение пишется числом БЕЗ суффикса, а единица указана
@@ -31,9 +32,17 @@ static int parse_dur(const char *s, int unit, int *overflow)
         *overflow = 0;
     if (!s)
         return 0;
+    errno = 0;
     v = strtol(s, &end, 10);
     if (end == s || v < 0)
         return 0;
+    if (errno == ERANGE) {
+        /* На 32-битном MIPS long==int: «99999999999» даёт LONG_MAX без v<0, и без
+         * этой проверки переполнение зависело бы от разрядности сборки. */
+        if (overflow)
+            *overflow = 1;
+        return 2147483647;
+    }
     if (end && *end) {
         if (*end == 's') mul = 1;
         else if (*end == 'm') mul = 60;
@@ -921,15 +930,20 @@ int config_load(const char *path, susanin_config *c)
                 if (!pf)
                     continue;
                 while (fgets(line, sizeof(line), pf)) {
-                    char *p = line, *eq, *v, *q;
+                    char *p = line, *eq, *v, *q, *ke;
                     while (*p == ' ' || *p == '\t') p++;
                     if (*p == '#' || *p == '\n' || *p == '\0')
                         continue;
                     eq = strchr(p, '=');
                     if (!eq)
                         continue;
-                    *eq = '\0';
+                    ke = eq;
+                    while (ke > p && (ke[-1] == ' ' || ke[-1] == '\t'))
+                        ke--;
+                    *ke = '\0';
                     v = eq + 1;
+                    while (*v == ' ' || *v == '\t')
+                        v++;
                     q = v + strlen(v);
                     while (q > v && (q[-1] == '\n' || q[-1] == '\r' ||
                                      q[-1] == ' ' || q[-1] == '\t'))
@@ -943,11 +957,11 @@ int config_load(const char *path, susanin_config *c)
                     else if (!strcmp(p, "geo_url"))
                         set_str(c->profile_geo_url[slot], sizeof(c->profile_geo_url[slot]), v);
                     else if (!strcmp(p, "table"))
-                        c->profile_table[slot] = (int)strtol(v, NULL, 0);
+                        c->profile_table[slot] = (int)cfg_num(c, "profile_table", v);
                     else if (!strcmp(p, "mark"))
-                        c->profile_mark[slot] = strtoul(v, NULL, 0);
+                        c->profile_mark[slot] = cfg_unum(c, "profile_mark", v);
                     else if (!strcmp(p, "auto"))
-                        c->profile_auto[slot] = (int)strtol(v, NULL, 0);
+                        c->profile_auto[slot] = (int)cfg_num(c, "profile_auto", v);
                 }
                 fclose(pf);
                 if (!c->profile_name[slot][0]) {
@@ -1328,8 +1342,8 @@ static int cfg_val_charset_ok(const char *v)
 int config_file_set(const char *path, const char *key, const char *val, int allow_create)
 {
     FILE *in, *out;
-    char line[1024], tmp[CFG_PATH_MAX + 8];
-    int found = 0, last_nl = 1;
+    char line[1024], tmp[CFG_PATH_MAX + 16];
+    int found = 0, last_nl = 1, tfd;
 
     if (!path || !key || !val)
         return -1;
@@ -1339,9 +1353,18 @@ int config_file_set(const char *path, const char *key, const char *val, int allo
     in = fopen(path, "r");
     if (!in)
         return -1;
-    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-    out = fopen(tmp, "w");
+    /* Уникальное имя на вызов: фиксированный «path.tmp» давал гонку двух
+     * одновременных config set (панель + CLI) — оба писали в один файл. */
+    snprintf(tmp, sizeof(tmp), "%s.tmpXXXXXX", path);
+    tfd = mkstemp(tmp);
+    if (tfd < 0) {
+        fclose(in);
+        return -1;
+    }
+    out = fdopen(tfd, "w");
     if (!out) {
+        close(tfd);
+        remove(tmp);
         fclose(in);
         return -1;
     }

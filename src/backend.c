@@ -318,7 +318,7 @@ static int bt_apply_line(char *line)
     int n = 0;
     int rc;
     pid_t pid;
-    while (*p && n < 6) {
+    while (*p && n < 5) {   /* максимум 5 токенов: 2 фиксированных + 5 + NULL = 8 */
         while (*p == ' ' || *p == '\t')
             p++;
         if (!*p)
@@ -480,7 +480,7 @@ static int run_capture_argv(char *const argv[], char *out, size_t outsz)
         char tmp[512];
         ssize_t r;
         while ((r = read(p[0], tmp, sizeof(tmp))) > 0) {
-            if (out && n < outsz - 1) {
+            if (out && outsz > 1 && n < outsz - 1) {
                 size_t room = outsz - 1 - n;
                 size_t take = (size_t)r < room ? (size_t)r : room;
                 memcpy(out + n, tmp, take);

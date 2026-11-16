@@ -192,7 +192,9 @@ int health_probe_dev(const susanin_config *c, const char *dev, const char *src,
     snprintf(buf, sizeof(buf), "%s", c->health_probe);
     for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
         int r;
-        while (*tok == ' ') tok++;
+        while (*tok == ' ' || *tok == '\t') tok++;
+        if (!*tok)
+            continue;
         t++;
         if (tcp_mode)
             r = probe_tcp(tok, tcp_port, psrc, dev, c->mark_test);

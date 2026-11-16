@@ -6,6 +6,7 @@
 
 #include <ctype.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,7 +98,12 @@ int release_parse_payload(const char *json, char *tag, size_t tagsz,
     if (tag[0] == '\0' || !isdigit((unsigned char)tag[0]))
         return -1;
     if (url && urlsz) {
-        if (json_string(json, "\"html_url\"", rawurl, sizeof(rawurl)) == 0 &&
+        /* html_url релиза идёт в объекте раньше author; берём его только если он
+         * действительно раньше author.html_url (не полагаемся на порядок ключей). */
+        const char *author_at = strstr(json, "\"author\"");
+        const char *html_at = strstr(json, "\"html_url\"");
+        if (html_at && (!author_at || html_at < author_at) &&
+            json_string(json, "\"html_url\"", rawurl, sizeof(rawurl)) == 0 &&
             (strncmp(rawurl, "https://", 8) == 0 || strncmp(rawurl, "http://", 7) == 0)) {
             snprintf(url, urlsz, "%s", rawurl);
         } else {
@@ -240,21 +246,40 @@ static int fetch_to_file(char *const argv[], const char *path)
 {
     pid_t pid = fork();
     int st = -1;
+    (void)path;     /* путь пишет сам curl/wget через -o/-O в argv */
     if (pid < 0)
         return -1;
     if (pid == 0) {
-        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (fd >= 0) {
-            dup2(fd, 1);
-            dup2(fd, 2);
-            if (fd > 2)
-                close(fd);
+        /* Тело пишет сам curl/wget через -o/-O; stdout/stderr уводим в /dev/null,
+         * иначе текст ошибки загрузчика попадал бы в payload-файл. */
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, 1);
+            dup2(devnull, 2);
+            if (devnull > 2)
+                close(devnull);
         }
         execvp(argv[0], argv);
         _exit(127);
     }
-    if (waitpid(pid, &st, 0) < 0)
-        return -1;
+    /* Ограничиваем ожидание: BusyBox wget -T ограничивает чтение/коннект, но не
+     * резолв DNS — зависший загрузчик стопорил бы главный цикл навсегда. */
+    {
+        int tries = 0;
+        for (;;) {
+            pid_t r = waitpid(pid, &st, WNOHANG);
+            if (r == pid)
+                break;
+            if (r < 0)
+                return -1;
+            if (++tries > 40) {          /* ~20 с — больше, чем --max-time/-T */
+                kill(pid, SIGKILL);
+                waitpid(pid, &st, 0);
+                return -1;
+            }
+            usleep(500000);
+        }
+    }
     return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
 

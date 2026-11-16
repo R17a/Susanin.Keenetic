@@ -121,7 +121,15 @@ static int valid_cidr(const char *s, char *out, size_t n)
     pre = strtol(slash + 1, &e, 10);
     if (e == slash + 1 || *e != '\0' || errno != 0 || pre < 0 || pre > 32)
         return 0;
-    snprintf(out, n, "%s", s);
+    {
+        in_addr_t mask = pre == 0 ? 0u : (in_addr_t)(0xffffffffu << (32 - (int)pre));
+        struct in_addr na;
+        char nb[INET_ADDRSTRLEN];
+        na.s_addr = htonl(ntohl(a.s_addr) & mask);
+        if (!inet_ntop(AF_INET, &na, nb, sizeof(nb)))
+            return 0;
+        snprintf(out, n, "%s/%ld", nb, pre);
+    }
     return 1;
 }
 
@@ -207,11 +215,11 @@ static int file_load(const char *path, char names[][256], int wilds[],
     return n;
 }
 
-static va_dom *dom_find(vpn_always *v, const char *name)
+static va_dom *dom_find(vpn_always *v, const char *name, int wild)
 {
     int i;
     for (i = 0; i < v->nd; i++)
-        if (strcmp(v->dom[i].name, name) == 0)
+        if (strcmp(v->dom[i].name, name) == 0 && v->dom[i].wild == wild)
             return &v->dom[i];
     return NULL;
 }
@@ -227,7 +235,7 @@ static void doms_reconcile(vpn_always *v, char names[][256], int wilds[], int n)
     if (!keep)
         return;                 /* нет памяти — оставляем список как был */
     for (i = 0; i < n && i < VA_MAXDOM; i++) {
-        va_dom *old = dom_find(v, names[i]);
+        va_dom *old = dom_find(v, names[i], wilds[i]);
         va_dom *d = &keep[nk++];
         if (old && old->wild == wilds[i])
             *d = *old;
@@ -492,14 +500,16 @@ static int dns_query_many(const char *server, char names[][256], int n,
                 int ii;
                 unsigned char rb[2048];
                 int rn;
-                if (!(pfds[j].revents & POLLIN))
+                if (!(pfds[j].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)))
                     continue;
                 ii = idxs[j];
-                rn = (int)recv(fds[ii], rb, sizeof(rb), 0);
-                if (rn >= 12) {
-                    int c = parse_a(rb, rn, idh[ii], idl[ii], out[ii], VA_MAXIP);
-                    if (c >= 0)
-                        counts[ii] = c;
+                if (pfds[j].revents & POLLIN) {
+                    rn = (int)recv(fds[ii], rb, sizeof(rb), 0);
+                    if (rn >= 12) {
+                        int c = parse_a(rb, rn, idh[ii], idl[ii], out[ii], VA_MAXIP);
+                        if (c >= 0)
+                            counts[ii] = c;
+                    }
                 }
                 close(fds[ii]);
                 fds[ii] = -1;
@@ -857,6 +867,8 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
         if (v->seen_exists) {
             v->seen_exists = 0;
             v->nd = 0;
+            v->seen_mtime = 0;   /* при возврате файла перечитаем независимо от mtime/size */
+            v->seen_size = 0;
             while (v->ntrack > 0) {
                 backend_ok_pin_del(cfg, v->track[0]);
                 slogf(SL_INFO, "vpn_always: unpin %s (file removed)",

@@ -69,7 +69,7 @@ static int run_capture(const char *exe, char *const argv[], char *out, size_t ou
         dup2(p[1], 1);
         if (devnull >= 0) { dup2(devnull, 2); close(devnull); }
         close(p[1]);
-        execv(exe, argv);
+        execvp(exe, argv);
         _exit(127);
     }
     close(p[1]);
@@ -78,7 +78,7 @@ static int run_capture(const char *exe, char *const argv[], char *out, size_t ou
         ssize_t r;
         while ((r = read(p[0], tmp, sizeof(tmp))) > 0) {
             size_t take = (size_t)r;
-            if (n < outsz - 1) {
+            if (outsz > 1 && n < outsz - 1) {
                 size_t room = outsz - 1 - n;
                 if (take > room)
                     take = room;
@@ -152,7 +152,7 @@ static int cap_count_digits(const char *exe, char *const argv[])
         dup2(p[1], 1);
         if (devnull >= 0) { dup2(devnull, 2); close(devnull); }
         close(p[1]);
-        execv(exe, argv);
+        execvp(exe, argv);
         _exit(127);
     }
     close(p[1]);
@@ -550,7 +550,7 @@ int ops_reset(const susanin_config *cfg, const char *arg)
         /* reset/forget НЕ снимает «напрямую»: иначе адрес из vpn_never снова
          * уедет в VPN при обучении. Удаляем только кэш обучения и покрывающие
          * префиксы (нормальная pin-запись списка остаётся в наборе). */
-        reset_covering_nets(cfg, &st, ips[i]);
+        removed += reset_covering_nets(cfg, &st, ips[i]);
         backend_ct_flush_ip(ips[i]);
         printf("[susanin] reset %s%s: %s removed=%d, ipsets cleared, conntrack flushed\n",
                zone ? "zone " : "", arg, ips[i], removed);
@@ -738,7 +738,7 @@ static void json_str(char *dst, size_t n, const char *s)
     size_t j = 0;
     if (!n)
         return;
-    for (; s && *s && j + 7 < n; s++) {
+    for (; s && *s && j + 6 < n; s++) {
         unsigned char c = (unsigned char)*s;
         if (c == '"' || c == '\\') {
             dst[j++] = '\\';

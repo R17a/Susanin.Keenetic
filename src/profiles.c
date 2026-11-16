@@ -87,7 +87,7 @@ static void prof_load(prof_cache *pc, const char *path)
             if (!slash[1])
                 continue;
             bits = (int)strtol(slash + 1, &ep, 10);
-            if (!ep || *ep || bits < 0 || bits > 32)
+            if (!ep || *ep || bits < 1 || bits > 32)
                 continue;
         } else {
             bits = 32;

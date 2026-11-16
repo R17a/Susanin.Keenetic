@@ -202,7 +202,15 @@ static int valid_cidr(const char *s, char *out, size_t n)
     pre = strtol(slash + 1, &e, 10);
     if (e == slash + 1 || *e != '\0' || errno != 0 || pre < 0 || pre > 32)
         return 0;
-    snprintf(out, n, "%s", s);
+    {
+        in_addr_t mask = pre == 0 ? 0u : (in_addr_t)(0xffffffffu << (32 - (int)pre));
+        struct in_addr na;
+        char nb[INET_ADDRSTRLEN];
+        na.s_addr = htonl(ntohl(a.s_addr) & mask);
+        if (!inet_ntop(AF_INET, &na, nb, sizeof(nb)))
+            return 0;
+        snprintf(out, n, "%s/%ld", nb, pre);
+    }
     return 1;
 }
 
@@ -273,11 +281,11 @@ static int file_load(const char *path, char names[][256], int wilds[],
     return n;
 }
 
-static vn_dom *dom_find(vpn_never *v, const char *name)
+static vn_dom *dom_find(vpn_never *v, const char *name, int wild)
 {
     int i;
     for (i = 0; i < v->nd; i++)
-        if (strcmp(v->dom[i].name, name) == 0)
+        if (strcmp(v->dom[i].name, name) == 0 && v->dom[i].wild == wild)
             return &v->dom[i];
     return NULL;
 }
@@ -290,7 +298,7 @@ static void doms_reconcile(vpn_never *v, const susanin_config *cfg,
     vn_dom keep[VN_MAXDOM];
     int nk = 0, i, j, k;
     for (i = 0; i < n && i < VN_MAXDOM; i++) {
-        vn_dom *old = dom_find(v, names[i]);
+        vn_dom *old = dom_find(v, names[i], wilds[i]);
         vn_dom *d = &keep[nk++];
         if (old && old->wild == wilds[i])
             *d = *old;
@@ -533,15 +541,18 @@ int vn_refresh2(vpn_never *v, const susanin_config *cfg, int *changed)
         if (v->seen_exists) {
             v->seen_exists = 0;
             v->nd = 0;
+            v->seen_mtime = 0;   /* при возврате файла перечитаем независимо от mtime/size */
+            v->seen_size = 0;
             while (v->ntrack > 0) {
                 backend_set_del(cfg, VN_SET, v->track[0]);
                 slogf(SL_INFO, "vpn_never: unpin %s (file removed)",
                       v->track[0]);
-                recent_note(v->track[0], time(NULL));
                 tracked_remove(v, v->track[0]);
             }
             /* r4.3: списка больше нет — кулдаун не за чем держать. */
             recent_clear();
+            if (changed)
+                *changed = 1;     /* набор изменился — движок должен чистить state */
         } else if (!v->warned) {
             v->warned = 1;
             if (nofile)
