@@ -745,9 +745,11 @@ int va_changed(vpn_always *v, const susanin_config *cfg)
 {
     struct stat st;
     int had;
-    if (!v || !cfg->vpn_always_file[0])
+    if (!v)
         return 0;
     had = v->seen_exists;
+    if (!cfg->vpn_always_file[0])
+        return had ? 1 : 0;         /* путь обнулили — пины надо снять */
     if (stat(cfg->vpn_always_file, &st) != 0)
         return had ? 1 : 0;       /* файл исчез — нужно снять пины */
     if (!had)
@@ -831,9 +833,15 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
                            : (long long)VA_BUDGET_MS;
     char (*desired)[16];
     char (*desired_net)[40];
+    int nofile;
 
-    if (!v || !cfg->vpn_always_file[0])
+    if (!v)
         return 0;
+    /* Пустой vpn_always_file означает то же, что удалённый файл: функция
+     * выключена, и уже запиненные адреса обязаны быть сняты. Прежний ранний
+     * return оставлял их в susanin_ok_tcp/ok_net с timeout 0, то есть
+     * бессрочно: после обнуления пути в конфиге адреса уходили в VPN навсегда. */
+    nofile = !cfg->vpn_always_file[0];
 
     /* Hysteresis считает интервалы, а не вызовы: va_refresh зовётся многократно
      * за один интервал (добор доменов по бюджету времени). */
@@ -844,7 +852,7 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
             v->epoch = epoch;
     }
 
-    if (stat(cfg->vpn_always_file, &st) != 0) {
+    if (nofile || stat(cfg->vpn_always_file, &st) != 0) {
         /* Файла нет — функция выключена. Если раньше был список — снимаем. */
         if (v->seen_exists) {
             v->seen_exists = 0;
@@ -863,8 +871,11 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
             }
         } else if (!v->warned) {
             v->warned = 1;
-            slogf(SL_INFO, "vpn_always: %s absent (disabled)",
-                  cfg->vpn_always_file);
+            if (nofile)
+                slogf(SL_INFO, "vpn_always: список не задан (функция выключена)");
+            else
+                slogf(SL_INFO, "vpn_always: %s absent (disabled)",
+                      cfg->vpn_always_file);
         }
         return 0;
     }

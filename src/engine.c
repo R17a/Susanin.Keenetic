@@ -1121,6 +1121,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     time_t last_save = 0;
     time_t last_recon = 0;
     time_t last_dpfast = 0;
+    time_t dp_unk_since = 0;   /* с какого момента датаплейн не удаётся проверить */
     time_t next_dp_try = 0;
     time_t last_force = 0;
     time_t last_never = 0;
@@ -1286,8 +1287,37 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         kids_poll();     /* пожинать детей прямого запуска Xray/S93 (без зомби) */
         udp_relay_tick();    /* работник жив? перезапуск убитого/упавшего (B1) */
 
-        if (cfg->dns_sniff)
+        if (cfg->dns_sniff) {
+            static time_t sn_at;
+            char sn[256];
+
             dns_sniff_poll();
+            /* Раз в 5 минут — сводка на DEBUG (дешёвая и не спамит при
+             * штатном log_level=info), и WARN только на доказанную потерю:
+             * пакеты приходят, а записей нет. Случай «пакетов не приходит
+             * вовсе» предупреждением не отмечаем: это может быть тишина в
+             * доме, а различить его помогает статус и `why`. */
+            if (!sn_at) {
+                sn_at = now;
+            } else if (now - sn_at >= 300) {
+                sn_at = now;
+                dns_sniff_stats(sn, sizeof(sn));
+                slogf(SL_DEBUG, "dns_sniff: %s", sn);
+                dns_sniff_stats_write(cfg);   /* снимок для панели и why */
+                {
+                    unsigned long rv = 0, st = 0;
+                    const char *q = strstr(sn, "recv=");
+                    const char *s2 = strstr(sn, "stored=");
+                    if (q && s2) {
+                        rv = strtoul(q + 5, NULL, 10);
+                        st = strtoul(s2 + 7, NULL, 10);
+                    }
+                    if (rv > 0 && st == 0)
+                        slogf(SL_WARN, "dns_sniff: принято %lu пакетов, сохранено 0 — "
+                              "разбор не доходит до таблицы (%s)", rv, sn);
+                }
+            }
+        }
 
         if (g_reload) {
             susanin_config nc;
@@ -1297,10 +1327,58 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 backend_batch_enable(cfg->ipset_batch);
                 slogf(SL_INFO, "config reloaded: %s", conf_path);
                 cfg_check(cfg, "reload");
+                /* Модули списков создавались только при старте службы. Если
+                 * vpn_always_file/vpn_never_file появился (или исчез) в уже
+                 * работающем процессе, Reload обязан отреагировать: иначе
+                 * настройка из панели не применялась никогда, и даже сводка
+                 * после Reload не печаталась — молчание казалось успехом. */
+                if (!va && cfg->vpn_always_file[0]) {
+                    va = va_new();
+                    if (va) {
+                        va_mark_dirty(va);
+                        last_force = 0;
+                        slogf(SL_INFO, "vpn_always: модуль поднят reload-ом");
+                    } else {
+                        slogf(SL_ERROR, "vpn_always: не выделено памяти, "
+                              "список не активен до перезапуска");
+                    }
+                } else if (va && !cfg->vpn_always_file[0]) {
+                    /* Порядок важен: сначала refresh (он при пустом пути снимает
+                     * пины), потом освобождение модуля — иначе адреса остались
+                     * бы в susanin_ok_* бессрочно. */
+                    backend_batch_begin();
+                    force_pending = va_refresh(va, cfg);
+                    backend_batch_end();
+                    va_free(va);
+                    va = NULL;
+                    slogf(SL_INFO, "vpn_always: путь очищен, пины сняты, модуль выключен");
+                }
+                if (!nv && cfg->vpn_never_file[0]) {
+                    nv = vn_new();
+                    if (nv) {
+                        vn_mark_dirty(nv);
+                        last_never = 0;
+                        slogf(SL_INFO, "vpn_never: модуль поднят reload-ом");
+                    } else {
+                        slogf(SL_ERROR, "vpn_never: не выделено памяти, "
+                              "список не активен до перезапуска");
+                    }
+                } else if (nv && !cfg->vpn_never_file[0]) {
+                    int nch = 0;
+                    backend_batch_begin();
+                    never_pending = vn_refresh2(nv, cfg, &nch);
+                    backend_batch_end();
+                    vn_free(nv);
+                    nv = NULL;
+                    slogf(SL_INFO, "vpn_never: путь очищен, пины сняты, модуль выключен");
+                }
                 /* Работник udp-relay держит конфиг, с которым запущен:
                  * при смене значимых полей — перезапуск, при выключении
                  * udp_relay — остановка. */
                 udp_relay_reload(cfg);
+                /* Снифер同样 мог быть включён/выключен уже в работающем
+                 * процессе: раньше ключ применялся только при старте службы. */
+                dns_sniff_reload(cfg);
                 /* W6: перечитать настройку индикатора релиза; при включении —
                  * проверка в ближайшие 30 с, а не через 12 ч. */
                 release_init(cfg);
@@ -1634,8 +1712,11 @@ int engine_run(susanin_config *cfg, const char *conf_path)
          * в таблице тоже нет, и проверка давала бы ложное «data plane missing»
          * с перепровижном каждые 5 c и падением dp_ok на 60 c. */
         if (dp_ok && tunnel_up && now - last_dpfast >= 5) {
+            int unk = 0;
+
             last_dpfast = now;
-            if (!backend_ready(cfg)) {
+            if (!backend_ready_ex(cfg, &unk)) {
+                dp_unk_since = 0;
                 slogf(SL_WARN, "data plane missing (fast check), re-provisioning");
                 if (backend_provision(cfg) == 0) {
                     backend_mark_reprov("rules missing (fast re-provision)");
@@ -1656,6 +1737,23 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                     next_dp_try = now + 60;
                 }
                 last_recon = now;   /* не дублировать в общем reconcile */
+            } else if (unk) {
+                /* Проверить не удалось: правила могут быть сняты, а мы этого не
+                 * видим. Перепровижнивать по «не знаю» нельзя (гон при залёгшем
+                 * локе), но и молчать нельзя: прежняя версия на этом же rc=4
+                 * возвращала «готово» и окно fail-open становилось неограниченно
+                 * по времени. Поэтому — предупреждение раз в 5 минут, а не
+                 * каждое молчание цикла. */
+                if (!dp_unk_since)
+                    dp_unk_since = now;
+                else if (now - dp_unk_since >= 300) {
+                    slogf(SL_WARN, "датаплейн не проверялся %u с: xtables-lock занят — "
+                          "пропажу правил увидеть нельзя",
+                          (unsigned)(now - dp_unk_since));
+                    dp_unk_since = now;
+                }
+            } else {
+                dp_unk_since = 0;
             }
         }
 

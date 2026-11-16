@@ -388,9 +388,11 @@ int vn_changed(vpn_never *v, const susanin_config *cfg)
 {
     struct stat st;
     int had;
-    if (!v || !cfg->vpn_never_file[0])
+    if (!v)
         return 0;
     had = v->seen_exists;
+    if (!cfg->vpn_never_file[0])
+        return had ? 1 : 0;       /* путь обнулили — прямой пин надо снять */
     if (stat(cfg->vpn_never_file, &st) != 0)
         return had ? 1 : 0;
     if (!had)
@@ -494,6 +496,7 @@ int vn_refresh2(vpn_never *v, const susanin_config *cfg, int *changed)
     char desired[VN_TRACK][64];
     char (*des)[64] = desired;
     struct stat st;
+    int nofile;
     time_t now = time(NULL);
     int i, nd = 0, added = 0, removed = 0, pending = 0, new_epoch = 0;
     int nfail = 0, nex = 0;
@@ -511,8 +514,12 @@ int vn_refresh2(vpn_never *v, const susanin_config *cfg, int *changed)
     if (changed)
         *changed = 0;
 
-    if (!v || !cfg->vpn_never_file[0])
+    if (!v)
         return 0;
+    /* Пустой vpn_never_file = функция выключена, а НЕ «ничего не делать»:
+     * ранее запиненные «прямо» адреса обязаны быть сняты, иначе они остаются в
+     * susanin_never навсегда (см. vpn_always.c, тот же класс). */
+    nofile = !cfg->vpn_never_file[0];
 
     /* Hysteresis считает интервалы, а не вызовы (см. vpn_always.c). */
     {
@@ -522,7 +529,7 @@ int vn_refresh2(vpn_never *v, const susanin_config *cfg, int *changed)
             v->epoch = epoch;
     }
 
-    if (stat(cfg->vpn_never_file, &st) != 0) {
+    if (nofile || stat(cfg->vpn_never_file, &st) != 0) {
         if (v->seen_exists) {
             v->seen_exists = 0;
             v->nd = 0;
@@ -537,8 +544,11 @@ int vn_refresh2(vpn_never *v, const susanin_config *cfg, int *changed)
             recent_clear();
         } else if (!v->warned) {
             v->warned = 1;
-            slogf(SL_INFO, "vpn_never: %s absent (disabled)",
-                  cfg->vpn_never_file);
+            if (nofile)
+                slogf(SL_INFO, "vpn_never: список не задан (функция выключена)");
+            else
+                slogf(SL_INFO, "vpn_never: %s absent (disabled)",
+                      cfg->vpn_never_file);
         }
         return 0;
     }

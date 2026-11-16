@@ -22,6 +22,11 @@ int  dns_sniff_start(const susanin_config *cfg);  /* 0 = ok, -1 = нет (лог
 void dns_sniff_stop(void);
 void dns_sniff_poll(void);                        /* забрать пакеты (nonblock) */
 
+/* Применить значение dns_sniff из перечитанного конфига: start при включении,
+ * stop при выключении. Без этого ключ, изменённый панелью, не действовал до
+ * перезапуска службы, а статус показывал «dns_sniff=1». */
+void dns_sniff_reload(const susanin_config *cfg);
+
 /* Периодически пинит IP из снифинга, если домен попал в vpn_always/vpn_never. */
 void dns_sniff_reconcile(const susanin_config *cfg);
 
@@ -31,10 +36,21 @@ void dns_sniff_set_state(susanin_state *st);
 void dns_sniff_reset_pins(void);
 
 int  dns_sniff_count(void);
+/* Сводка счётчиков пути «кадр -> запись» (см. dns_sniff.c): без неё четыре
+ * разных способа «не видеть домены» неразличимы. */
+int  dns_sniff_stats(char *out, size_t n);
 /* 1 = нашли домен для IP; domain_out заполняется (может быть ""). */
 int  dns_sniff_domain_of(const char *ip, char *domain_out, unsigned n);
 
 #define DNS_DOMAIN_MAX 128
+
+/* Файл-снимок счётчиков снифинга: движок пишет, панель и CLI читают. Нужен
+ * именно файл, потому что счётчики живут в памяти движка, а `status`/`why` —
+ * отдельные процессы. */
+#define DNS_SNIFF_STATS_FILE "/opt/susanin/var/dnssniff.state"
+
+/* Записать снимок (см. dns_sniff.c): при disk_mode=soft не пишется. */
+void dns_sniff_stats_write(const susanin_config *cfg);
 
 /* r5.2: домен оканчивается на русский TLD из cfg->ru_guard_tlds
  * (регистронезависимо, punycode-варианты включаются в список). */

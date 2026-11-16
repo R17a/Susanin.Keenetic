@@ -76,7 +76,14 @@ static unsigned long dns_hash(const char *s)
     return h;
 }
 
-static void dns_store(const char *domain, const char *ip, int ttl)
+/* Счётчики пути «кадр -> запись в таблице». Без них вопрос «снифер не ловит
+ * или ловит и не разбирает» неизмерим в принципе: ровно на этом участке и
+ * обрывалась вся диагностика. */
+static unsigned long g_c_recv, g_c_notudp, g_c_notdns, g_c_malformed, g_c_stored;
+static unsigned long g_c_capped;
+
+/* 1 = пара домен+IP записана или обновлена, 0 = не записана. */
+static int dns_store(const char *domain, const char *ip, int ttl)
 {
     time_t now = time(NULL);
     unsigned long h;
@@ -84,7 +91,7 @@ static void dns_store(const char *domain, const char *ip, int ttl)
     dns_entry *e;
 
     if (!domain[0] || !ip[0])
-        return;
+        return 0;
     h = dns_hash(domain) % DNS_MAX_ENTRIES;
     /* Домен ищем среди живых И истёкших записей: домен, который спрашивают
      * реже dns_sniff_ttl, раньше терял запись вместе с pinned-флагами, и
@@ -107,13 +114,17 @@ static void dns_store(const char *domain, const char *ip, int ttl)
             e->expire = now + ttl;
             if (g_cfg)
                 reconcile_entry(g_cfg, e, s, now);   /* мгновенный пин */
-            return;
+            g_c_stored++;
+            return 1;
         }
         if (e->expire <= now && reuse < 0)
             reuse = s;
     }
-    if (reuse < 0)
-        return;                 /* таблица полна живыми — не вытесняем */
+    if (reuse < 0) {
+        /* Таблица полна живыми записями: новая пара отбрасывается. Молча —
+         * нельзя, это ровно то, что видно только по счётчику. */
+        return 0;
+    }
     e = &g_tab[reuse];
     snprintf(e->domain, sizeof(e->domain), "%s", domain);
     snprintf(e->ip, sizeof(e->ip), "%s", ip);
@@ -126,6 +137,8 @@ static void dns_store(const char *domain, const char *ip, int ttl)
     e->v_ru = -1;
     if (g_cfg)
         reconcile_entry(g_cfg, e, reuse, now);       /* мгновенный пин */
+    g_c_stored++;
+    return 1;
 }
 
 /* Разбор DNS-имени с поддержкой сжатия. nextoff — позиция после имени. */
@@ -170,25 +183,28 @@ static int dns_name(const uint8_t *p, int len, int off, char *out, unsigned outn
     return 0;
 }
 
-static void dns_parse(const uint8_t *p, int len)
+/* 1 = из ответа сохранена хотя бы одна пара. Возврат нужен только для
+ * счётчика: без него «ответов много, записей ноль» неотличимо от «ответов
+ * нет». */
+static int dns_parse(const uint8_t *p, int len)
 {
-    int qd, an, off, i, ttlcap;
+    int qd, an, off, i, ttlcap, stored = 0;
     char qname[DNS_DOMAIN_MAX];
     uint16_t flags;
 
     if (len < 12)
-        return;
+        return 0;
     flags = (uint16_t)((p[2] << 8) | p[3]);
     if (!(flags & 0x8000))
-        return;                     /* только ответы */
+        return 0;                     /* только ответы */
     qd = (p[4] << 8) | p[5];
     an = (p[6] << 8) | p[7];
     if (qd < 1 || an < 1)
-        return;
+        return 0;
     if (dns_name(p, len, 12, qname, sizeof(qname), &off) != 0)
-        return;
+        return 0;
     if (off + 4 > len)
-        return;
+        return 0;
     off += 4;                       /* qtype + qclass */
 
     ttlcap = (g_cfg && g_cfg->dns_sniff_ttl > 0) ? g_cfg->dns_sniff_ttl : CFG_DEF_DNS_SNIFF_TTL;
@@ -197,10 +213,10 @@ static void dns_parse(const uint8_t *p, int len)
         char aname[DNS_DOMAIN_MAX];
         int noff;
         if (dns_name(p, len, off, aname, sizeof(aname), &noff) != 0)
-            return;
+            return stored;
         off = noff;
         if (off + 10 > len)
-            return;
+            return stored;
         type = (p[off] << 8) | p[off + 1];
         cls = (p[off + 2] << 8) | p[off + 3];
         ttl = (p[off + 4] << 24) | (p[off + 5] << 16) |
@@ -208,7 +224,7 @@ static void dns_parse(const uint8_t *p, int len)
         rdlen = (p[off + 8] << 8) | p[off + 9];
         off += 10;
         if (off + rdlen > len)
-            return;
+            return stored;
         if (type == 1 && cls == 1 && rdlen == 4) {
             char ip[16];
             if (ttl <= 0 || ttl > ttlcap)
@@ -226,12 +242,13 @@ static void dns_parse(const uint8_t *p, int len)
              * от соединения к соединению. Каноническое имя тоже сохраняем:
              * если в списке указана сама CDN-зона, пин по ней должен работать. */
             if (qname[0])
-                dns_store(qname, ip, ttl);
+                stored += dns_store(qname, ip, ttl);
             if (aname[0] && strcasecmp(aname, qname) != 0)
-                dns_store(aname, ip, ttl);
+                stored += dns_store(aname, ip, ttl);
         }
         off += rdlen;
     }
+    return stored;
 }
 
 /* Открыть сокет на конкретном интерфейсе. 0 = слушаем. */
@@ -344,6 +361,9 @@ int dns_sniff_start(const susanin_config *cfg)
 {
     if (g_started)
         return 0;
+    /* Счётчики — с нуля: сводка должна описывать текущий запуск, а не
+     * сумму с предыдущего (после stop/start смешивать их было бы нельзя). */
+    g_c_recv = g_c_notudp = g_c_notdns = g_c_malformed = g_c_capped = g_c_stored = 0;
     g_cfg = cfg;
     g_nfd = 0;
     sniff_sync(cfg);
@@ -353,6 +373,23 @@ int dns_sniff_start(const susanin_config *cfg)
     }
     g_started = 1;
     return 0;
+}
+
+/* Применение dns_sniff=1/0 из Reload. Прежний вариант вызывал start один раз
+ * при старте службы: включение снифера из панели отображалось в статусе как
+ * «dns_sniff=1», сокеты при этом не открывались, и в логе не было ни строки
+ * про то, что фича не работает. */
+void dns_sniff_reload(const susanin_config *cfg)
+{
+    if (cfg->dns_sniff) {
+        if (!g_started) {
+            if (dns_sniff_start(cfg) == 0)
+                slogf(SL_INFO, "dns_sniff: включён reload-ом");
+        }
+    } else if (g_started) {
+        dns_sniff_stop();
+        slogf(SL_INFO, "dns_sniff: выключён reload-ом (сокеты закрыты)");
+    }
 }
 
 /* Закрыть сокет и убрать его из массива (интерфейс исчез). */
@@ -420,23 +457,37 @@ void dns_sniff_poll(void)
                 }
                 break;
             }
-            if (r < 20)
+            g_c_recv++;
+            if (r < 20) {
+                g_c_malformed++;
                 continue;
+            }
             ihl = (unsigned)(buf[0] & 0x0f) * 4;
-            if (ihl < 20 || (ssize_t)ihl + 8 > r || buf[9] != 17)
+            if (ihl < 20 || (ssize_t)ihl + 8 > r || buf[9] != 17) {
+                /* Здесь же теряется и случай «кадр пришёл не с IP-заголовка»:
+                 * тогда buf[9] — байт MAC-адреса, и отсекается практически
+                 * всё. Без счётчика это неотличимо от «DNS-трафика нет». */
+                g_c_notudp++;
                 continue;
+            }
             {
                 const uint8_t *udp = buf + ihl;
                 uint16_t sp = (uint16_t)((udp[0] << 8) | udp[1]);
                 uint16_t dp = (uint16_t)((udp[2] << 8) | udp[3]);
-                if (sp != 53 && dp != 53)
+                if (sp != 53 && dp != 53) {
+                    g_c_notdns++;
                     continue;
+                }
                 ulen = (unsigned)((udp[4] << 8) | udp[5]);
-                if (ulen < 8 || ihl + ulen > (unsigned)r)
+                if (ulen < 8 || ihl + ulen > (unsigned)r) {
+                    g_c_malformed++;
                     continue;
+                }
                 dns_parse(udp + 8, (int)(ulen - 8));
             }
         }
+        if (guard > 128)
+            g_c_capped++;     /* приёмников больше, чем забираем за проход */
         if (!dropped)
             f++;
     }
@@ -737,6 +788,22 @@ int dns_sniff_count(void)
     return n;
 }
 
+/* Сводка по пути «кадр -> запись». Смысл один: различить «DNS-трафика на
+ * интерфейсе нет» (recv=0), «кадр приходит не с IP-заголовка» (recv>0,
+ * notudp≈recv), «трафик есть, но не 53-порт» (notdns — DoT/DoH/QUIC) и
+ * «разбираем, но не сохраняем» (stored=0 при parse-хлебе). До этого ни один
+ * из четырёх случаев не проверялся вовсе. */
+int dns_sniff_stats(char *out, size_t n)
+{
+    if (!out || n == 0)
+        return 0;
+    snprintf(out, n,
+             "recv=%lu notudp=%lu notdns=%lu bad=%lu capped=%lu stored=%lu table=%d",
+             g_c_recv, g_c_notudp, g_c_notdns, g_c_malformed, g_c_capped,
+             g_c_stored, dns_sniff_count());
+    return (int)(g_c_recv + g_c_stored);
+}
+
 int dns_sniff_domain_of(const char *ip, char *domain_out, unsigned n)
 {
     int i;
@@ -862,4 +929,35 @@ void dns_sniff_ru_audit(const susanin_config *cfg)
             rename(wp, tmp);
         }
     }
+}
+
+/* Снимок счётчиков для ДРУГИХ процессов (панель, `susanin-agent why`):
+ * сводка живёт в памяти движка, и CLI-процесс, прочитавший dns_sniff_stats(),
+ * увидел бы нули — ровно та ошибка, которую нельзя повторять. Пишется так же,
+ * как ru-in-vpn: только при изменении и атомарно; при disk_mode=soft не
+ * пишется вовсе (носитель может быть только для чтения). */
+void dns_sniff_stats_write(const susanin_config *cfg)
+{
+    static char last[256];
+    char line[256], wp[544];
+    FILE *f;
+
+    if (!cfg || !strcmp(cfg->disk_mode, "soft"))
+        return;
+    if (!cfg->dns_sniff) {
+        if (last[0])
+            last[0] = '\0';       /* выключили — пусть файл остынет последним */
+        return;
+    }
+    dns_sniff_stats(line, sizeof(line));
+    if (!strcmp(line, last))
+        return;
+    snprintf(last, sizeof(last), "%s", line);
+    snprintf(wp, sizeof(wp), "%s.tmp", DNS_SNIFF_STATS_FILE);
+    f = fopen(wp, "w");
+    if (!f)
+        return;
+    fprintf(f, "%s\n", line);
+    fclose(f);
+    rename(wp, DNS_SNIFF_STATS_FILE);
 }

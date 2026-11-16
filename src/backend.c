@@ -788,11 +788,14 @@ static int iface_prefix_in_list(const char *list, const char *pfx)
  * interface: цепочки SUSANIN МАЛО — NDM может снести ip rule, default в таблице
  * или разрешение в filter/FORWARD, и тогда метка ставится, а трафик идёт
  * напрямую (снаружи это «vpn_always не работает»). */
-int backend_ready(const susanin_config *c)
+static int be_ready_int(const susanin_config *c, int *unknown)
 {
     char *argv[6];
     char out[8192], needle[96];
     int rc;
+
+    if (unknown)
+        *unknown = 0;
 
     argv[0] = (char *)tool_iptables();
     argv[1] = "-t";
@@ -800,10 +803,21 @@ int backend_ready(const susanin_config *c)
     argv[3] = "-S";
     argv[4] = "SUSANIN";
     argv[5] = NULL;
-    rc = run_check(argv, NULL, 0);
-    if (rc == XT_BUSY)
+    /* Буфер обязателен: без него текстовая детекция «xtables lock» невозможна
+     * и остаётся только код 4, а iptables разных сборок отдаёт 1 с тем же
+     * сообщением. Плюс содержимое цепочки видно только по выводу -S. */
+    rc = run_check(argv, out, sizeof(out));
+    if (rc == XT_BUSY) {
+        if (unknown)
+            *unknown = 1;
         return 1;               /* проверить нельзя — не объявляем пропажу */
+    }
     if (rc != 0)
+        return 0;
+    /* Цепочка существует — НЕ то же самое, что «датаплейн на месте»: NDM и
+     * `iptables -F` снимают правила, оставляя пустую пользовательскую
+     * цепочку, и прежняя проверка считала это готовностью навсегда. */
+    if (!strstr(out, "-A SUSANIN"))
         return 0;
 
     /* T3: dns_hijack ставит DNAT 53 заранее (в т.ч. шаблоном oc+ без живого
@@ -818,8 +832,11 @@ int backend_ready(const susanin_config *c)
         na[0] = (char *)tool_iptables();
         na[1] = "-t"; na[2] = "nat"; na[3] = "-S"; na[4] = "PREROUTING"; na[5] = NULL;
         rc = run_check(na, out, sizeof(out));
-        if (rc == XT_BUSY)
+        if (rc == XT_BUSY) {
+            if (unknown)
+                *unknown = 1;
             return 1;
+        }
         if (rc != 0 || !strstr(out, "susanin-dns"))
             return 0;
     }
@@ -830,8 +847,11 @@ int backend_ready(const susanin_config *c)
         argv[0] = (char *)tool_iptables();
         argv[1] = "-t"; argv[2] = "nat"; argv[3] = "-S"; argv[4] = "PREROUTING"; argv[5] = NULL;
         rc = run_check(argv, out, sizeof(out));
-        if (rc == XT_BUSY)
+        if (rc == XT_BUSY) {
+            if (unknown)
+                *unknown = 1;
             return 1;
+        }
         if (rc != 0 || !strstr(out, needle))
             return 0;
 
@@ -841,8 +861,11 @@ int backend_ready(const susanin_config *c)
             argv[0] = (char *)tool_iptables();
             argv[1] = "-t"; argv[2] = "mangle"; argv[3] = "-S"; argv[4] = "PREROUTING"; argv[5] = NULL;
             rc = run_check(argv, out, sizeof(out));
-            if (rc == XT_BUSY)
+            if (rc == XT_BUSY) {
+                if (unknown)
+                    *unknown = 1;
                 return 1;
+            }
             if (rc != 0 || !strstr(out, needle))
                 return 0;
         }
@@ -854,8 +877,11 @@ int backend_ready(const susanin_config *c)
             ipargv[0] = (char *)tool_ip();
             ipargv[1] = "rule"; ipargv[2] = "show"; ipargv[3] = NULL;
             rc = run_check(ipargv, out, sizeof(out));
-            if (rc == XT_BUSY)
+            if (rc == XT_BUSY) {
+                if (unknown)
+                    *unknown = 1;
                 return 1;
+            }
             if (rc != 0 || !strstr(out, needle))
                 return 0;
         }
@@ -875,8 +901,11 @@ int backend_ready(const susanin_config *c)
         ipargv[0] = (char *)tool_ip();
         ipargv[1] = "rule"; ipargv[2] = "show"; ipargv[3] = NULL;
         rc = run_check(ipargv, out, sizeof(out));
-        if (rc == XT_BUSY)
+        if (rc == XT_BUSY) {
+            if (unknown)
+                *unknown = 1;
             return 1;
+        }
         if (rc != 0 || !strstr(out, needle))
             return 0;
 
@@ -891,8 +920,11 @@ int backend_ready(const susanin_config *c)
             ipargv[1] = "route"; ipargv[2] = "show"; ipargv[3] = "table";
             ipargv[4] = tbl; ipargv[5] = NULL;
             rc = run_check(ipargv, out, sizeof(out));
-            if (rc == XT_BUSY)
+            if (rc == XT_BUSY) {
+                if (unknown)
+                    *unknown = 1;
                 return 1;
+            }
             if (rc != 0 || !strstr(out, "default"))
                 return 0;
         }
@@ -909,9 +941,12 @@ int backend_ready(const susanin_config *c)
             fargv[4] = "FORWARD"; fargv[5] = "-m"; fargv[6] = "mark";
             fargv[7] = "--mark"; fargv[8] = mbuf; fargv[9] = "-j";
             fargv[10] = "ACCEPT"; fargv[11] = NULL;
-            rc = run_check(fargv, NULL, 0);
-            if (rc == XT_BUSY)
+            rc = run_check(fargv, out, sizeof(out));
+            if (rc == XT_BUSY) {
+                if (unknown)
+                    *unknown = 1;
                 return 1;
+            }
             if (rc != 0)
                 return 0;
         }
@@ -950,8 +985,11 @@ int backend_ready(const susanin_config *c)
         pargv[0] = (char *)tool_iptables();
         pargv[1] = "-t"; pargv[2] = "mangle"; pargv[3] = "-S"; pargv[4] = "OUTPUT"; pargv[5] = NULL;
         rc = run_check(pargv, out, sizeof(out));
-        if (rc == XT_BUSY)
+        if (rc == XT_BUSY) {
+            if (unknown)
+                *unknown = 1;
             return 1;
+        }
         if (rc != 0 || !strstr(out, needle))
             return 0;
 
@@ -960,8 +998,11 @@ int backend_ready(const susanin_config *c)
         pargv[0] = (char *)tool_ip();
         pargv[1] = "rule"; pargv[2] = "show"; pargv[3] = NULL;
         rc = run_check(pargv, out, sizeof(out));
-        if (rc == XT_BUSY)
+        if (rc == XT_BUSY) {
+            if (unknown)
+                *unknown = 1;
             return 1;
+        }
         if (rc != 0 || !strstr(out, needle))
             return 0;
         p5_ok_at = p5now;
@@ -969,6 +1010,20 @@ int backend_ready(const susanin_config *c)
     }
 p5_cached:
     return 1;
+}
+
+int backend_ready(const susanin_config *c)
+{
+    return be_ready_int(c, NULL);
+}
+
+/* То же, но различает «проверено, на месте» и «проверить не удалось»:
+ * *unknown = 1, если хотя бы одна проверка упёрлась в занятый xtables-лок.
+ * Без этого движок не мог отличить «всё хорошо» от «мы ничего не знаем» и
+ * молчал, пока лок удерживали минуты. */
+int backend_ready_ex(const susanin_config *c, int *unknown)
+{
+    return be_ready_int(c, unknown);
 }
 
 /* Check the environment the data plane needs: external tools and the egress

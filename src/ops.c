@@ -3,6 +3,7 @@
 #include "backend.h"
 #include "cdn.h"
 #include "classifier.h"
+#include "dns_sniff.h"
 #include "log.h"
 #include "release.h"
 #include "state.h"
@@ -311,6 +312,25 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
            cfg->kernel_egress[0] ? cfg->kernel_egress : "-",
            cfg->pin_reassert, cfg->xray_watchdog, cfg->auto_direct,
            cfg->media_enabled);
+    if (cfg->dns_sniff) {
+        /* Снимок пишет движок: счётчики живут в его памяти, а этот процесс —
+         * отдельный, и наивно читать их у себя. */
+        FILE *sf = fopen(DNS_SNIFF_STATS_FILE, "r");
+        char sl[256] = "";
+        if (sf) {
+            if (fgets(sl, sizeof(sl), sf)) {
+                size_t l = strlen(sl);
+                while (l && (sl[l - 1] == '\n' || sl[l - 1] == '\r'))
+                    sl[--l] = '\0';
+            }
+            fclose(sf);
+            printf("dns_sniff: %s\n", sl[0] ? sl
+                   : "(снимка ещё нет — движок пишет раз в 5 мин)");
+        } else {
+            printf("dns_sniff: (снимка нет — цикл снифера ещё не отработал "
+                   "или disk_mode=soft)\n");
+        }
+    }
     if (cfg->proxy_uid[0] && cfg->proxy_egress[0]) {
         printf("proxy_egress: uid=%s -> %s (table=%d mark=0x%lx)\n",
                cfg->proxy_uid, cfg->proxy_egress, cfg->proxy_table,

@@ -12,6 +12,12 @@ int backend_p5_up(const susanin_config *c);
 int backend_p5_down(const susanin_config *c);
 int backend_ready(const susanin_config *c);
 
+/* Та же проверка, но *unknown = 1, если хотя бы одну проверку выполнить не
+ * удалось (занят xtables-lock). Нужен движку: «готово» и «не проверено»
+ * раньше давали одно и то же значение 1, и при залёгшем локе пропажу правил
+ * нельзя было увидеть вообще — окно fail-open становилось неограниченным. */
+int backend_ready_ex(const susanin_config *c, int *unknown);
+
 /* iptables не смог взять общий xtables-lock (код 4, «Another app is currently
  * holding the xtables lock»). Это НЕ признак пропавшего правила — проверку надо
  * повторить; вынесено наружу ради host-теста. */
