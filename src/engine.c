@@ -1229,6 +1229,15 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     if (cfg->vpn_never_file[0])
         nv = vn_new();
     slogf(SL_INFO, "engine started (egress=%s table=%d)", cfg->egress_interface, cfg->routing_table);
+    if (cfg->synfail_quorum > CFG_SYNFAIL_QUORUM_MAX) {
+        /* О пороге говорим здесь, а не в горячем пути: молча клампить
+         * пользовательское значение — значит оставить его верящим, что
+         * срабатывание требует, например, 16 соединений, когда модуль
+         * различает только 8. */
+        slogf(SL_WARN, "synfail_quorum=%d недостижим как «разных соединений»: "
+              "клампим до %d (размер кольца учёта)",
+              cfg->synfail_quorum, CFG_SYNFAIL_QUORUM_MAX);
+    }
     if (va && tunnel_up) {
         last_force = time(NULL);
         backend_batch_begin();
@@ -1736,17 +1745,6 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             backend_batch_end();
             if (force_pending)
                 last_force = prev;  /* догоняем оставшиеся домены вскоре */
-            if (just_reloaded) {
-                int nd = 0, nip = 0, nnet = 0;
-                va_counts(va, &nd, &nip, &nnet);
-                slogf(SL_INFO, "vpn_always: перечитан (доменов=%d, "
-                      "запинено ip=%d net=%d)", nd, nip, nnet);
-            }
-        } else if (just_reloaded && va && cfg->vpn_always_file[0]) {
-            /* Раньше это было молчанием: Reload при мёртвом туннеле перечитывал
-             * vpn_never, а vpn_always пропускал (fail-open), и по логу нельзя
-             * было отличить «отложено сознательно» от «список не применился». */
-            slogf(SL_INFO, "vpn_always: отложен до подъёма туннеля (fail-open)");
         }
 
         if (nv &&
@@ -1765,11 +1763,49 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 never_state_clean(cfg, &st, now);
             if (never_pending)
                 last_never = prev;
-            if (just_reloaded) {
-                int nd = 0, nt = 0;
-                vn_counts(nv, &nd, &nt);
-                slogf(SL_INFO, "vpn_never: перечитан (доменов=%d, direct=%d)",
-                      nd, nt);
+        }
+
+        /* Сводка по обоим спискам — ОДНА точка, после того как оба refresh
+         * отработаны. Раньше печать стояла внутри ветки «сводка», из-за чего
+         * слово «перечитан» появлялось и когда va_refresh вышел по раннему
+         * return (пустой путь), и когда список ещё только применяется
+         * (домены не все разрешены), и когда nv/va вообще не созданы — то
+         * есть наблюдаемость, ради которой сводку и заводили, сама же и
+         * вводила в заблуждение. */
+        if (just_reloaded) {
+            int nd = 0, nip = 0, nnet = 0, nnd = 0, nnt = 0;
+
+            if (!cfg->vpn_always_file[0])
+                slogf(SL_INFO, "vpn_always: список не задан (vpn_always_file пуст)");
+            else if (!va)
+                slogf(SL_WARN, "vpn_always: путь к списку задан после старта службы — "
+                      "он не активен, требуется перезапуск (reload модуль не создаёт)");
+            else if (!tunnel_up)
+                slogf(SL_INFO, "vpn_always: отложен до подъёма туннеля (fail-open)");
+            else {
+                va_counts(va, &nd, &nip, &nnet);
+                if (force_pending)
+                    slogf(SL_INFO, "vpn_always: применяется (доменов=%d, запинено пока "
+                          "ip=%d net=%d; остальные — в следующих проходах)",
+                          nd, nip, nnet);
+                else
+                    slogf(SL_INFO, "vpn_always: применён (доменов=%d, запинено ip=%d net=%d)",
+                          nd, nip, nnet);
+            }
+
+            if (!cfg->vpn_never_file[0])
+                slogf(SL_INFO, "vpn_never: список не задан (vpn_never_file пуст)");
+            else if (!nv)
+                slogf(SL_WARN, "vpn_never: путь к списку задан после старта службы — "
+                      "он не активен, требуется перезапуск (reload модуль не создаёт)");
+            else {
+                vn_counts(nv, &nnd, &nnt);
+                if (never_pending)
+                    slogf(SL_INFO, "vpn_never: применяется (доменов=%d, direct пока=%d; "
+                          "остальные — в следующих проходах)", nnd, nnt);
+                else
+                    slogf(SL_INFO, "vpn_never: применён (доменов=%d, direct=%d)",
+                          nnd, nnt);
             }
         }
         just_reloaded = 0;

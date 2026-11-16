@@ -777,7 +777,7 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "# с самого роутера, а умирает поток клиента; плюс проба ограничена\n");
     fprintf(fp, "# общим бюджетом и при фан-ауте не успевается. 0 = выключить.\n");
     fprintf(fp, "synfail_quorum=%d\n", c->synfail_quorum);
-    fprintf(fp, "# Окно накопления улики, сек.\n");
+    fprintf(fp, "# Окно подсчёта погибших соединений, сек.\n");
     fprintf(fp, "synfail_window=%d\n", out_dur(c->synfail_window, U_SEC));
     fprintf(fp, "# TTL выученных ok-адресов, сек; 0 = никогда не истекает (наборы растут).\n");
     fprintf(fp, "ok_ttl=%d\n", out_dur(c->ok_ttl, U_SEC));
