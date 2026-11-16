@@ -63,6 +63,78 @@ int main(void)
     CHECK(cfg.release_check == 0, "release_check=0 разобран");
     CHECK(cfg.release_check_interval == 3600, "release_check_interval=3600 разобран");
 
+    printf("=== config_validate ===\n");
+    {
+        char prob[2048];
+        int n;
+
+        /* Дефолтный конфиг обязан проходить проверку: иначе инструмент
+         * шумит с первого запуска, и его перестают читать. */
+        config_set_defaults(&cfg);
+        n = config_validate(&cfg, prob, sizeof(prob));
+        CHECK(n == 0, "конфиг по умолчанию — без замечаний");
+        if (n)
+            printf("     (лишнее: %s)", prob);
+
+        config_load(write_cfg("media_min_bytes=-1\n"), &cfg);
+        CHECK(config_validate(&cfg, prob, sizeof(prob)) > 0 &&
+              strstr(prob, "media_min_bytes") != NULL,
+              "отрицательный media_min_bytes помечен (в коде станет гигантским)");
+
+        config_load(write_cfg("mark_mask=0\n"), &cfg);
+        CHECK(config_validate(&cfg, prob, sizeof(prob)) > 0 &&
+              strstr(prob, "mark_mask") != NULL,
+              "mark_mask=0 помечен (метрики неразличимы)");
+
+        config_load(write_cfg("mark_test=0x10000000\nmark_ok=0x10000000\n"), &cfg);
+        CHECK(config_validate(&cfg, prob, sizeof(prob)) > 0 &&
+              strstr(prob, "mark_test == mark_ok") != NULL,
+              "одинаковые test/ok помечены");
+
+        config_load(write_cfg("routing_table=255\n"), &cfg);
+        CHECK(config_validate(&cfg, prob, sizeof(prob)) > 0 &&
+              strstr(prob, "routing_table") != NULL,
+              "routing_table=255 помечен (зарезервирован ядром)");
+
+        config_load(write_cfg("synfail_quorum=16\n"), &cfg);
+        CHECK(config_validate(&cfg, prob, sizeof(prob)) > 0 &&
+              strstr(prob, "клампим") != NULL,
+              "synfail_quorum выше кольца помечен с указанием предела");
+        config_load(write_cfg("synfail_quorum=8\n"), &cfg);
+        CHECK(config_validate(&cfg, prob, sizeof(prob)) == 0,
+              "synfail_quorum=8 (равен кольцу) — не замечание");
+
+        /* Сенсоры «0 = выключено / 0 = никогда» не считаются ошибкой — иначе
+         * проверка превращается в шум, который оператор глушит. */
+        config_load(write_cfg(
+            "ok_ttl=0\npromo_per_min=0\nsoft_state_interval=0\n"
+            "media_enabled=0\nmedia_prefix_max=99\n"
+            "udp_relay=0\nudp_relay_port=0\nsocks_port=0\n"
+            "web_enable=0\nweb_port=0\nhealth_mode=icmp\nhealth_tcp_port=0\n"
+            "dns_sniff=0\ndns_sniff_ttl=0\nkernel_offload=0\nkernel_offload_max=1\n"
+            "cdn_prefix_learn=0\ncdn_prefix_max=0\n"
+            "frozen_net_enabled=0\nfrozen_net_prefix=99\n"
+            "test_net_enabled=0\ntest_net_prefix=99\ntest_net_window=0\n"), &cfg);
+        n = config_validate(&cfg, prob, sizeof(prob));
+        CHECK(n == 0, "выключенные механизмы с нулевыми/безумными значениями — не замечания");
+        if (n)
+            printf("     (ложное: %s)", prob);
+
+        /* Отрицательное значение порога всегда замечание, а не сенсор. */
+        config_load(write_cfg("fast_interval=0\n"), &cfg);
+        CHECK(config_validate(&cfg, prob, sizeof(prob)) > 0,
+              "fast_interval=0 помечен (полный скан каждый проход)");
+
+        /* Малый буфер: число проблем возвращается, текст не вылезает за границу. */
+        {
+            char tiny[32];
+            config_load(write_cfg("mark_mask=0\nrouting_table=0\nfast_interval=0\n"), &cfg);
+            n = config_validate(&cfg, tiny, sizeof(tiny));
+            CHECK(n >= 3, "при малом буфере число проблем не теряется");
+            CHECK(strlen(tiny) < sizeof(tiny), "вывод не переполнил буфер");
+        }
+    }
+
     remove("/tmp/susanin-test.conf");
     printf("\n%s\n", failures ? "ЕСТЬ ОШИБКИ" : "все проверки пройдены");
     return failures ? 1 : 0;

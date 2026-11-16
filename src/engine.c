@@ -1072,6 +1072,39 @@ static int engine_pick_start_egress(const susanin_config *cfg)
     return 0;   /* tproxy уже активен по конфигу — переключать нечего */
 }
 
+/* Значения, которые код прочтёт иначе, чем задумано, должны быть видны в логе,
+ * а не в поведении: молчаливый кламп, «агрегация выключилась из-за
+ * отрицательного порога» или «метрики неразличимы из-за mask=0» обнаруживаются
+ * только по факту простоя. stage — откуда проверяем (старт/reload), чтобы в
+ * логе было понятно, каким конфигом живёт процесс.
+ *
+ * Проверка не меняет ни одного значения: право молча подменять конфиг
+ * оператора — это ровно тот класс ошибок, который мы убираем. */
+static void cfg_check(const susanin_config *cfg, const char *stage)
+{
+    char prob[2048];
+    const char *p = prob;
+    int n;
+
+    n = config_validate(cfg, prob, sizeof(prob));
+    if (n <= 0)
+        return;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        char one[512];
+
+        if (len >= sizeof(one))
+            len = sizeof(one) - 1;
+        memcpy(one, p, len);
+        one[len] = '\0';
+        slogf(SL_WARN, "конфиг (%s): %s", stage, one);
+        if (!nl)
+            break;
+        p = nl + 1;
+    }
+}
+
 int engine_run(susanin_config *cfg, const char *conf_path)
 {
     susanin_state st;
@@ -1229,15 +1262,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     if (cfg->vpn_never_file[0])
         nv = vn_new();
     slogf(SL_INFO, "engine started (egress=%s table=%d)", cfg->egress_interface, cfg->routing_table);
-    if (cfg->synfail_quorum > CFG_SYNFAIL_QUORUM_MAX) {
-        /* О пороге говорим здесь, а не в горячем пути: молча клампить
-         * пользовательское значение — значит оставить его верящим, что
-         * срабатывание требует, например, 16 соединений, когда модуль
-         * различает только 8. */
-        slogf(SL_WARN, "synfail_quorum=%d недостижим как «разных соединений»: "
-              "клампим до %d (размер кольца учёта)",
-              cfg->synfail_quorum, CFG_SYNFAIL_QUORUM_MAX);
-    }
+    cfg_check(cfg, "старт");
     if (va && tunnel_up) {
         last_force = time(NULL);
         backend_batch_begin();
@@ -1271,6 +1296,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 *cfg = nc;
                 backend_batch_enable(cfg->ipset_batch);
                 slogf(SL_INFO, "config reloaded: %s", conf_path);
+                cfg_check(cfg, "reload");
                 /* Работник udp-relay держит конфиг, с которым запущен:
                  * при смене значимых полей — перезапуск, при выключении
                  * udp_relay — остановка. */
@@ -1346,9 +1372,24 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             if (now - last[3] >= cfg->health_interval)
                 need_scan = 1;
             if (need_scan) {
+                static unsigned long ol_rep;
+                static time_t ol_at;
+                unsigned long ol;
+
                 L.n = 0;
                 if (conntrack_scan("/proc/net/nf_conntrack", collect, &L) < 0)
                     slogf(SL_DEBUG, "conntrack scan failed");
+                /* Счётчик без читателя — мёртвый код: ровно так же год назад
+                 * жил dns_sniff_count(). Сообщаем не чаще раза в 5 минут, но
+                 * дельту копят, чтобы не потерять ни одного случая. */
+                ol = conntrack_overlong();
+                if (ol > ol_rep && (!ol_at || now - ol_at >= 300)) {
+                    slogf(SL_WARN, "conntrack: %lu записей длиннее %d байт — эти "
+                          "потоки не были разобраны и не участвовали в обучении",
+                          ol - ol_rep, CT_LINE_MAX);
+                    ol_rep = ol;
+                    ol_at = now;
+                }
             }
         }
 

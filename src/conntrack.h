@@ -29,11 +29,21 @@ typedef struct {
 
 typedef int (*ct_cb)(void *ud, const ct_flow *f);
 
+/* Максимальная длина одной записи /proc/net/nf_conntrack. Одна величина на
+ * чтение и на разбор: раньше скан читал 4096, а обёртка копировала в 2048, то
+ * есть запись, успешно прочитанную целиком, всё равно обрезали — а в этом
+ * формате адресов нет в начале строки, поэтому обрезок неотличимо «не
+ * разбирается» и поток просто исчезает из обучения. */
+#define CT_LINE_MAX 4096
+
 int conntrack_parse_line(const char *line, ct_flow *f);
 /* То же, но разбирает буфер на месте (strtok_r разделяет его на токены) —
  * для conntrack_scan, который читает строки в собственный изменяемый буфер. */
 int conntrack_parse_line_mut(char *buf, ct_flow *f);
 int conntrack_scan(const char *path, ct_cb cb, void *ud);
+/* Сколько записей conntrack не влезли в CT_LINE_MAX с начала работы процесса.
+ * Без этого счётчика «поток исчез из обучения» и «потока не было» неотличимы. */
+unsigned long conntrack_overlong(void);
 /* Быстрый ручной разбор IPv4 dotted-quad (host order); 0 = не IPv4. */
 uint32_t ct_parse4(const char *s);
 

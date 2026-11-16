@@ -1,6 +1,11 @@
 #ifndef SUSANIN_CONFIG_H
 #define SUSANIN_CONFIG_H
 
+/* size_t в сигнатуре config_validate: заголовок обязан быть самодостаточным,
+ * иначе включение config.h без заранее подключённого stdio ломает сборку
+ * файла, который ничего дурного не делал. */
+#include <stddef.h>
+
 #define CFG_MAX_LAN 8
 #define CFG_PATH_MAX 256
 #define CFG_MAX_EGRESS 4
@@ -267,5 +272,12 @@ int config_file_set(const char *path, const char *key, const char *val, int allo
  * Нужно для обновления: рукописный перечень ключей в update.sh неизбежно
  * отстаёт от кода и со старыми дефолтами. */
 int config_sync(const char *path, int dry_run);
+
+/* Проверка загруженного конфига на значения, которые код прочтёт иначе, чем
+ * задумано (отрицательные пороги в беззнаковом контексте, нулевые периоды,
+ * метка вне маски, порт/префикс вне диапазона). Документированные сенсоры
+ * (0 = выключено / 0 = никогда) ошибкой не считаются.
+ * Возвращает число проблем; в out — по строке на проблему. */
+int config_validate(const susanin_config *c, char *out, size_t n);
 
 #endif

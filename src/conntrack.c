@@ -133,9 +133,16 @@ int conntrack_parse_line_mut(char *buf, ct_flow *f)
     return 0;
 }
 
+static unsigned long g_overlong;
+
+unsigned long conntrack_overlong(void)
+{
+    return g_overlong;
+}
+
 int conntrack_parse_line(const char *line, ct_flow *f)
 {
-    char buf[2048];
+    char buf[CT_LINE_MAX];
     if (!line || !f)
         return -1;
     snprintf(buf, sizeof(buf), "%s", line);
@@ -145,7 +152,7 @@ int conntrack_parse_line(const char *line, ct_flow *f)
 int conntrack_scan(const char *path, ct_cb cb, void *ud)
 {
     FILE *fp;
-    char line[4096];
+    char line[CT_LINE_MAX];
     int n = 0;
 
     fp = fopen(path ? path : "/proc/net/nf_conntrack", "r");
@@ -153,6 +160,20 @@ int conntrack_scan(const char *path, ct_cb cb, void *ud)
         return -1;
     while (fgets(line, sizeof(line), fp)) {
         ct_flow f;
+        size_t len = strlen(line);
+
+        /* Запись длиннее буфера: fgets вернул её начало без '\n'. Разбирать
+         * обрезок нельзя (в этом формате src/dst в конце), а молча выбросить —
+         * значит оставить «поток пропал из обучения» без единого следа.
+         * Дочитываем остаток строки, чтобы следующим чтением не взять
+         * середину записи как отдельную строку, и помечаем случай в счётчик. */
+        if (len > 0 && line[len - 1] != '\n' && !feof(fp)) {
+            int ch;
+            g_overlong++;
+            while ((ch = fgetc(fp)) != EOF && ch != '\n')
+                ;
+            continue;
+        }
         /* In-place: line — наш изменяемый буфер, следующая fgets его
          * перезапишет. Копия строки на каждую запись conntrack не нужна. */
         if (conntrack_parse_line_mut(line, &f) == 0) {

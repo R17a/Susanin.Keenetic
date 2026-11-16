@@ -31,6 +31,8 @@ static void usage(void)
         "  susanin-agent config set <key> <value>\n"
         "  susanin-agent config sync [--dry-run]   (дописать отсутствующие ключи\n"
         "                                            действующими дефолтами)\n"
+        "  susanin-agent config check            (значения, которые код прочтёт\n"
+        "                                            иначе, чем задумано)\n"
         "  susanin-agent discover\n"
         "  susanin-agent ct-scan\n"
         "  susanin-agent datapath {up|down|p5|p5-down|status|flush|add|del}\n"
@@ -192,6 +194,30 @@ int main(int argc, char **argv)
             else
                 printf("config sync: добавлено %d ключ(ов)\n", n);
             return 0;
+        }
+        if (argc > 2 && !strcmp(argv[2], "check")) {
+            susanin_config cc;
+            char prob[2048];
+            int n;
+
+            if (access(cfg_path(), R_OK) != 0) {
+                fprintf(stderr, "config check: нет файла %s\n", cfg_path());
+                return 2;
+            }
+            /* Перечитываем сами: общий путь выше при неудаче молча берёт
+             * дефолты, а «проверка конфига» на дефолтах вместо конфига
+             * сказала бы ровно ничего полезного. */
+            if (config_load(cfg_path(), &cc) != 0) {
+                fprintf(stderr, "config check: %s не разбирается\n", cfg_path());
+                return 1;
+            }
+            n = config_validate(&cc, prob, sizeof(prob));
+            if (n == 0) {
+                printf("config check: %s — замечаний нет\n", cfg_path());
+                return 0;
+            }
+            printf("config check: %s — проблем: %d\n%s", cfg_path(), n, prob);
+            return 1;
         }
         usage();
         return 2;

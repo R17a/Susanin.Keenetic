@@ -1295,6 +1295,168 @@ int config_sync(const char *path, int dry_run)
     return nmiss;
 }
 
+/* Проверка конфига на значения, которые код прочтёт иначе, чем задумано.
+ *
+ * Проверяем ТОЛЬКО то, где значение не «менее выгодно», а прочитано неверно:
+ * отрицательные пороги уходят в беззнаковый контекст и превращаются в
+ * гигантские (агрегация при этом молча выключается), нулевые периоды
+ * превращают редкий скан в каждый проход, метка вне маски не различается
+ * ядром вообще. Документированные сенсоры (0 = выключено / 0 = никогда)
+ * намеренно НЕ считаются ошибкой: иначе проверка стала бы шумом, который
+ * оператор перестаёт читать.
+ *
+ * Возвращает число проблем; в out — по строке на проблему (что влезло).
+ * Приложение к загрузке: движок повторяет проверку на старте и на Reload,
+ * чтобы «значение прочтётся не так» было видно в логе, а не в поведении. */
+int config_validate(const susanin_config *c, char *out, size_t n)
+{
+    size_t used = 0;
+    int bad = 0, full = 0, i;
+    char line[256];
+
+    if (!c || !out || n == 0)
+        return 0;
+    out[0] = '\0';
+
+#define CFGV(...) do {                                        \
+        int _w = snprintf(line, sizeof(line), __VA_ARGS__);   \
+        bad++;                                                \
+        if (_w > 0 && !full) {                                \
+            if (used + (size_t)_w + 1 >= n) {                 \
+                full = 1;                                     \
+                if (used + 1 < n)                             \
+                    used += snprintf(out + used, n - used, "..."); \
+            } else {                                          \
+                used += snprintf(out + used, n - used, "%s\n", line); \
+            }                                                 \
+        }                                                     \
+    } while (0)
+
+    /* Периоды сканов: 0 превращает «раз в N секунд» в каждый проход цикла —
+     * на MIPS это полная загрузка CPU на пустом месте. */
+    if (c->fast_interval < 1)
+        CFGV("fast_interval=%d: не может быть меньше 1 с (полный скан conntrack каждый проход)",
+             c->fast_interval);
+    if (c->soft_interval < 1)
+        CFGV("soft_interval=%d: меньше 1 с — смысла нет, только нагрузка", c->soft_interval);
+    if (c->judge_interval < 1)
+        CFGV("judge_interval=%d: меньше 1 с — только нагрузка", c->judge_interval);
+    if (c->health_interval < 1)
+        CFGV("health_interval=%d: меньше 1 с — пробы чаще, чем успевает ответить туннель",
+             c->health_interval);
+    if (c->dp_check_interval < 0)
+        CFGV("dp_check_interval=%d: отрицательный период сверки датаплейна (0 = по умолчанию)",
+             c->dp_check_interval);
+    if (c->vpn_always_interval < 1)
+        CFGV("vpn_always_interval=%d: меньше 1 с — перечитывание и резолв без паузы",
+             c->vpn_always_interval);
+    if (c->vpn_never_interval < 1)
+        CFGV("vpn_never_interval=%d: меньше 1 с — перечитывание без паузы",
+             c->vpn_never_interval);
+
+    /* Маршрутизация и метки: здесь неверное значение не «хуже», а не работает. */
+    if (c->routing_table < 1 || c->routing_table > 252)
+        CFGV("routing_table=%d: для ip rule годятся 1..252 (253..255 зарезервированы ядром)",
+             c->routing_table);
+    if (c->ip_rule_priority_start < 1 || c->ip_rule_priority_start > 32767)
+        CFGV("ip_rule_priority_start=%d: вне 1..32767 — правила встанут не туда и перекроют KeeneticOS",
+             c->ip_rule_priority_start);
+    if (c->mark_mask == 0)
+        CFGV("mark_mask=0: маска нулевая — метки test/ok неразличимы, вся маршрутизация по метке падает");
+    else {
+        if (c->mark_test && (c->mark_test & ~c->mark_mask))
+            CFGV("mark_test=0x%lx не входит в mark_mask=0x%lx", c->mark_test, c->mark_mask);
+        if (c->mark_ok && (c->mark_ok & ~c->mark_mask))
+            CFGV("mark_ok=0x%lx не входит в mark_mask=0x%lx", c->mark_ok, c->mark_mask);
+        if (c->mark_test == c->mark_ok)
+            CFGV("mark_test == mark_ok (0x%lx): фаза test и подтверждённые адреса неразличимы",
+                 c->mark_ok);
+    }
+
+    /* Пороги учёта и media: уходят в беззнаковый контекст. */
+    if (c->media_min_bytes < 0)
+        CFGV("media_min_bytes=%d: отрицательное станет гигантским беззнаковым — класс media молча выключится",
+             c->media_min_bytes);
+    if (c->media_ratio < 0)
+        CFGV("media_ratio=%d: отрицательное отношение даст «не медиа» на каждом потоке",
+             c->media_ratio);
+    if (c->media_min_rate < 0)
+        CFGV("media_min_rate=%d: отрицательная скорость бессмысленна", c->media_min_rate);
+    if (c->media_min_age < 0)
+        CFGV("media_min_age=%d: отрицательный возраст бессмысленен", c->media_min_age);
+    if (c->learn_min_op < 0 || c->learn_min_bytes < 0 || c->confirm_min_bytes < 0)
+        CFGV("learn_min_op/learn_min_bytes/confirm_min_bytes: отрицательные пороги учёта (%d/%d/%d)",
+             c->learn_min_op, c->learn_min_bytes, c->confirm_min_bytes);
+    if (c->ok_max_entries < 0)
+        CFGV("ok_max_entries=%d: лимит не может быть отрицательным (0 = без лимита)",
+             c->ok_max_entries);
+    if (c->xray_log_max_kb < 0)
+        CFGV("xray_log_max_kb=%d: отрицательный размер подрезки (0 = не подрезать)",
+             c->xray_log_max_kb);
+    if (c->soft_state_interval < 0)
+        CFGV("soft_state_interval=%d: отрицательный период сохранения (0 = никогда)",
+             c->soft_state_interval);
+
+    /* Учёт погибших соединений. */
+    if (c->synfail_quorum < 0)
+        CFGV("synfail_quorum=%d: не может быть отрицательным (0 = механизм выключен)",
+             c->synfail_quorum);
+    else if (c->synfail_quorum > CFG_SYNFAIL_QUORUM_MAX)
+        CFGV("synfail_quorum=%d недостижим как «разных соединений»: клампим до %d",
+             c->synfail_quorum, CFG_SYNFAIL_QUORUM_MAX);
+    if (c->synfail_window < 0)
+        CFGV("synfail_window=%d: отрицательное окно (0 = по умолчанию 120 с)",
+             c->synfail_window);
+    else if (c->synfail_quorum > 0 && c->synfail_window < 1)
+        CFGV("synfail_window=%d при synfail_quorum=%d: в окно меньше секунды quorum не набрать",
+             c->synfail_window, c->synfail_quorum);
+
+    /* Порты — проверяем только у включённых механизмов, иначе 0 законен. */
+#define CFGV_PORT(key, val, on) do {                              \
+        if ((on) && ((val) < 1 || (val) > 65535))                 \
+            CFGV("%s=%d: вне 1..65535", (key), (int)(val));      \
+    } while (0)
+    CFGV_PORT("tproxy_port", c->tproxy_port,
+              !strcmp(c->egress_type, "tproxy") || !strcmp(c->egress_type, "xray"));
+    CFGV_PORT("udp_relay_port", c->udp_relay_port, c->udp_relay == 1);
+    CFGV_PORT("socks_port", c->socks_port, c->udp_relay == 1);
+    CFGV_PORT("web_port", c->web_port, c->web_enable == 1);
+    CFGV_PORT("health_tcp_port", c->health_tcp_port, !strcmp(c->health_mode, "tcp"));
+
+    /* Длины префиксов агрегации: вне 8..32 сдвиг маски не определён. */
+#define CFGV_PREFIX(key, val, on) do {                            \
+        if ((on) && ((val) < 8 || (val) > 32))                    \
+            CFGV("%s=%d: длина префикса вне 8..32", (key), (int)(val)); \
+    } while (0)
+    CFGV_PREFIX("cdn_prefix_max", c->cdn_prefix_max, c->cdn_prefix_learn == 1);
+    CFGV_PREFIX("frozen_net_prefix", c->frozen_net_prefix, c->frozen_net_enabled == 1);
+    CFGV_PREFIX("test_net_prefix", c->test_net_prefix, c->test_net_enabled == 1);
+    CFGV_PREFIX("media_prefix_max", c->media_prefix_max, c->media_enabled == 1);
+    CFGV_PREFIX("kernel_offload_max", c->kernel_offload_max,
+                c->kernel_offload == 1 && c->kernel_egress[0] != '\0');
+    if (c->test_net_enabled == 1 && c->test_net_window < 1)
+        CFGV("test_net_window=%d: окно серии меньше секунды", c->test_net_window);
+    if (c->dns_sniff == 1 && c->dns_sniff_ttl < 1)
+        CFGV("dns_sniff_ttl=%d: пары домен->IP протухают раньше, чем успевают пригодиться",
+             c->dns_sniff_ttl);
+
+    /* Ключ, который без egress-интерфейса означает «всё напрямую». */
+    if (!strcmp(c->egress_type, "interface") && !c->egress_interface[0])
+        CFGV("egress_type=interface без egress_interface: учение будет, маршрутизации — нет");
+
+    for (i = 0; i < c->n_egress && i < CFG_MAX_EGRESS; i++)
+        if (!c->egress_list[i][0])
+            CFGV("egress %d: пустой интерфейс в списке", i + 1);
+
+    /* Заметка о неполном выводе — не отдельная проблема, поэтому пишем её
+     * напрямую, минуя CFGV (он увеличивает счётчик). */
+    if (full && used + 2 < n)
+        used += snprintf(out + used, n - used,
+                         "часть проблем не поместилась: susanin-agent config check\n");
+
+    return bad;
+}
+
 void config_print(const susanin_config *c)
 {
     int i;
