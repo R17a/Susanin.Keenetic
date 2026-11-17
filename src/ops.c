@@ -312,6 +312,8 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
            cfg->kernel_egress[0] ? cfg->kernel_egress : "-",
            cfg->pin_reassert, cfg->xray_watchdog, cfg->auto_direct,
            cfg->media_enabled);
+    printf("vpin: check=%d interval=%ds (аудит пинов автообучения)\n",
+           cfg->vpin_check, cfg->vpin_interval);
     if (cfg->dns_sniff) {
         /* Снимок пишет движок: счётчики живут в его памяти, а этот процесс —
          * отдельный, и наивно читать их у себя. */

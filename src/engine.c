@@ -12,6 +12,7 @@
 #include "udp_relay.h"
 #include "vpn_always.h"
 #include "vpn_never.h"
+#include "vpin.h"
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -635,6 +636,207 @@ static void probe_job_poll(const susanin_config *cfg, int *up, int *miss,
             pj_pid = 0;
         }
     }
+}
+
+/* --- Аудит пинов, поставленных автообучением (VPIN) ----------------------
+ * Автообучение уводит адрес в VPN по одной улике (FAST-детект «SYN без
+ * ответа»/DPI-сигнал) и дальше не проверяет, что через туннель адрес вообще
+ * работает. На живых кейсах это давало «залипшие» адреса: прямой путь живой,
+ * туннель до адреса мёртв или в разы медленнее — а трафик идёт через VPN,
+ * потому что пин стоит и сам не снимется (D1 откладывает возврат на час).
+ *
+ * Здесь: адрес, выученный классификатором (vpin_note), через vpin_interval
+ * проверяется ЧЕРЕЗ ТУННЕЛЬ. Не отвечает или отвечает медленнее VPIN_SLOW_MS —
+ * пин снимается, адрес уходит напрямую с мягким «прямо» (susanin_direct),
+ * чтобы не выучиться обратно тем же FAST-детектом. Если туннель хорош —
+ * адрес остаётся в VPN и позже (через два интервала) проверяется, не ожил ли
+ * прямой путь: тогда пин снимается уже по хорошей новости.
+ *
+ * Ручные пины vpn_always сюда не попадают: vpin_note() зовёт только
+ * классификатор, у ручных пинов другой путь. */
+#define VPIN_TIMEOUT_MS 2500
+#define VPIN_SLOW_MS    1800
+#define VPIN_BATCH      4
+
+static pid_t vq_pid = 0;
+static int vq_fd = -1;
+static time_t vq_start = 0;
+static char vq_buf[512];
+static size_t vq_len = 0;
+
+/* Снять пин и вернуть адрес на прямой путь мягко (susanin_direct). */
+static void vq_unpin(susanin_state *stp, const susanin_config *cfg, const char *ip, time_t now)
+{
+    int udp;
+    for (udp = 0; udp < 2; udp++) {
+        state_remove(st_ok(stp, udp), ip);
+        state_remove(st_test(stp, udp), ip);
+        backend_ipset_del(cfg, udp, 0, ip);
+        backend_ipset_del(cfg, udp, 1, ip);
+    }
+    /* Живые соединения держат старую метку: без сброса долгоживущий сокет
+     * (WebSocket/pull) остался бы на мёртвом пути до собственного таймаута. */
+    backend_ct_flush_ip(ip);
+    if (cfg->direct_pref_ttl > 0) {
+        backend_set_add(cfg, "susanin_direct", ip, cfg->direct_pref_ttl);
+        state_add(&stp->direct, ip, now, cfg->direct_pref_ttl, 0);
+    }
+}
+
+static void vq_apply(susanin_state *stp, const susanin_config *cfg, int i, int ok, int lat, time_t now)
+{
+    char ip[16];
+    const char *p = vpin_ip(i);
+    if (!p)
+        return;
+    snprintf(ip, sizeof(ip), "%s", p);
+    if (vpin_state(i) == VPIN_Q_VPN) {
+        if (ok && lat <= VPIN_SLOW_MS) {
+            vpin_set(i, VPIN_Q_DIRECT, now);
+            return;
+        }
+        vpin_bump(ok ? 1 : 0);
+        slogf(SL_INFO, "VPIN: %s — %s через туннель (%d мс), возвращаю напрямую",
+              ip, ok ? "медленно" : "нет ответа", lat);
+        vq_unpin(stp, cfg, ip, now);
+    } else {
+        if (!ok) {
+            vpin_set(i, VPIN_Q_DIRECT, now);
+            return;
+        }
+        vpin_bump(2);
+        slogf(SL_INFO, "VPIN: %s — прямой путь снова жив, снимаю VPN-пин", ip);
+        vq_unpin(stp, cfg, ip, now);
+    }
+    vpin_free_idx(i);
+}
+
+static void vq_collect(susanin_state *stp, const susanin_config *cfg, time_t now)
+{
+    if (vq_fd >= 0) {
+        for (;;) {
+            ssize_t r = read(vq_fd, vq_buf + vq_len, sizeof(vq_buf) - vq_len - 1);
+            char *p;
+            if (r <= 0)
+                break;
+            vq_len += (size_t)r;
+            vq_buf[vq_len] = '\0';
+            p = vq_buf;
+            for (;;) {
+                char *nl = strchr(p, '\n');
+                int i, ok, lat;
+                if (!nl)
+                    break;
+                *nl = '\0';
+                if (sscanf(p, "%d %d %d", &i, &ok, &lat) == 3)
+                    vq_apply(stp, cfg, i, ok, lat, now);
+                p = nl + 1;
+            }
+            vq_len = strlen(p);
+            memmove(vq_buf, p, vq_len + 1);
+            if (vq_len + 1 >= sizeof(vq_buf))
+                vq_len = 0;
+        }
+    }
+    if (vq_pid > 0) {
+        int wst;
+        pid_t w = waitpid(vq_pid, &wst, WNOHANG);
+        int hung = (now - vq_start) > 60;
+        if (w == vq_pid || hung) {
+            if (w != vq_pid) {
+                kill(vq_pid, SIGKILL);
+                waitpid(vq_pid, &wst, 0);
+            }
+            if (vq_fd >= 0)
+                close(vq_fd);
+            vq_fd = -1;
+            vq_pid = 0;
+        }
+    }
+}
+
+static void vq_child(const susanin_config *cfg, const int *idx, int n, int fd)
+{
+    int k;
+    for (k = 0; k < n; k++) {
+        const char *ip = vpin_ip(idx[k]);
+        int stt = vpin_state(idx[k]);
+        struct timespec t0, t1;
+        int ok, lat;
+        char line[64];
+        if (!ip)
+            continue;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        if (stt == VPIN_Q_VPN)
+            ok = health_probe_via_socks(cfg, ip, 443, VPIN_TIMEOUT_MS);
+        else
+            ok = health_probe_tcp_direct(ip, 443, VPIN_TIMEOUT_MS);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        lat = (int)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000);
+        snprintf(line, sizeof(line), "%d %d %d\n", idx[k], ok, lat);
+        if (write(fd, line, strlen(line)) < 0)
+            break;
+    }
+}
+
+static void vq_tick(susanin_state *stp, const susanin_config *cfg, time_t now)
+{
+    int idx[VPIN_BATCH], n, fd[2];
+    pid_t pid;
+    if (!cfg->vpin_check)
+        return;
+    if (vq_pid > 0) {
+        vq_collect(stp, cfg, now);
+        return;
+    }
+    n = vpin_due(now, cfg->vpin_interval, cfg->vpin_interval * 2, idx, VPIN_BATCH);
+    if (n <= 0)
+        return;
+    /* Качество VPN-пути умеем мерить только там, где есть локальный SOCKS
+     * (tproxy/Xray). В остальных режимах проверяем только возврат на прямой. */
+    if (strcmp(cfg->egress_type, "tproxy") != 0) {
+        int k, m = 0;
+        for (k = 0; k < n; k++)
+            if (vpin_state(idx[k]) == VPIN_Q_DIRECT)
+                idx[m++] = idx[k];
+        n = m;
+        if (n <= 0)
+            return;
+    }
+    if (pipe(fd) != 0)
+        return;
+    pid = fork();
+    if (pid < 0) {
+        close(fd[0]);
+        close(fd[1]);
+        return;
+    }
+    if (pid == 0) {
+        close(fd[0]);
+        vq_child(cfg, idx, n, fd[1]);
+        _exit(0);
+    }
+    close(fd[1]);
+    (void)fcntl(fd[0], F_SETFL, O_NONBLOCK);
+    vq_fd = fd[0];
+    vq_pid = pid;
+    vq_start = now;
+    vq_len = 0;
+}
+
+static void vq_stop(void)
+{
+    if (vq_pid > 0) {
+        int wst;
+        kill(vq_pid, SIGKILL);
+        waitpid(vq_pid, &wst, 0);
+        vq_pid = 0;
+    }
+    if (vq_fd >= 0) {
+        close(vq_fd);
+        vq_fd = -1;
+    }
+    vq_len = 0;
 }
 
 /* Есть ли УЖЕ процесс Xray с НАШИМ конфигом. Нужен, чтобы watchdog не поднимал
@@ -1291,6 +1493,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         dns_sniff_start(cfg);
 
     state_init(&st);
+    vpin_reset();
     dns_sniff_set_state(&st);   /* пины dns_sniff переживают re-provision/рестарт */
     ctx.cfg = cfg;
     ctx.st = &st;
@@ -1429,6 +1632,8 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 }
             }
         }
+
+        vq_tick(&st, cfg, now);   /* аудит пинов автообучения: жив ли путь через туннель */
 
         if (g_reload) {
             susanin_config nc;
@@ -2108,6 +2313,8 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     probe_job_stop();
     udp_relay_stop();
     dns_sniff_stop();
+    vq_stop();
+    vpin_reset();
     if (state_save(state_path, &st) != 0)
         slogf(SL_WARN, "state: сохранить %s при остановке не удалось", state_path);
     slogf(SL_INFO, "engine stopped");

@@ -6,6 +6,7 @@
 #include "health.h"
 #include "profiles.h"
 #include "vpn_never.h"
+#include "vpin.h"
 #include "log.h"
 
 #include <arpa/inet.h>
@@ -1557,6 +1558,9 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                         slogf(SL_INFO, "AUTO-SUSANIN: CONFIRMED %s -> %s:%u",
                               f->src, f->dst, f->dport);
                 }
+                /* P5: адрес выучен автообучением — ставим в очередь проверки,
+                 * что через туннель он реально работает (см. vq_tick в engine.c). */
+                vpin_note(f->dst, now);
                 cdn_aggregate(ctx, f);
                 frozen_net_aggregate(ctx, f);
                 profile_auto_learn(ctx->cfg, f->dst);

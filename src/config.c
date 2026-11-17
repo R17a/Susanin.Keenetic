@@ -280,6 +280,8 @@ void config_set_defaults(susanin_config *c)
     c->egress_race = 0;
     c->auto_direct = 1;
     c->direct_pref_ttl = 3600;
+    c->vpin_check = 1;
+    c->vpin_interval = 600;
     c->media_enabled = 0;
     /* Медиа-порты по умолчанию — только видео/IPTV. 80/443 убраны: обычная
      * загрузка страницы под них подпадала, и два адреса уводили в VPN всю /24
@@ -868,6 +870,10 @@ int config_load(const char *path, susanin_config *c)
             c->auto_direct = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "direct_pref_ttl"))
             c->direct_pref_ttl = cfg_dur(c, key, val, U_SEC);
+        else if (!strcmp(key, "vpin_check"))
+            c->vpin_check = (int)cfg_num(c, key, val);
+        else if (!strcmp(key, "vpin_interval"))
+            c->vpin_interval = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "media_enabled"))
             c->media_enabled = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "media_ports"))
@@ -1181,6 +1187,8 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "auto_direct=%d\n", c->auto_direct);
     fprintf(fp, "# D1: TTL мягкого «прямо», сек.\n");
     fprintf(fp, "direct_pref_ttl=%d\n", out_dur(c->direct_pref_ttl, U_SEC));
+    fprintf(fp, "vpin_check=%d\n", c->vpin_check);
+    fprintf(fp, "vpin_interval=%d\n", out_dur(c->vpin_interval, U_SEC));
     fprintf(fp, "# M1: класс media (IPTV/видео) — детект по форме потока: 0 | 1.\n");
     fprintf(fp, "media_enabled=%d\n", c->media_enabled);
     fprintf(fp, "# M1: порты media через запятую.\n");
@@ -1896,6 +1904,8 @@ void config_print(const susanin_config *c)
     printf("egress_race=%d\n", c->egress_race);
     printf("auto_direct=%d\n", c->auto_direct);
     printf("direct_pref_ttl=%d\n", out_dur(c->direct_pref_ttl, U_SEC));
+    printf("vpin_check=%d\n", c->vpin_check);
+    printf("vpin_interval=%d\n", out_dur(c->vpin_interval, U_SEC));
     printf("media_enabled=%d\n", c->media_enabled);
     printf("media_ports=%s\n", c->media_ports);
     printf("media_min_bytes=%d\n", c->media_min_bytes);
