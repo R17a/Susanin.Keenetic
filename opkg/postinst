@@ -31,21 +31,35 @@ done
 # сборки (например, Telegram) до установленных систем не доезжали. Теперь
 # дописываем ТОЛЬКО отсутствующие строки: порядок и правки пользователя целы,
 # комментарии из пакета не переносим, перед изменением — один бэкап `.bak`.
+# Строки сверяются по ИМЕНИ без префикса мягкости '?' (в vpn_always и vpn_never):
+# «?domain» и «domain» — одна и та же запись, поэтому жёсткий двойник из поставки
+# к мягкой пользовательской строке не дописывается, а форма строки пользователя
+# не меняется. Нормализация та же, что в install.sh/update.sh: без комментариев,
+# пробелов и CR.
 merge_list() { # merge_list <файл пользователя> <файл пакета> <метка>
     _u="$1"; _p="$2"; _lbl="$3"
     [ -f "$_u" ] && [ -f "$_p" ] || return 0
     _tmp="$_u.merge.$$"
+    _keys="$_u.keys.$$"
     cp "$_u" "$_tmp" 2>/dev/null || return 0
+    sed 's/#.*//' "$_u" | tr -d ' \t\r' | sed 's/^?//' | grep -v '^$' | sort -u > "$_keys" || true
     _added=0
     _hdr=0
     while IFS= read -r _line; do
-        case "$_line" in ''|'#'*) continue ;; esac
-        grep -qxF "$_line" "$_tmp" 2>/dev/null && continue
+        _e=$(printf '%s' "$_line" | sed 's/#.*//' | tr -d ' \t\r')
+        [ -n "$_e" ] || continue
+        _k="$_e"
+        # Внутри ветки первый символ заведомо '?', поэтому глоб '?' снимает его.
+        case "$_k" in '?'*) _k=${_k#?} ;; esac
+        if grep -qxF "$_k" "$_keys" 2>/dev/null; then
+            continue
+        fi
         if [ "$_hdr" -eq 0 ]; then
             printf '\n# === добавлено при обновлении пакета (%s) ===\n' "$_lbl" >> "$_tmp"
             _hdr=1
         fi
-        printf '%s\n' "$_line" >> "$_tmp"
+        printf '%s\n' "$_e" >> "$_tmp"
+        printf '%s\n' "$_k" >> "$_keys"
         _added=$((_added + 1))
     done < "$_p"
     if [ "$_added" -gt 0 ]; then
@@ -55,10 +69,12 @@ merge_list() { # merge_list <файл пользователя> <файл пак
     else
         rm -f "$_tmp"
     fi
+    rm -f "$_keys"
 }
 merge_list "$PREFIX/etc/vpn_always.txt" "$PREFIX/share/vpn_always.txt" vpn_always
 merge_list "$PREFIX/etc/vpn_never.txt" "$PREFIX/share/vpn_never.txt" vpn_never
-rm -f "$PREFIX/etc/vpn_always.txt".merge.* "$PREFIX/etc/vpn_never.txt".merge.* 2>/dev/null || true
+rm -f "$PREFIX/etc/vpn_always.txt".merge.* "$PREFIX/etc/vpn_never.txt".merge.* \
+      "$PREFIX/etc/vpn_always.txt".keys.* "$PREFIX/etc/vpn_never.txt".keys.* 2>/dev/null || true
 
 # --- миграция значений по умолчанию ----------------------------------------
 # promo_per_min: в 0.4.0 дефолт поднят 30 -> 120 (обучение быстрее).

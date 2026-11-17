@@ -148,6 +148,22 @@ else
     echo "FAIL: mktemp недоступен"; fail=$((fail + 1))
 fi
 
+echo "=== merge списков: тест вынесен в tests/test-list-merge.sh ==="
+# Он не требует ни бинарника, ни сети, ни ipset, но прогоняется отсюда, чтобы
+# `make test` гарантированно его запускал (файлы merge_list общие: install.sh,
+# tools/update.sh, opkg/postinst).
+if [ -f "$ROOT/tests/test-list-merge.sh" ]; then
+    if sh "$ROOT/tests/test-list-merge.sh"; then
+        echo "ok   merge_list: всё сходится"
+    else
+        echo "FAIL merge_list: есть ошибки (см. вывод выше)"
+        fail=$((fail + 1))
+    fi
+else
+    echo "FAIL: нет $ROOT/tests/test-list-merge.sh"
+    fail=$((fail + 1))
+fi
+
 rm -rf "$P"
 echo
 if [ "$fail" = 0 ]; then echo "ИТОГ: все проверки пройдены"; else echo "ЕСТЬ ОШИБКИ ($fail)"; fi

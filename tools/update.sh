@@ -17,20 +17,27 @@ say() { echo "[susanin] $*"; }
 die() { echo "[susanin] ERROR: $*" >&2; exit 1; }
 
 # Дополнить существующий список новыми строками из пакета. Ничего не удаляем и
-# не перезаписываем: добавляем только те «чистые» строки (домены/IP/CIDR), которых
-# ещё нет. Идемпотентно: повторный запуск ничего не меняет.
+# не перезаписываем: добавляем только те «чистые» строки (домен / *.домен /
+# ?домен / IPv4 / CIDR), которых ещё нет.
+# Записи сверяются по ИМЕНИ без префикса мягкости '?': «?domain» и «domain» — одна
+# и та же запись, поэтому смягчение пользователя жёстким двойником из поставки не
+# отменяется, а его форма строки не переписывается.
+# Идемпотентно: повторный запуск ничего не меняет.
 merge_list() { # merge_list <user_file> <package_file> <label>
     _uf="$1"; _pf="$2"; _label="$3"
     [ -f "$_uf" ] && [ -f "$_pf" ] || return 0
-    _tmp=$(mktemp 2>/dev/null) || _tmp="/tmp/susanin-merge.$$"
-    sed 's/#.*//' "$_uf" | tr -d ' \t\r' | grep -v '^$' | sort -u > "$_tmp" || true
+    _keys=$(mktemp 2>/dev/null) || _keys="/tmp/susanin-keys.$$"
+    sed 's/#.*//' "$_uf" | tr -d ' \t\r' | sed 's/^?//' | grep -v '^$' | sort -u > "$_keys" || true
     _added=0
     while IFS= read -r _line; do
         _e=$(printf '%s' "$_line" | sed 's/#.*//' | tr -d ' \t\r')
         if [ -z "$_e" ]; then
             continue
         fi
-        if grep -qxF "$_e" "$_tmp"; then
+        _k="$_e"
+        # Внутри ветки первый символ заведомо '?', поэтому глоб '?' снимает его.
+        case "$_k" in '?'*) _k=${_k#?} ;; esac
+        if grep -qxF "$_k" "$_keys"; then
             continue
         fi
         if [ "$_added" -eq 0 ]; then
@@ -39,10 +46,10 @@ merge_list() { # merge_list <user_file> <package_file> <label>
             fi
         fi
         printf '%s\n' "$_e" >> "$_uf"
-        printf '%s\n' "$_e" >> "$_tmp"
+        printf '%s\n' "$_k" >> "$_keys"
         _added=$((_added + 1))
     done < "$_pf"
-    rm -f "$_tmp"
+    rm -f "$_keys"
     if [ "$_added" -gt 0 ]; then
         say "$_label: добавлено новых строк: $_added"
     fi

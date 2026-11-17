@@ -38,7 +38,8 @@ Xray VLESS+REALITY и VLESS+WS+TLS (`egress_type=tproxy`), Keenetic Giga/Ultra.
 - держит подтверждённые направления в VPN с конечным TTL (`ok_ttl`, 6 ч) и снимает
   их сам, если через VPN перестало отвечать;
 - списки «всегда через VPN» и «всегда напрямую»: домены, wildcard `*.example.com`,
-  CIDR, IP;
+  CIDR, IP; в списке «всегда через VPN» работает и мягкая запись `?домен` — по
+  умолчанию напрямую, в VPN адрес уходит, когда прямой путь деградировал;
 - fail-open (нет туннеля — прямой доступ), failover между несколькими VPN и
   автоматический возврат на приоритетный;
 - egress — интерфейс (`nwg*`, `wdtt*`) или Xray/VLESS+REALITY (`egress_type=tproxy`);
@@ -132,7 +133,8 @@ Xray VLESS+REALITY and VLESS+WS+TLS (`egress_type=tproxy`), Keenetic Giga/Ultra.
 - keeps confirmed destinations in the VPN with a finite TTL (`ok_ttl`, 6 h) and
   removes them by itself when the route through the VPN stops answering;
 - "always via VPN" and "always direct" lists: domains, `*.example.com` wildcards,
-  CIDR, IP;
+  CIDR, IP; the "always via VPN" list also supports the soft entry `?domain` —
+  direct by default, moved into the VPN once the direct path degrades;
 - fail-open (no tunnel — direct access), failover between several VPNs and
   automatic return to the preferred one;
 - egress is an interface (`nwg*`, `wdtt*`) or Xray/VLESS+REALITY
@@ -210,6 +212,7 @@ Xray VLESS+REALITY 及 VLESS+WS+TLS（`egress_type=tproxy`）、Keenetic Giga/Ul
   经 VPN 探测地址并记住结果；
 - 以有限 TTL（`ok_ttl`，6 小时）让已确认的方向走 VPN；若经 VPN 不再响应则自行移除；
 - 「始终走 VPN」与「始终直连」列表：域名、`*.example.com` 通配、CIDR、IP；
+  在「始终走 VPN」中 `?domain` 是软记录：默认直连，直连路径劣化时自动转入 VPN；
 - fail-open（隧道不可用则直连）、多个 VPN 之间的故障切换与自动切回；
 - egress 为接口（`nwg*`、`wdtt*`）或 Xray/VLESS+REALITY（`egress_type=tproxy`）；
 - 路由配置文件：最多 4 份「域名/CIDR → 指定隧道」列表；
