@@ -26,7 +26,7 @@ SETPFX="susanin_prof_"
 CHAIN="SUSANIN_PROFILES"
 MAXP=4
 
-cfg() { sed -n "s/^$1=[ \t]*//p" "$CONF" 2>/dev/null | head -n1; }
+cfg() { sed -n "s/^[[:space:]]*${1}[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p" "$CONF" 2>/dev/null | tail -n1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # P2: профили можно задавать и файлами profiles.d/<name>.conf (один профиль на
@@ -37,20 +37,20 @@ MERGED="${TMPDIR:-/tmp}/susanin-profiles.$$.conf"
 CONF_ORIG="$CONF"
 build_merged() {
     : > "$MERGED"
-    grep -E '^profile[0-9]+_' "$CONF_ORIG" 2>/dev/null >> "$MERGED" || true
+    grep -E '^[[:space:]]*profile[0-9]+_' "$CONF_ORIG" 2>/dev/null >> "$MERGED" || true
     PD_DIR="${SUSANIN_PROFILES_DIR:-/opt/susanin/etc/profiles.d}"
     if [ -d "$PD_DIR" ]; then
-        _n=$(grep -cE '^profile[0-9]+_name=' "$MERGED" 2>/dev/null || true)
+        _n=$(grep -cE '^[[:space:]]*profile[0-9]+_name[[:space:]]*=' "$MERGED" 2>/dev/null || true)
         case "$_n" in ''|*[!0-9]*) _n=0;; esac
         for _f in "$PD_DIR"/*.conf; do
             [ -f "$_f" ] || continue
             _n=$((_n + 1))
             [ "$_n" -gt "$MAXP" ] && break
-            _nm=$(sed -n 's/^name=[ \t]*//p' "$_f" 2>/dev/null | head -n1)
+            _nm=$(sed -n 's/^[[:space:]]*name[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$_f" 2>/dev/null | tail -n1)
             [ -n "$_nm" ] || _nm=$(basename "$_f" .conf)
             printf 'profile%d_name=%s\n' "$_n" "$_nm" >> "$MERGED"
             for _k in egress list geo_url table mark auto; do
-                _v=$(sed -n "s/^${_k}=[ \t]*//p" "$_f" 2>/dev/null | head -n1)
+                _v=$(sed -n "s/^[[:space:]]*${_k}[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p" "$_f" 2>/dev/null | tail -n1)
                 [ -n "$_v" ] && printf 'profile%d_%s=%s\n' "$_n" "$_k" "$_v" >> "$MERGED"
             done
         done

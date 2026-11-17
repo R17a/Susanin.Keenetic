@@ -274,7 +274,7 @@ cmd_rescan() {
             *) continue ;;
         esac
         [ -n "$v" ] || continue
-        _cur=$(sed -n "s|^$k=||p" "$CONF" 2>/dev/null | head -n1)
+        _cur=$(sed -n "s/^[[:space:]]*${k}[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p" "$CONF" 2>/dev/null | tail -n1)
         if [ "$k" = "egress_interface" ] && [ "$force" != "1" ] &&
            [ -n "$_cur" ] && [ "$_cur" != "$v" ]; then
             if _csv_subset "$_cur" "$v"; then
@@ -289,8 +289,8 @@ cmd_rescan() {
             continue
         fi
         [ "$_cur" = "$v" ] && continue
-        if grep -q "^$k=" "$CONF" 2>/dev/null; then
-            sed -i "s|^$k=.*|$k=$v|" "$CONF"
+        if grep -Eq "^[[:space:]]*${k}[[:space:]]*=" "$CONF" 2>/dev/null; then
+            sed -i "s|^[[:space:]]*${k}[[:space:]]*=.*|$k=$v|" "$CONF" 2>/dev/null || true
         else
             printf '%s=%s\n' "$k" "$v" >> "$CONF"
         fi

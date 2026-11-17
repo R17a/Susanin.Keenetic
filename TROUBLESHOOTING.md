@@ -52,8 +52,8 @@ sh /opt/susanin/tools/susanin.sh update v0.4.0
 UDP уходит в UDP-релей (Xray) и ответа нет.
 
 ```sh
-sed -i 's/^quic_block=.*/quic_block=1/' /opt/susanin/etc/susanin.conf
-grep -q '^quic_block=' /opt/susanin/etc/susanin.conf || echo 'quic_block=1' >> /opt/susanin/etc/susanin.conf
+sed -i 's/^[[:space:]]*quic_block[[:space:]]*=.*/quic_block=1/' /opt/susanin/etc/susanin.conf
+grep -Eq '^[[:space:]]*quic_block[[:space:]]*=' /opt/susanin/etc/susanin.conf || echo 'quic_block=1' >> /opt/susanin/etc/susanin.conf
 sh /opt/susanin/tools/susanin.sh restart
 iptables -t mangle -S PREROUTING | grep -- '--dport 443 -j DROP'   # ждём 2 правила
 ```
@@ -209,7 +209,7 @@ Keenetic пересобирает правила при изменениях в 
 
 ```sh
 sh /opt/susanin/tools/datapath.sh down        # снять правила (вернуть DIRECT)
-sed -i 's/^egress_type=.*/egress_type=interface/' /opt/susanin/etc/susanin.conf
+sed -i 's/^[[:space:]]*egress_type[[:space:]]*=.*/egress_type=interface/' /opt/susanin/etc/susanin.conf
 sh /opt/susanin/tools/susanin.sh restart      # обычный режим, пока Xray не готов
 ```
 Либо поднимите Xray и оставьте tproxy:
@@ -306,7 +306,7 @@ sh /opt/susanin/tools/xray-egress.sh enable     # перезапустит Xray
 Лечение:
 ```sh
 # 'oc+' — В КОНЕЦ списка: dns_sniff и DNS-fallback берут первый интерфейс
-sed -i 's|^lan_interfaces=.*|lan_interfaces=br0,br1,oc+|' /opt/susanin/etc/susanin.conf
+sed -i 's|^[[:space:]]*lan_interfaces[[:space:]]*=.*|lan_interfaces=br0,br1,oc+|' /opt/susanin/etc/susanin.conf
 sh /opt/susanin/tools/susanin.sh restart
 ```
 С 0.4.0 `discover`/`rescan` больше **не добавляют** `oc+` сами (сервер
@@ -487,7 +487,7 @@ sh /opt/susanin/tools/profiles.sh up
   раздел «xray.log быстро растёт».
 - Убрать поток записей на носитель:
   ```sh
-  sed -i 's/^disk_mode=.*/disk_mode=soft/' /opt/susanin/etc/susanin.conf
+  sed -i 's/^[[:space:]]*disk_mode[[:space:]]*=.*/disk_mode=soft/' /opt/susanin/etc/susanin.conf
   sh /opt/susanin/tools/susanin.sh restart
   rm -rf /opt/susanin/var/datapath.bak
   ```
@@ -764,7 +764,7 @@ IP/CIDR) либо заносите адреса, снятые `nslookup` **на 
 
 ```sh
 ip link show <egress>                     # например mtu 1200 или 1420
-grep -E '^mss_clamp' /opt/susanin/etc/susanin.conf
+grep -E '^[[:space:]]*mss_clamp' /opt/susanin/etc/susanin.conf
 iptables -t mangle -vnL SUSANIN_MSS
 ```
 

@@ -64,9 +64,9 @@ rm -f "$PREFIX/etc/vpn_always.txt".merge.* "$PREFIX/etc/vpn_never.txt".merge.* 2
 # promo_per_min: в 0.4.0 дефолт поднят 30 -> 120 (обучение быстрее).
 # Меняем ТОЛЬКО если стоит прежний дефолт — своё значение пользователя не трогаем.
 if [ -f "$PREFIX/etc/susanin.conf" ]; then
-    _pp=$(sed -n 's/^promo_per_min=//p' "$PREFIX/etc/susanin.conf" 2>/dev/null | tail -n1)
+    _pp=$(sed -n 's/^[[:space:]]*promo_per_min[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$PREFIX/etc/susanin.conf" 2>/dev/null | tail -n1)
     if [ "$_pp" = "30" ]; then
-        sed -i 's/^promo_per_min=.*/promo_per_min=120/' "$PREFIX/etc/susanin.conf" 2>/dev/null \
+        sed -i 's|^[[:space:]]*promo_per_min[[:space:]]*=.*|promo_per_min=120|' "$PREFIX/etc/susanin.conf" 2>/dev/null \
             && echo "[susanin] promo_per_min: 30 -> 120 (новый дефолт; применится после restart)"
     fi
 fi
@@ -81,7 +81,7 @@ if [ -x /opt/etc/init.d/S94susanin ]; then
     /opt/etc/init.d/S94susanin restart >/dev/null 2>&1 || true
 fi
 if [ -x /opt/etc/init.d/S95susanin-web ]; then
-    if grep -q '^web_enable=1' "$PREFIX/etc/susanin.conf" 2>/dev/null; then
+    if grep -Eq '^[[:space:]]*web_enable[[:space:]]*=[[:space:]]*1[[:space:]]*$' "$PREFIX/etc/susanin.conf" 2>/dev/null; then
         /opt/etc/init.d/S95susanin-web restart >/dev/null 2>&1 || true
     fi
 fi

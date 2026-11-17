@@ -73,7 +73,7 @@ CONF="$ETCDIR/susanin.conf"
 
 cfg() { # cfg <key> — значение из susanin.conf (или пусто)
     [ -f "$CONF" ] || return 0
-    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p" "$CONF" | head -n1
+    sed -n "s/^[[:space:]]*${1}[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p" "$CONF" | tail -n1
 }
 
 RECS=""

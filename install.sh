@@ -54,7 +54,7 @@ CONF_FOR_FETCH="$PREFIX/etc/susanin.conf"
 # r7.2: локальный SOCKS доступен? Только tproxy-конфиг и слушающийся socks-in
 # (127.0.0.1:1080 = 0x0438, состояние LISTEN 0A в /proc/net/tcp).
 susanin_socks_avail() {
-    _et=$(sed -n 's/^[[:space:]]*egress_type[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$CONF_FOR_FETCH" 2>/dev/null | head -n1)
+    _et=$(sed -n 's/^[[:space:]]*egress_type[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$CONF_FOR_FETCH" 2>/dev/null | tail -n1)
     [ "$_et" = "tproxy" ] || return 1
     awk '$2 ~ /:0438$/ && $4 == "0A" { f=1 } END { exit !f }' /proc/net/tcp 2>/dev/null
 }
@@ -753,7 +753,7 @@ merge_csv() {
 }
 
 _cfg_val() { # значение ключа из уже установленного конфига
-    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p" "$PREFIX/etc/susanin.conf" 2>/dev/null | head -1
+    sed -n "s/^[[:space:]]*${1}[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p" "$PREFIX/etc/susanin.conf" 2>/dev/null | tail -n1
 }
 
 if [ ! -f "$PREFIX/etc/susanin.conf" ]; then
@@ -769,11 +769,11 @@ if [ ! -f "$PREFIX/etc/susanin.conf" ] || [ "$FORCE" = 1 ]; then
         [ -n "$_old_lan" ] && LAN=$(merge_csv "$_old_lan" "$LAN")
         [ -n "$_old_sub" ] && SUBNETS=$(merge_csv "$_old_sub" "$SUBNETS")
     fi
-    sed -i "s|^egress_interface=.*|egress_interface=$EGRESS|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
-    sed -i "s|^lan_interfaces=.*|lan_interfaces=$LAN|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
-    sed -i "s|^lan_subnets=.*|lan_subnets=$SUBNETS|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
+    sed -i "s|^[[:space:]]*egress_interface[[:space:]]*=.*|egress_interface=$EGRESS|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
+    sed -i "s|^[[:space:]]*lan_interfaces[[:space:]]*=.*|lan_interfaces=$LAN|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
+    sed -i "s|^[[:space:]]*lan_subnets[[:space:]]*=.*|lan_subnets=$SUBNETS|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
     EA=$(addr_of "$EGRESS")
-    [ -n "$EA" ] && sed -i "s|^egress_address=.*|egress_address=${EA%%/*}|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
+    [ -n "$EA" ] && sed -i "s|^[[:space:]]*egress_address[[:space:]]*=.*|egress_address=${EA%%/*}|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
     say "config written: $PREFIX/etc/susanin.conf"
 else
     say "config kept: $PREFIX/etc/susanin.conf"
@@ -797,7 +797,7 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
         fi
         say "disk_mode=$DISK_MODE -> $PREFIX/etc/susanin.conf"
     else
-        say "disk_mode оставлен как в конфиге ($(sed -n 's/^[[:space:]]*disk_mode=//p' "$PREFIX/etc/susanin.conf" | tail -n1)); --disk-mode, чтобы изменить"
+        say "disk_mode оставлен как в конфиге ($(sed -n 's/^[[:space:]]*disk_mode[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$PREFIX/etc/susanin.conf" 2>/dev/null | tail -n1)); --disk-mode, чтобы изменить"
     fi
 fi
 
@@ -806,8 +806,8 @@ fi
 # пользователя проверяем, что ядро умеет матч по uid (xt_owner): иначе правило
 # молча не встанет и трафик прокси уйдёт мимо туннеля.
 proxy_set_key() { # proxy_set_key <key> <value>
-    if grep -q "^$1=" "$PREFIX/etc/susanin.conf" 2>/dev/null; then
-        sed -i "s|^$1=.*|$1=$2|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
+    if grep -Eq "^[[:space:]]*${1}[[:space:]]*=" "$PREFIX/etc/susanin.conf" 2>/dev/null; then
+        sed -i "s|^[[:space:]]*${1}[[:space:]]*=.*|$1=$2|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
     else
         echo "$1=$2" >> "$PREFIX/etc/susanin.conf"
     fi
@@ -853,9 +853,9 @@ if [ -n "$PROXY_UID" ]; then
 
     proxy_set_key proxy_uid "$PROXY_UID"
     proxy_set_key proxy_egress "$PROXY_EGRESS"
-    grep -q '^proxy_table=' "$PREFIX/etc/susanin.conf" 2>/dev/null || \
+    grep -Eq '^[[:space:]]*proxy_table[[:space:]]*=' "$PREFIX/etc/susanin.conf" 2>/dev/null || \
         echo "proxy_table=110" >> "$PREFIX/etc/susanin.conf"
-    grep -q '^proxy_mark=' "$PREFIX/etc/susanin.conf" 2>/dev/null || \
+    grep -Eq '^[[:space:]]*proxy_mark[[:space:]]*=' "$PREFIX/etc/susanin.conf" 2>/dev/null || \
         echo "proxy_mark=0x01000000" >> "$PREFIX/etc/susanin.conf"
     say "P5 включён: uid=$PROXY_UID -> $PROXY_EGRESS (table=110, mark=0x01000000)"
     say "не забудьте: прокси должен запускаться от этого пользователя (user=$PROXY_UID)"
@@ -1030,7 +1030,7 @@ fi
 
 # Если оставшийся/выбранный конфиг в tproxy-режиме — поднять Xray ДО старта
 # агента, иначе агент не станет поднимать tproxy-правила (fail-open -> DIRECT).
-if grep -q '^egress_type=tproxy' "$PREFIX/etc/susanin.conf" 2>/dev/null; then
+if grep -Eq '^[[:space:]]*egress_type[[:space:]]*=[[:space:]]*tproxy[[:space:]]*$' "$PREFIX/etc/susanin.conf" 2>/dev/null; then
     if [ -x /opt/sbin/xray ] && [ -f "$PREFIX/etc/xray-tproxy.json" ]; then
         # restart (не start): чтобы применился свежий уровень логов Xray и конфиг,
         # даже если Xray уже был запущен с прошлых тестов.

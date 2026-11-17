@@ -100,23 +100,23 @@ wait_pins() { # wait_pins [seconds]
 }
 
 ensure_tproxy_cfg() {
-    grep -q '^egress_type=' "$CONF" 2>/dev/null \
-        && sed -i 's|^egress_type=.*|egress_type=tproxy|' "$CONF" \
+    grep -Eq '^[[:space:]]*egress_type[[:space:]]*=' "$CONF" 2>/dev/null \
+        && sed -i 's|^[[:space:]]*egress_type[[:space:]]*=.*|egress_type=tproxy|' "$CONF" \
         || echo 'egress_type=tproxy' >> "$CONF"
-    grep -q '^tproxy_port=' "$CONF" 2>/dev/null \
+    grep -Eq '^[[:space:]]*tproxy_port[[:space:]]*=' "$CONF" 2>/dev/null \
         || echo "tproxy_port=$port" >> "$CONF"
-    grep -q '^udp_relay=' "$CONF" 2>/dev/null \
-        && sed -i 's|^udp_relay=.*|udp_relay=1|' "$CONF" \
+    grep -Eq '^[[:space:]]*udp_relay[[:space:]]*=' "$CONF" 2>/dev/null \
+        && sed -i 's|^[[:space:]]*udp_relay[[:space:]]*=.*|udp_relay=1|' "$CONF" \
         || echo 'udp_relay=1' >> "$CONF"
-    grep -q '^udp_relay_port=' "$CONF" 2>/dev/null \
+    grep -Eq '^[[:space:]]*udp_relay_port[[:space:]]*=' "$CONF" 2>/dev/null \
         || echo 'udp_relay_port=1081' >> "$CONF"
-    grep -q '^socks_addr=' "$CONF" 2>/dev/null \
+    grep -Eq '^[[:space:]]*socks_addr[[:space:]]*=' "$CONF" 2>/dev/null \
         || echo 'socks_addr=127.0.0.1' >> "$CONF"
-    grep -q '^socks_port=' "$CONF" 2>/dev/null \
+    grep -Eq '^[[:space:]]*socks_port[[:space:]]*=' "$CONF" 2>/dev/null \
         || echo 'socks_port=1080' >> "$CONF"
     # HTTP/3 (QUIC) в tproxy уходит в UDP-релей — клиенты должны идти по TCP.
-    grep -q '^quic_block=' "$CONF" 2>/dev/null \
-        && sed -i 's|^quic_block=.*|quic_block=1|' "$CONF" \
+    grep -Eq '^[[:space:]]*quic_block[[:space:]]*=' "$CONF" 2>/dev/null \
+        && sed -i 's|^[[:space:]]*quic_block[[:space:]]*=.*|quic_block=1|' "$CONF" \
         || echo 'quic_block=1' >> "$CONF"
     say "quic_block=1 (HTTP/3 из LAN -> TCP; иначе браузеры «висят» в tproxy)"
     et=tproxy

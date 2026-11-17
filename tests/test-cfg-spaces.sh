@@ -20,7 +20,24 @@ bad=0
 ok() { echo "ok   $1"; }
 fail() { echo "FAIL $1"; bad=$((bad + 1)); }
 
-FILES="install.sh tools/susanin.sh tools/datapath.sh tools/diagnose.sh tools/update.sh tools/xray-egress.sh init/entware/S93xray-tproxy init/entware/S94susanin init/entware/S95susanin-web"
+FILES=""
+if [ -f "$ROOT/packaging/manifest.txt" ]; then
+    # Список = всё, что уезжает в пакет (классы tool/init/cfg/share/www/root;
+    # каталоги разворачиваются в *.sh), плюс скрипты opkg. Пути,
+    # которых нет в репозитории, пропускаются без падения.
+    while read -r _cls _path _rest; do
+        case "$_cls" in tool|init|cfg|share|www|root) ;; *) continue ;; esac
+        [ -n "$_path" ] || continue
+        if [ -d "$ROOT/$_path" ]; then
+            for _g in $(find "$ROOT/$_path" -type f -name '*.sh' | sed "s|^$ROOT/||"); do
+                FILES="$FILES $_g"
+            done
+        elif [ -f "$ROOT/$_path" ]; then
+            FILES="$FILES $_path"
+        fi
+    done < "$ROOT/packaging/manifest.txt"
+fi
+FILES="$FILES opkg/postinst opkg/prerm opkg/postrm"
 
 echo "=== 1. ни один читатель не требует «ключ=значение» без пробелов ==="
 for f in $FILES; do
@@ -46,6 +63,55 @@ for f in $FILES; do
     fi
 done
 ok "ни один читатель не оставляет хвост у значения"
+
+echo "=== 1c. якорь ключа susanin.conf всегда с толерантностью к пробелам ==="
+# Строка «касается» susanin.conf (или файла списков профилей, который агент
+# разбирает той же грамматикой), если в ней есть путь конфига или переменная
+# конфига. Такой якорь обязан допускать пробелы вокруг '=' (форма агента):
+# «ключ = значение» не должен ни молча перечитываться дублем при записи, ни
+# теряться при проверке. Строки-комментарии не проверяем — они ничего не
+# читают и не пишут.
+bad2=0
+SCOPE='susanin\.conf|\$[{]?CONF|\$MERGED|\$_f'
+# a) после якоря идёт ключ без ведущего «[[:space:]]*» (в т.ч. в группе «^(...»)
+# b) '=' приклеен к ключу без «[[:space:]]*» (s|^KEY=, '^KEY=')
+LEAD_RE='\^([[:alnum:]_$]|\([[:alnum:]_$])'
+EQ_RE='\^[^\\"%=]*[[:alnum:]_$})]='
+for f in $FILES; do
+    p="$ROOT/$f"
+    [ -f "$p" ] || continue
+    hits=$(grep -nE "$LEAD_RE|$EQ_RE" "$p" 2>/dev/null | grep -E "$SCOPE" | grep -vE '^[0-9]+:[[:space:]]*#' || true)
+    if [ -n "$hits" ]; then
+        echo "$hits" | sed 's/^/     /'
+        echo "FAIL $f: нетерпимый якорь ключа susanin.conf"
+        bad2=$((bad2 + 1))
+    fi
+done
+if [ "$bad2" = "0" ]; then ok "все якоря ключей susanin.conf толерантны к пробелам"; fi
+
+echo "=== 1d. читатель значения: хвост срезан, взята ПОСЛЕДНЯЯ строка ==="
+# Дубль ключа: агент берёт последнюю строку. Значит читатель обязан
+# а) срезать хвост пробелов/tab/CR (форма с «[^[:space:]]» внутри) и
+# б) отдавать tail, а не head — иначе читатели расходятся с агентом и друг
+# с другом.
+bad3=0
+for f in $FILES; do
+    p="$ROOT/$f"
+    [ -f "$p" ] || continue
+    readers=$(grep -nE "sed -n .*(s[\|/]|\^)" "$p" 2>/dev/null | grep -E "$SCOPE" | grep -vE '^[0-9]+:[[:space:]]*#' || true)
+    [ -n "$readers" ] || continue
+    hits=$(printf '%s\n' "$readers" | grep -vF '[^[:space:]]' || true)
+    hheads=$(grep -nE 'sed -n .*\|[[:space:]]*head' "$p" 2>/dev/null | grep -E "$SCOPE" | grep -vE '^[0-9]+:[[:space:]]*#' || true)
+    [ -n "$hheads" ] && hits="$hits
+$hheads"
+    hits=$(printf '%s\n' "$hits" | grep -v '^$' | sort -u || true)
+    if [ -n "$hits" ]; then
+        echo "$hits" | sed 's/^/     /'
+        echo "FAIL $f: читатель susanin.conf оставляет хвост или берёт head вместо tail"
+        bad3=$((bad3 + 1))
+    fi
+done
+if [ "$bad3" = "0" ]; then ok "читатели susanin.conf режут хвост и берут последнюю строку"; fi
 
 echo
 echo "=== 2. живое решение susanin.sh (функции взяты из самого скрипта) ==="
@@ -95,9 +161,9 @@ fi
 
 rm -rf "$P"
 echo
-if [ "$bad" = "0" ]; then
+if [ "$bad" = "0" ] && [ "$bad2" = "0" ] && [ "$bad3" = "0" ]; then
     echo "ИТОГ: все проверки пройдены"
     exit 0
 fi
-echo "ЕСТЬ ОШИБКИ: $bad"
+echo "ЕСТЬ ОШИБКИ: $((bad + bad2 + bad3))"
 exit 1

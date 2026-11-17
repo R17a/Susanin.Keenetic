@@ -8,7 +8,7 @@
 # Управление: S93xray-tproxy start|stop|restart
 
 # r7.1: локальное время логов (POSIX-пояс из конфига, напр. IST-8)
-_tz=$(sed -n "s/^[[:space:]]*tz[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p" /opt/susanin/etc/susanin.conf 2>/dev/null | head -n1)
+_tz=$(sed -n "s/^[[:space:]]*tz[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p" /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
 [ -n "$_tz" ] && export TZ="$_tz"
 XRAY=/opt/sbin/xray
 XCFG=/opt/susanin/etc/xray-tproxy.json
