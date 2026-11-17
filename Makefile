@@ -42,7 +42,11 @@ $(OBJS): $(HDRS)
 $(TESTS): $(HDRS)
 
 # Тесты (хост-компилятор; в кросс-сборку и поставку не входят).
-test: $(TESTS)
+# `all` в зависимостях обязателен: test-installer-sync.sh запускает сам
+# `susanin-agent` (config check/sync), и без этого шага он молча проверял бы
+# бинарник, оставшийся от прошлой сборки, — зелёный результат при изменённом
+# исходнике.
+test: all $(TESTS)
 	./tests/test_conntrack $(SAMPLES)
 	./tests/test_config
 	./tests/test_ops

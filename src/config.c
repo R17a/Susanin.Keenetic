@@ -3,6 +3,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -512,12 +513,20 @@ static long cfg_num(susanin_config *c, const char *key, const char *val)
         return 0;
     /* Поля конфига — int; значение вне диапазона дало бы wrap-around вплоть до
      * отрицательного, то есть ровно ту семантику, которую проверка конфига и
-     * обещает не допускать. На 32-битном MIPS переполнение выглядит как
-     * LONG_MAX, поэтому проверяем и ERANGE, а не только границы. */
-    if (errno == ERANGE || v > 2147483647L || v < -2147483648L) {
+     * обещает не допускать. Границы int осмысленны только там, где long шире
+     * int: на 32-битном MIPS long и int — один и тот же диапазон, переполнение
+     * там видно исключительно по ERANGE, а сравнение с INT_MAX компилируется в
+     * всегда-ложную проверку. */
+    if (errno == ERANGE) {
         cfg_note_bad_value(c, key);
         return 0;
     }
+#if LONG_MAX > INT_MAX
+    if (v > (long)INT_MAX || v < (long)INT_MIN) {
+        cfg_note_bad_value(c, key);
+        return 0;
+    }
+#endif
     return v;
 }
 
@@ -535,14 +544,20 @@ static unsigned long cfg_unum(susanin_config *c, const char *key, const char *va
         return 0;
     /* Переполнение: strtoul возвращает ULONG_MAX и ставит ERANGE. Для маски
      * fwmark значение «примерно бесконечность» хуже нуля, поэтому помечаем.
-     * Дополнительно ограничиваем 32 битами: fwmark в Linux — u32, и на
-     * 64-битной машине ERANGE не сработал бы вовсе (значение влезает в
-     * unsigned long), тогда как на MIPS сработал — проверка не должна зависеть
-     * от разрядности сборки. */
-    if (errno == ERANGE || v > 0xffffffffUL) {
+     * Дополнительно ограничиваем 32 битами: fwmark в Linux — u32. Ограничение
+     * нужно ровно там, где unsigned long шире 32 бит: на 32-битном MIPS значение
+     * за пределы u32 не помещается уже на уровне ERANGE, и сравнение было бы
+     * всегда ложным. Итог одинаков на обеих разрядностях. */
+    if (errno == ERANGE) {
         cfg_note_bad_value(c, key);
         return 0;
     }
+#if ULONG_MAX > 4294967295UL
+    if (v > 4294967295UL) {
+        cfg_note_bad_value(c, key);
+        return 0;
+    }
+#endif
     return v;
 }
 
