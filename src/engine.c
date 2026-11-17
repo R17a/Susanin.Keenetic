@@ -1489,7 +1489,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                        "рекомендуется конечный TTL, напр. ok_ttl=21600");
     if (cfg->udp_relay)
         udp_relay_start(cfg);
-    if (cfg->dns_sniff)
+    if (cfg->dns_sniff || cfg->sni_sniff)
         dns_sniff_start(cfg);
 
     state_init(&st);
@@ -1601,6 +1601,8 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         kids_poll();     /* пожинать детей прямого запуска Xray/S93 (без зомби) */
         udp_relay_tick();    /* работник жив? перезапуск убитого/упавшего (B1) */
 
+        if (cfg->dns_sniff || cfg->sni_sniff)
+            dns_sniff_poll();   /* DNS-ответы и SNI из TLS ClientHello */
         if (cfg->dns_sniff) {
             static time_t sn_at;
             char sn[256];

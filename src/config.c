@@ -266,6 +266,7 @@ void config_set_defaults(susanin_config *c)
     c->egress_failback = 1;
     c->egress_failback_debounce = 30;
     c->dns_sniff = 0;
+    c->sni_sniff = 1;
     c->dns_sniff_ttl = 300;
     c->dns_hijack = 0;
     c->vpn_always_cdn_prefix = 0;
@@ -831,6 +832,8 @@ int config_load(const char *path, susanin_config *c)
             c->egress_failback_debounce = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "dns_sniff"))
             c->dns_sniff = (int)cfg_num(c, key, val);
+        else if (!strcmp(key, "sni_sniff"))
+            c->sni_sniff = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "dns_sniff_ttl"))
             c->dns_sniff_ttl = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "dns_sniff_iface"))
@@ -1152,6 +1155,7 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "dp_check_interval=%d\n", out_dur(c->dp_check_interval, U_SEC));
     fprintf(fp, "# DNS-снифинг (домен->IP, зеркально, штатный DNS не трогаем): 0 | 1.\n");
     fprintf(fp, "dns_sniff=%d\n", c->dns_sniff);
+    fprintf(fp, "sni_sniff=%d\n", c->sni_sniff);
     fprintf(fp, "# TTL записи домен->IP в снифинге, сек.\n");
     fprintf(fp, "dns_sniff_ttl=%d\n", out_dur(c->dns_sniff_ttl, U_SEC));
     fprintf(fp, "# Интерфейс захвата DNS; пусто = все lan_interfaces.\n");
@@ -1888,6 +1892,7 @@ void config_print(const susanin_config *c)
     printf("lan_server_interfaces=%s\n", c->lan_server_interfaces);
     printf("dp_check_interval=%d\n", out_dur(c->dp_check_interval, U_SEC));
     printf("dns_sniff=%d\n", c->dns_sniff);
+    printf("sni_sniff=%d\n", c->sni_sniff);
     printf("dns_sniff_ttl=%d\n", out_dur(c->dns_sniff_ttl, U_SEC));
     printf("dns_sniff_iface=%s\n", c->dns_sniff_iface);
     printf("dns_hijack=%d\n", c->dns_hijack);

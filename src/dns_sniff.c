@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "dns_sniff.h"
+#include "snisniff.h"
 #include "backend.h"
 #include "log.h"
 
@@ -421,7 +422,7 @@ int dns_sniff_start(const susanin_config *cfg)
  * про то, что фича не работает. */
 void dns_sniff_reload(const susanin_config *cfg)
 {
-    if (cfg->dns_sniff) {
+    if (cfg->dns_sniff || cfg->sni_sniff) {
         if (!g_started) {
             if (dns_sniff_start(cfg) == 0)
                 slogf(SL_INFO, "dns_sniff: включён reload-ом");
@@ -471,6 +472,41 @@ void dns_sniff_stop(void)
     }
 }
 
+/* Один IP-пакет с LAN: если это ClientHello к 443, положить «домен -> IP»
+ * в таблицу. Домены из TLS не зависят от DNS (работает и при DoH/DoT). */
+static void sni_take_packet(const unsigned char *ip, size_t len)
+{
+    size_t ihl, doff;
+    const unsigned char *tcp, *payload;
+    unsigned dport;
+    size_t plen;
+    char name[256], dst[16];
+
+    if (len < 20 || (ip[0] >> 4) != 4)
+        return;
+    ihl = (size_t)(ip[0] & 0x0f) * 4;
+    if (ihl < 20 || ihl + 20 > len || ip[9] != 6)
+        return;
+    if ((((unsigned)ip[6] << 8) | ip[7]) & 0x1fff)   /* осколки не собираем */
+        return;
+    tcp = ip + ihl;
+    dport = ((unsigned)tcp[2] << 8) | tcp[3];
+    if (dport != 443)
+        return;
+    doff = (size_t)(tcp[12] >> 4) * 4;
+    if (doff < 20 || ihl + doff > len)
+        return;
+    payload = tcp + doff;
+    plen = len - ihl - doff;
+    if (plen < 9 || payload[0] != 0x16)
+        return;
+    if (!sni_parse_client_hello(payload, plen, name, sizeof(name)))
+        return;
+    if (!inet_ntop(AF_INET, ip + 16, dst, sizeof(dst)))
+        return;
+    dns_sniff_note_name(name, dst, 0);
+}
+
 void dns_sniff_poll(void)
 {
     uint8_t buf[2048];
@@ -503,6 +539,9 @@ void dns_sniff_poll(void)
                 continue;
             }
             ihl = (unsigned)(buf[0] & 0x0f) * 4;
+            if ((ihl >= 20 && (ssize_t)ihl + 8 <= r) && buf[9] == 6 &&
+                g_cfg && g_cfg->sni_sniff)
+                sni_take_packet(buf, (size_t)r);   /* имя из TLS ClientHello */
             if (ihl < 20 || (ssize_t)ihl + 8 > r || buf[9] != 17) {
                 /* Здесь же теряется и случай «кадр пришёл не с IP-заголовка»:
                  * тогда buf[9] — байт MAC-адреса, и отсекается практически
@@ -675,6 +714,18 @@ int dns_sniff_is_soft_domain(const susanin_config *cfg, const char *dom)
     if (!cfg || !dom || !dom[0])
         return 0;
     return list_match(0, cfg->vpn_always_file, dom) == 2;
+}
+
+/* Внешний источник имени (SNI из TLS ClientHello): кладём пару «домен -> IP»
+ * в ту же таблицу, что и DNS-ответы. Дальше всё работает единообразно:
+ * списки пинятся сразу, ru_guard видит домен, в логе появляется «(домен)». */
+void dns_sniff_note_name(const char *domain, const char *ip, int ttl)
+{
+    if (!domain || !domain[0] || !ip || !ip[0])
+        return;
+    if (ttl <= 0)
+        ttl = (g_cfg && g_cfg->dns_sniff_ttl > 0) ? g_cfg->dns_sniff_ttl : 300;
+    dns_store(domain, ip, ttl);
 }
 
 void dns_sniff_set_state(susanin_state *st)

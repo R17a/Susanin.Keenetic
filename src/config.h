@@ -211,6 +211,7 @@ typedef struct {
     /* DNS-снифинг (P3/N1): зеркальный захват DNS-ответов LAN (AF_PACKET) для
      * связи домен->IP. По умолчанию выключен; штатный DNS не перехватываем. */
     int dns_sniff;
+    int sni_sniff;          /* 1 = домен из TLS ClientHello (не зависит от DNS/DoH) */
     int dns_sniff_ttl;      /* TTL записи домен->IP, сек */
     char dns_sniff_iface[64];/* интерфейс захвата; пусто = все lan_interfaces */
     /* T3: заворачивать DNS клиентов серверных VPN (oc+/wdtt+) на резолвер

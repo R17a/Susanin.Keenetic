@@ -57,6 +57,8 @@ void dns_sniff_stats_write(const susanin_config *cfg);
 int  dns_sniff_is_ru_domain(const susanin_config *cfg, const char *dom);
 /* 1, если домен записан в vpn_always с префиксом ? (мягкая запись). */
 int  dns_sniff_is_soft_domain(const susanin_config *cfg, const char *dom);
+/* Положить пару «домен -> IP» из внешнего источника (SNI). */
+void dns_sniff_note_name(const char *domain, const char *ip, int ttl);
 
 /* r5.4: сколько RU-доменов сейчас сидит в VPN (ok_tcp) — пишет
  * /opt/susanin/var/ru-in-vpn для панели; вызывать из reconcile. */
