@@ -3,8 +3,10 @@
  * чтобы задать g_fds/g_nfd/g_started напрямую; кадровый ввод — через
  * socketpair(AF_UNIX), реальный сетевой стек и привилегии не нужны.
  *
- * Важно: g_cfg остаётся NULL, поэтому reconcile_entry() (и вместе с ней
- * ipset/iptables) не вызывается вовсе — тест остаётся хостовым.
+ * SNI-ветка тоже исполняется: g_cfg — живой конфиг-стакабель с
+ * dns_sniff=1/sni_sniff=1, но пустые vpn_always_file/vpn_never_file и
+ * ru_guard_tlds, поэтому reconcile_entry не ставит пинов и ipset/iptables
+ * не дёргает — тест остаётся хостовым.
  * make test (хост-компилятор; в поставку не входит).
  */
 #define _GNU_SOURCE
@@ -62,6 +64,59 @@ static int build_ethernet_prefixed(uint8_t *b)
     return n + 14;
 }
 
+/* TLS ClientHello с SNI=sni.example.net (тот же разбор, что в test_snisniff,
+ * в компактном виде одного расширения). */
+static int build_hello_body(uint8_t *hs, const char *sni)
+{
+    size_t nl = strlen(sni);
+    size_t bl = 0, ext_pos, sn_pos, el;
+    hs[bl++] = 0x03; hs[bl++] = 0x03;
+    for (size_t i = 0; i < 32; i++)
+        hs[bl++] = (uint8_t)i;
+    hs[bl++] = 0;                        /* session_id_len */
+    hs[bl++] = 0; hs[bl++] = 2; hs[bl++] = 0x13; hs[bl++] = 1;
+    hs[bl++] = 1; hs[bl++] = 0;          /* compression */
+    ext_pos = bl; bl += 2;
+    sn_pos = bl; bl += 4;
+    hs[bl++] = (uint8_t)((nl + 3) >> 8); hs[bl++] = (uint8_t)((nl + 3) & 0xff);
+    hs[bl++] = 0;                        /* host_name */
+    hs[bl++] = (uint8_t)(nl >> 8); hs[bl++] = (uint8_t)nl;
+    memcpy(hs + bl, sni, nl); bl += nl;
+    el = bl - sn_pos - 4;
+    hs[sn_pos] = 0; hs[sn_pos + 1] = 0;
+    hs[sn_pos + 2] = (uint8_t)(el >> 8); hs[sn_pos + 3] = (uint8_t)(el & 0xff);
+    el = bl - ext_pos - 2;
+    hs[ext_pos] = (uint8_t)(el >> 8); hs[ext_pos + 1] = (uint8_t)(el & 0xff);
+    return (int)bl;
+}
+
+/* IPv4 + TCP(dport 443) + record(0x16)+ClientHello, dst — указанный. */
+static int build_tls_to(uint8_t *b, uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3)
+{
+    uint8_t hs[512];
+    int hbl = build_hello_body(hs, "sni.example.net");
+    int rec = 9 + hbl;                   /* record header + handshake */
+    int total = 20 + 20 + rec;
+    memset(b, 0, total);
+    b[0] = 0x45;
+    b[2] = (uint8_t)(total >> 8); b[3] = (uint8_t)(total & 0xff);
+    b[8] = 64;
+    b[9] = 6;                            /* proto TCP */
+    b[12] = 198; b[13] = 51; b[14] = 100; b[15] = 7;   /* src (клиент LAN) */
+    b[16] = d0; b[17] = d1; b[18] = d2; b[19] = d3;    /* dst (сервер) */
+    b[20] = 0; b[21] = 44353 % 256;      /* sport произвольный */
+    b[22] = 1; b[23] = 0xbb;             /* dport 443 */
+    b[32] = (uint8_t)(5 << 4);           /* doff = 20 */
+    b[40] = 0x16; b[41] = 0x03; b[42] = 0x01;
+    b[43] = (uint8_t)((hbl + 4) >> 8); b[44] = (uint8_t)((hbl + 4) & 0xff);
+    b[45] = 0x01;                        /* handshake: ClientHello */
+    b[46] = (uint8_t)((hbl >> 16) & 0xff);
+    b[47] = (uint8_t)((hbl >> 8) & 0xff);
+    b[48] = (uint8_t)(hbl & 0xff);
+    memcpy(b + 49, hs, (size_t)hbl);
+    return total;
+}
+
 static void feed(const uint8_t *frame, int len)
 {
     ssize_t w = write(g_fds[1], frame, (size_t)len);
@@ -74,7 +129,8 @@ int main(void)
     int sp[2];
     uint8_t buf[2048];
     char dom[DNS_DOMAIN_MAX];
-    char st[256];
+    char st[384];
+    susanin_config cfg;
 
     slog_init("quiet");
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sp) != 0) {
@@ -90,7 +146,15 @@ int main(void)
         if (fl >= 0)
             fcntl(sp[0], F_SETFL, fl | O_NONBLOCK);
     }
-    g_cfg = NULL;
+    /* Живой конфиг, чтобы SNI-ветка poll() исполнялась (она под
+     * g_cfg && g_cfg->sni_sniff). Пустые файлы списков и ru_guard_tlds
+     * гарантируют: reconcile_entry пины не ставит, ipset/iptables не
+     * дёргаются — тест остаётся хостовым. */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.dns_sniff = 1;
+    cfg.sni_sniff = 1;
+    cfg.dns_sniff_ttl = 300;
+    g_cfg = &cfg;
     g_nfd = 1;
     g_fds[0] = sp[0];
     g_fds[1] = sp[1];
@@ -99,6 +163,7 @@ int main(void)
     printf("=== состояние «нет трафика» ===\n");
     dns_sniff_stats(st, sizeof(st));
     CHECK(strstr(st, "recv=0") != NULL, "до первого кадра recv=0");
+    CHECK(strstr(st, "sni=0") != NULL, "SNI-счётчики видны в сводке");
 
     printf("=== обычный кадр (IP с начала) ===\n");
     feed(buf, build_ip(buf, 5353));
@@ -117,7 +182,7 @@ int main(void)
     CHECK(strstr(st, "recv=2") != NULL, "второй кадр учтён как принятый");
     CHECK(strstr(st, "notudp=1") != NULL,
           "не-UDP отсчёт виден отдельным счётчиком (это и есть признак H1)");
-    CHECK(strstr(st, "stored=1") != NULL, "и при этом новых записей нет");
+    CHECK(strstr(st, "stored=1") != NULL, "и при этом новых DNS-записей нет");
 
     printf("=== кадр не 53-го порта ===\n");
     {
@@ -137,6 +202,28 @@ int main(void)
     }
     dns_sniff_stats(st, sizeof(st));
     CHECK(strstr(st, "stored=1") != NULL, "запрос ничего не добавляет в таблицу");
+
+    printf("=== TCP: ClientHello к публичному адресу (SNI-ветка) ===\n");
+    feed(buf, build_tls_to(buf, 93, 184, 216, 99));
+    dns_sniff_stats(st, sizeof(st));
+    printf("     %s\n", st);
+    CHECK(strstr(st, "sni=1") != NULL, "ClientHello разобран (sni=1)");
+    CHECK(strstr(st, "sni_named=1") != NULL, "имя признано доменом");
+    CHECK(strstr(st, "sni_stored=1") != NULL, "SNI-пара легла в таблицу");
+    CHECK(strstr(st, "stored=1") != NULL,
+          "DNS-счётчик stored не испорчен SNI-записями");
+    CHECK(strstr(st, "notudp=1") != NULL,
+          "TCP-кадр не попал в notudp (смысл «не UDP/53» — только про DNS)");
+    CHECK(dns_sniff_domain_of("93.184.216.99", dom, sizeof(dom)) &&
+          !strcasecmp(dom, "sni.example.net"), "domain_of видит SNI-пару");
+
+    printf("=== TCP: ClientHello к приватному адресу — фильтр ===\n");
+    feed(buf, build_tls_to(buf, 10, 1, 2, 3));
+    dns_sniff_stats(st, sizeof(st));
+    printf("     %s\n", st);
+    CHECK(strstr(st, "sni=2") != NULL, "разобран и учтён");
+    CHECK(strstr(st, "sni_stored=1") != NULL,
+          "в таблицу не попал: приватное/служебное назначение отброшено");
 
     dns_sniff_stop();
     close(sp[0]);

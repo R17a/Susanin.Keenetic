@@ -133,8 +133,26 @@ static int file_load(const char *path, char names[][256], int wilds[],
             break;
         }
         for (i = 0; i < n; i++)
-            if (strcmp(names[i], buf) == 0 && wilds[i] == wild)
+            if (strcmp(names[i], buf) == 0 && wilds[i] == wild) {
+                /* Ключ дедупа — вся смысловая пара: одна и та же зона может
+                 * стоять в файле и жёстко, и мягко. Прежний дедуп смотрел
+                 * только name+wild, и «побеждала первая строка»: порядок в
+                 * файле молча решал, будет ли адрес пиниться. Теперь жёсткая
+                 * запись сильнее (она явно требует VPN), вторая игнорируется
+                 * с WARN — чтобы оператор увидел конфликт, а не искал его
+                 * по трафику. */
+                if (softs[i] != soft) {
+                    if (!soft && softs[i])
+                        softs[i] = 0;    /* новая жёсткая снимает мягкую */
+                    slogf(SL_WARN, "vpn_always: \"%s%s%s\" проигнорирована — "
+                          "для этой зоны уже есть %s запись%s",
+                          soft ? "?" : "", wild ? "*." : "", buf,
+                          softs[i] ? "мягкую" : "жёсткую",
+                          (!soft && !softs[i]) ? " (переопределяет её)" : "");
+                    break;
+                }
                 break;
+            }
         if (i == n) {
             size_t l = strlen(buf) + 1;
             if (l > sizeof(names[n]))
@@ -173,9 +191,34 @@ static void doms_reconcile(vpn_always *v, char names[][256], int wilds[],
     for (i = 0; i < n && i < VA_MAXDOM; i++) {
         va_dom *old = dom_find(v, names[i], wilds[i]);
         va_dom *d = &keep[nk++];
-        if (old && old->wild == wilds[i])
+        if (old && old->wild == wilds[i]) {
             *d = *old;
-        else {
+            /* Флаг мягкости перечитанного файла обязан применяться и к
+             * уже живой записи: иначе правка «domain» -> «?domain» в файле
+             * не действовала до рестарта демона (IP продолжал резолвиться и
+             * пиниться в ok), тогда как dns_sniff со своим кэшем правку уже
+             * видел — два модуля одного процесса расходились.
+             * Снятие прежних IP-пинов делает шаг «desired» этого же прохода:
+             * файл менялся -> v->dirty=1 -> пины, пропавшие из desired,
+             * снимаются без гистерезиса. Обратный переход (?domain ->
+             * domain) чиним сбросом срока: домен резолвится в ближайшем
+             * проходе, а не после чужого next_try. */
+            if (d->soft != softs[i]) {
+                d->soft = softs[i];
+                d->fails = 0;
+                d->fail_logged = 0;
+                if (d->soft)
+                    slogf(SL_INFO, "vpn_always: %s%s — запись стала мягкой: "
+                          "не резолвим, пины снимаем",
+                          d->wild ? "*." : "", d->name);
+                else {
+                    d->next_try = 0;
+                    slogf(SL_INFO, "vpn_always: %s%s — запись стала жёсткой: "
+                          "перерезолвим в ближайшем проходе",
+                          d->wild ? "*." : "", d->name);
+                }
+            }
+        } else {
             size_t l;
             memset(d, 0, sizeof(*d));
             l = strlen(names[i]) + 1;

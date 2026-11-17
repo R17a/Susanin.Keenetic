@@ -956,10 +956,24 @@ static int run_script(const char *arg)
     return rc;
 }
 
-static int valid_entry(const char *s)
+static int valid_entry(const char *s, int allow_soft)
 {
     if (!s || !*s || strlen(s) > 253)
         return 0;
+    /* Префикс '?' — мягкая запись («по умолчанию напрямую, VPN при деградации
+     * прямого пути»). Её разбирает движок (src/entryparse.c), и панель обязана
+     * пропускать такую строку в тот список, где она имеет смысл: иначе
+     * сохранение из редактора молча выбрасывает запись, а добавление из поля
+     * ввода отклоняется как «bad value». В vpn_never мягких записей нет —
+     * движок такую строку не читает как запись, поэтому и панель её не
+     * принимает. Один знак, только в начале. */
+    if (*s == '?') {
+        if (!allow_soft)
+            return 0;
+        s++;
+        if (!*s)
+            return 0;
+    }
     for (; *s; s++) {
         unsigned char c = (unsigned char)*s;
         if (!(isalnum(c) || c == '.' || c == '-' || c == '_' || c == ':' ||
@@ -1159,9 +1173,10 @@ static int files_equal(const char *a, const char *b)
 /* Полная перезапись списка (Memo-редактор). Построчно: пустые строки и
  * '#'-комментарии сохраняем, валидные записи — через valid_entry(), битые
  * строки отбрасываем и считаем (панель показывает предупреждение). Запись
- * атомарная (.tmp + rename), бэкап — один <list>.bak (как в list_edit). */
-static int list_replace(const char *path, const char *text, int *kept,
-                        int *dropped, char *err, size_t errsz)
+ * атомарная (.tmp + rename), бэкап — один <list>.bak (как в list_edit).
+ * allow_soft — признак списка, в котором допустима мягкая запись «?domain». */
+static int list_replace(const char *path, const char *text, int allow_soft,
+                        int *kept, int *dropped, char *err, size_t errsz)
 {
     char tmp[600], bak[600];
     FILE *out;
@@ -1201,7 +1216,7 @@ static int list_replace(const char *path, const char *text, int *kept,
                     fputs("\n", out);
                 else if (*q == '#')
                     fprintf(out, "%s\n", q);      /* комментарий сохраняем */
-                else if (valid_entry(q)) {
+                else if (valid_entry(q, allow_soft)) {
                     fprintf(out, "%s\n", q);
                     (*kept)++;
                 } else {
@@ -1401,7 +1416,8 @@ static void handle_action(int fd, const susanin_config *cfg, const char *target,
         int kept = 0, dropped = 0, r;
         path = list_path_from_query(cfg, query, name, sizeof(name));
         if (!path || !path[0]) { json_err(fd, "bad list"); return; }
-        r = list_replace(path, body, &kept, &dropped, err, sizeof(err));
+        r = list_replace(path, body, !strcmp(name, "vpn_always"),
+                         &kept, &dropped, err, sizeof(err));
         if (r < 0) { json_err(fd, err); return; }
         {
             char extra[160];
@@ -1422,7 +1438,8 @@ static void handle_action(int fd, const susanin_config *cfg, const char *target,
         else if (!strcmp(b, "vpn_never"))
             path = cfg->vpn_never_file;
         if (!path || !path[0]) { json_err(fd, "bad list"); return; }
-        if (!form_get(body, "value", a, sizeof(a)) || !valid_entry(a)) { json_err(fd, "bad value"); return; }
+        if (!form_get(body, "value", a, sizeof(a)) ||
+            !valid_entry(a, !strcmp(b, "vpn_always"))) { json_err(fd, "bad value"); return; }
         if (!form_get(body, "op", op, sizeof(op))) { json_err(fd, "op required"); return; }
         if (!strcmp(op, "add") || !strcmp(op, "del")) {
             int r = list_edit(path, a, !strcmp(op, "add"), err, sizeof(err));

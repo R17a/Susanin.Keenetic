@@ -13,7 +13,7 @@ SRCS = src/main.c src/config.c src/discover.c src/conntrack.c src/state.c \
 OBJS = $(SRCS:.c=.o)
 
 TARGET = susanin-agent
-TESTS = tests/test_conntrack tests/test_config tests/test_ops tests/test_web_list tests/test_web_choices tests/test_state tests/test_backend_value tests/test_backend_lock tests/test_classifier_key tests/test_classifier_media tests/test_classifier_synfail tests/test_config_sync tests/test_dns_sniff_stats tests/test_socks_timeout tests/test_web_token tests/test_release tests/test_vpin tests/test_entryparse tests/test_snisniff
+TESTS = tests/test_conntrack tests/test_config tests/test_ops tests/test_web_list tests/test_web_choices tests/test_state tests/test_backend_value tests/test_backend_lock tests/test_classifier_key tests/test_classifier_media tests/test_classifier_synfail tests/test_config_sync tests/test_dns_sniff_stats tests/test_socks_timeout tests/test_web_token tests/test_release tests/test_vpin tests/test_entryparse tests/test_snisniff tests/test_va_soft
 SAMPLES = testdata/nf_conntrack.samples
 # Объекты для тестов, которые включают .c-файл в свой TU (тогда его .o линковать нельзя).
 TEST_OBJS = $(filter-out src/main.o,$(OBJS))
@@ -66,6 +66,7 @@ test: all $(TESTS)
 	./tests/test_vpin
 	./tests/test_entryparse
 	./tests/test_snisniff
+	./tests/test_va_soft
 	sh tests/test-egress-failover.sh
 	sh tests/test-installer-sync.sh
 	sh tests/test-cfg-spaces.sh
@@ -116,9 +117,15 @@ tests/test_config_sync: tests/test_config_sync.c src/config.c src/config.h src/l
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_config_sync.c src/config.c src/log.c
 
 # Счётчики снифинга: dns_sniff.c включается в TU (static-глобалы g_fds/g_started),
-# поэтому его .o из линковки исключаем; в TU нет ни ipset, ни iptables (g_cfg=NULL).
+# поэтому его .o из линковки исключаем; в TU нет ни ipset, ни iptables
+# (пустые пути списков и ru_guard_tlds — reconcile пины не ставит).
 tests/test_dns_sniff_stats: tests/test_dns_sniff_stats.c src/dns_sniff.c src/dns_sniff.h $(TEST_OBJS)
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_dns_sniff_stats.c $(filter-out src/dns_sniff.o,$(TEST_OBJS))
+
+# Мягкая запись (?) vpn_always: vpn_always.c включается в TU (static file_load/
+# doms_reconcile/dom_find), его .o из линковки исключаем.
+tests/test_va_soft: tests/test_va_soft.c src/vpn_always.c src/vpn_always.h $(TEST_OBJS)
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_va_soft.c $(filter-out src/vpn_always.o,$(TEST_OBJS))
 
 # Таймауты SOCKS: udp_relay.c включается в TU (static socks_associate), его .o
 # из линковки исключаем.

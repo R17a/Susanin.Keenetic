@@ -1562,8 +1562,13 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                               f->src, f->dst, f->dport);
                 }
                 /* P5: адрес выучен автообучением — ставим в очередь проверки,
-                 * что через туннель он реально работает (см. vq_tick в engine.c). */
-                vpin_note(f->dst, now);
+                 * что через туннель он реально работает (см. vq_tick в engine.c).
+                 * Порт и протокол подтверждающего потока нужны самому аудиту:
+                 * проба идёт на тот же порт, где адрес показал жизнь (у
+                 * IPTV/медиа-сервисов это 8000/1935/554, где 443 может и не
+                 * быть). UDP движок очереди отбрасывает сам: TCP-проба про
+                 * UDP-поток ничего не знает. */
+                vpin_note(f->dst, (unsigned short)f->dport, f->l4proto == 17, now);
                 cdn_aggregate(ctx, f);
                 frozen_net_aggregate(ctx, f);
                 profile_auto_learn(ctx->cfg, f->dst);

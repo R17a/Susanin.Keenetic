@@ -9,6 +9,7 @@
 #include "state.h"
 #include "vpn_always.h"
 #include "vpn_never.h"
+#include "vpin.h"
 #include "version.h"
 
 #include <arpa/inet.h>
@@ -312,9 +313,28 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
            cfg->kernel_egress[0] ? cfg->kernel_egress : "-",
            cfg->pin_reassert, cfg->xray_watchdog, cfg->auto_direct,
            cfg->media_enabled);
-    printf("vpin: check=%d interval=%ds (аудит пинов автообучения)\n",
-           cfg->vpin_check, cfg->vpin_interval);
-    if (cfg->dns_sniff) {
+    {
+        /* Очередь и счётчики решений живут в памяти движка, а `status` —
+         * отдельный процесс: читаем снимок (тот же путь, что и со счётчиками
+         * dns_sniff). Первая строка снимка — готовая строка статуса. */
+        char vp[512] = "";
+        FILE *vf = fopen(VPIN_STATS_FILE, "r");
+        if (vf) {
+            if (fgets(vp, sizeof(vp), vf)) {
+                size_t l = strlen(vp);
+                while (l && (vp[l - 1] == '\n' || vp[l - 1] == '\r'))
+                    vp[--l] = '\0';
+            }
+            fclose(vf);
+        }
+        if (vp[0])
+            printf("%s\n", vp);
+        else
+            printf("vpin: check=%d interval=%ds (снимка нет — цикл аудита "
+                   "не отработал или disk_mode=soft)\n",
+                   cfg->vpin_check, cfg->vpin_interval);
+    }
+    if (cfg->dns_sniff || cfg->sni_sniff) {
         /* Снимок пишет движок: счётчики живут в его памяти, а этот процесс —
          * отдельный, и наивно читать их у себя. */
         FILE *sf = fopen(DNS_SNIFF_STATS_FILE, "r");
@@ -562,6 +582,34 @@ int ops_reset(const susanin_config *cfg, const char *arg)
     return 0;
 }
 
+/* Стоит ли адрес в очереди аудита пинов — по снимку движка (строки
+ * "q <ip> <vpn|direct> <port>"). Геттеры vpin_* в этом процессе вернули бы
+ * пустую очередь: `why` — отдельный процесс, очередь живёт в движке. */
+static const char *vpin_queue_of(const char *ip)
+{
+    static const char *res[3] = {
+        "нет в очереди",
+        "ЕСТЬ (проверяется путь через туннель)",
+        "ЕСТЬ (проверяется возврат на прямой путь)"
+    };
+    FILE *f = fopen(VPIN_STATS_FILE, "r");
+    char ln[128];
+    int found = 0;
+
+    while (f && fgets(ln, sizeof(ln), f)) {
+        char qip[16], qs[16];
+        unsigned qp;
+        if (sscanf(ln, "q %15s %15s %u", qip, qs, &qp) == 3 &&
+            strcmp(qip, ip) == 0) {
+            found = qs[0] == 'v' ? 1 : 2;
+            break;
+        }
+    }
+    if (f)
+        fclose(f);
+    return res[found];
+}
+
 /* `susanin why <ip|domain>` — почему адрес маршрутизируется так, а не иначе:
  * какая запись списка его накрывает, в каких наборах и кэшах он лежит.
  * (поиск «почему адрес не учится» занял два часа, потому что
@@ -638,6 +686,7 @@ int ops_why(const susanin_config *cfg, const char *arg)
     stv_never = state_has(&st.never, ip, now);
     state_free(&st);
     printf("  state ok/never: %s/%s\n", stv_ok ? "ЕСТЬ" : "нет", stv_never ? "ЕСТЬ" : "нет");
+    printf("  vpin-аудит: %s\n", vpin_queue_of(ip));
 
     printf("  вывод: ");
     if (in_never || in_direct || stv_never)

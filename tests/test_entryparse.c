@@ -65,6 +65,12 @@ int main(void)
     CHECK(parse("1.2.3.4/33", out, &wild, &net, &soft) == 0, "CIDR: /33");
     CHECK(parse("1.2.3.4/abc", out, &wild, &net, &soft) == 0, "CIDR: не число");
     CHECK(parse("пример.рф", out, &wild, &net, &soft) == 0, "не-ASCII имя");
+    /* Единая грамматика для всех читателей списка (движок и dns_sniff):
+     * «? domain» — мусорная строка (пробел после «?» не допускается),
+     * «*domain» без точки — тоже: wild пишется только как «*.domain». */
+    CHECK(parse("? example.com", out, &wild, &net, &soft) == 0, "? с пробелом: мусор");
+    CHECK(parse("?	example.com", out, &wild, &net, &soft) == 0, "? с табуляцией: мусор");
+    CHECK(parse("*example.com", out, &wild, &net, &soft) == 0, "*domain без точки: мусор");
 
     /* 8. NULL-безопасность. */
     CHECK(entry_parse(NULL, out, 256, &wild, &net, &soft) == 0, "NULL строка");

@@ -173,7 +173,7 @@ typedef struct {
     /* r5: RU-guard — российские домены не заворачивать в VPN
      * автоматически: антифрод банков/OZON рвёт соединения с иностранного
      * выхода. Ручной vpn_always сильнее. */
-    int ru_guard;            /* 1 = включено (нужен dns_sniff=1) */
+    int ru_guard;            /* 1 = включено (нужен dns_sniff=1 или sni_sniff=1) */
     int ru_guard_direct;     /* 1 = RU-домены активно пинятся в susanin_never */
     char ru_guard_tlds[128]; /* список суффиксов через запятую */
     /* r7.1: POSIX-строка пояса для логов (Иркутск: "IST-8").
@@ -211,7 +211,9 @@ typedef struct {
     /* DNS-снифинг (P3/N1): зеркальный захват DNS-ответов LAN (AF_PACKET) для
      * связи домен->IP. По умолчанию выключен; штатный DNS не перехватываем. */
     int dns_sniff;
-    int sni_sniff;          /* 1 = домен из TLS ClientHello (не зависит от DNS/DoH) */
+    int sni_sniff;          /* 1 = домен из TLS ClientHello (не зависит от DNS/DoH);
+                             * источник — самоутверждение клиента: пины ограничены
+                             * TTL, чужие решения SNI не снимает. По умолчанию 0. */
     int dns_sniff_ttl;      /* TTL записи домен->IP, сек */
     char dns_sniff_iface[64];/* интерфейс захвата; пусто = все lan_interfaces */
     /* T3: заворачивать DNS клиентов серверных VPN (oc+/wdtt+) на резолвер

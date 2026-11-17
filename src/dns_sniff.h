@@ -15,7 +15,11 @@
  *  - точное покрытие поддоменов доменов из vpn_always/vpn_never до их
  *    собственного резолва (IP из ответа пинится сразу).
  *
- * По умолчанию выключено (dns_sniff=0).
+ * Оба ключа по умолчанию выключены: dns_sniff=0 и sni_sniff=0. SNI — второй
+ * источник имени (из TLS ClientHello), но это самоутверждение клиента:
+ * SNI-пара не получает бессрочных пинов, не снимает чужие решения и не рвёт
+ * соединения (см. src/dns_sniff.c, ESRC_*). Контур обслуживания (reconcile,
+ * сводка, снимок счётчиков) работает при любом включённом источнике.
  */
 
 int  dns_sniff_start(const susanin_config *cfg);  /* 0 = ok, -1 = нет (лог) */
@@ -57,8 +61,9 @@ void dns_sniff_stats_write(const susanin_config *cfg);
 int  dns_sniff_is_ru_domain(const susanin_config *cfg, const char *dom);
 /* 1, если домен записан в vpn_always с префиксом ? (мягкая запись). */
 int  dns_sniff_is_soft_domain(const susanin_config *cfg, const char *dom);
-/* Положить пару «домен -> IP» из внешнего источника (SNI). */
-void dns_sniff_note_name(const char *domain, const char *ip, int ttl);
+/* Положить пару «домен -> IP» из внешнего источника (SNI). Возврат 1 =
+ * запись попала в таблицу; источник помечается более слабым (ESRC_SNI). */
+int  dns_sniff_note_name(const char *domain, const char *ip, int ttl);
 
 /* r5.4: сколько RU-доменов сейчас сидит в VPN (ok_tcp) — пишет
  * /opt/susanin/var/ru-in-vpn для панели; вызывать из reconcile. */

@@ -1,6 +1,7 @@
 #ifndef VPIN_H
 #define VPIN_H
 
+#include <stddef.h>
 #include <time.h>
 
 /* Очередь проверки пинов, поставленных автообучением.
@@ -20,6 +21,10 @@
 
 #define VPIN_MAX 64
 
+/* Снимок очереди и счётчиков для `status`/`why`: это отдельные процессы,
+ * память движка им недоступна (тот же путь, что и dnssniff.state). */
+#define VPIN_STATS_FILE "/opt/susanin/var/vpin.state"
+
 enum {
     VPIN_FREE = 0,     /* слот свободен */
     VPIN_Q_VPN = 1,    /* ждёт проверки качества через туннель */
@@ -27,11 +32,25 @@ enum {
 };
 
 /* Автообучение увело адрес в VPN: ставим в очередь на проверку.
- * Повторный вызов для того же адреса обновляет срок и возвращает в Q_VPN. */
-void vpin_note(const char *ip, time_t now);
+ * port/udp — порт и протокол подтверждающего потока: проба идёт туда же,
+ * куда реально ходил клиент (IPTV/медиа на 8000/1935/554 на 443 молчат, и
+ * «нет ответа» там — про порт пробы, а не про мёртвый туннель). UDP-потоки
+ * в очередь не попадают (TCP-проба ничего про них не знает — см. vpin_note).
+ * Повторный вызов для того же адреса обновляет порт и срок. В режиме без
+ * туннельной пробы (vpin_set_tunnel_probe(0)) запись сразу уходит в
+ * Q_DIRECT: проверять «жив ли туннель» там нечем. */
+void vpin_note(const char *ip, unsigned short port, int udp, time_t now);
+
+/* Меряем ли качество VPN-пути (локальный SOCKS есть только в tproxy)?
+ * Выключается — существующие Q_VPN переводятся в Q_DIRECT со свежим сроком,
+ * включается — новые note снова становятся Q_VPN. */
+void vpin_set_tunnel_probe(int enabled, time_t now);
 
 /* Заполнить out индексами слотов, которым пора проверяться; вернуть их число.
- * vpn_iv — сколько ждать до проверки туннеля, direct_iv — до проверки прямого. */
+ * Обход — по давности (самый старый at первым), а не по индексу слота:
+ * иначе очередь из «недозрелых» по индексу записей морит голодом остальных.
+ * vpn_iv — сколько ждать до проверки туннеля, direct_iv — до проверки прямого.
+ * Слот после промаха (vpin_fail) проверяется раньше — по holdoff. */
 int vpin_due(time_t now, int vpn_iv, int direct_iv, int *out, int max);
 
 /* Сколько адресов в очереди (не FREE). */
@@ -42,17 +61,37 @@ int vpin_pending_vpn(void);
 
 const char *vpin_ip(int idx);
 int vpin_state(int idx);
+unsigned short vpin_port(int idx);
 
-/* Перевести слот в другое состояние с отметкой времени (NULL-безопасно). */
+/* Вердикт привязываем к адресу, а не к индексу слота: между fork пробы и
+ * сбором результатов слот могли вытеснить новым адресом. Возвращает индекс
+ * слота с этим IP в этом состоянии или -1. */
+int vpin_find(const char *ip, int state);
+
+/* Перевести слот в другое состояние с отметкой времени (NULL-безопасно).
+ * Сбрасывает счётчик промахов и holdoff: новое состояние — новый цикл. */
 void vpin_set(int idx, int state, time_t now);
+
+/* Промах по слоту: +1 к подряд идущим промахам, срок обновляется,
+ * holdoff>0 — перепроверка через holdoff секунд (0 — обычный интервал
+ * состояния). Возвращает новое число промахов подряд. */
+int vpin_fail(int idx, time_t now, int holdoff);
 
 /* Убрать слот из очереди. */
 void vpin_free_idx(int idx);
 
 /* Счётчики решений: сколько снято как «туннель не отвечает», «туннель
- * медленнее прямого» и сколько возвращено на прямой путь. */
-void vpin_bump(int what);   /* 0 = bad, 1 = slow, 2 = back */
-void vpin_counters(unsigned long *bad, unsigned long *slow, unsigned long *back);
+ * медленнее прямого», сколько возвращено на прямой путь и сколько проб
+ * «не чем мерить»/не дошло до своего слота (skip). */
+void vpin_bump(int what);   /* 0 = bad, 1 = slow, 2 = back, 3 = skip */
+void vpin_counters(unsigned long *bad, unsigned long *slow,
+                   unsigned long *back, unsigned long *skip);
+
+/* Снимок для VPIN_STATS_FILE: первой строкой
+ *   "vpin: check=%d interval=%ds pending=%d/vpn=%d bad=%lu slow=%lu back=%lu skip=%lu",
+ * далее строки очереди "q <ip> <vpn|direct> <port>" — по ним `why` показывает,
+ * стоит ли адрес в аудите. Возвращает длину строки. */
+int vpin_format(char *out, size_t n, int check, int interval);
 
 /* Полный сброс (перечитывание конфига/остановка движка). */
 void vpin_reset(void);

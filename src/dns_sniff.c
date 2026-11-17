@@ -1,5 +1,7 @@
 #define _GNU_SOURCE
 #include "dns_sniff.h"
+#include "classifier.h"
+#include "entryparse.h"
 #include "snisniff.h"
 #include "backend.h"
 #include "log.h"
@@ -25,10 +27,19 @@
 #define DNS_MAX_ENTRIES 2048
 /* DNS_DOMAIN_MAX — в dns_sniff.h (нужен и классификатору). */
 
+/* Источник пары «домен -> IP». SNI — самоутверждение клиента: LAN-хост может
+ * послать любой servername, и по одному такому «приветствию» нельзя ни
+ * запирать направление бессрочно, ни трогать чужие решения. Поэтому у
+ * записей есть src, и ветки сильнее (бессрочный never-пин, снятие чужих
+ * пинов, обрыв соединений) работают только для DNS-ответа. */
+#define ESRC_DNS 1
+#define ESRC_SNI 2
+
 typedef struct {
     char domain[DNS_DOMAIN_MAX];
     char ip[16];
     time_t expire;
+    unsigned char src;    /* ESRC_DNS / ESRC_SNI (SNI не понижает DNS до истечения) */
     int pinned;
     int pinned_never;
     /* Кэш вердиктов по спискам: reconcile каждые 10 с на каждую живую запись
@@ -83,12 +94,15 @@ static unsigned long dns_hash(const char *s)
 
 /* Счётчики пути «кадр -> запись в таблице». Без них вопрос «снифер не ловит
  * или ловит и не разбирает» неизмерим в принципе: ровно на этом участке и
- * обрывалась вся диагностика. */
+ * обрывалась вся диагностика. SNI-составляющая считается отдельно: общая
+ * «stored» ломала смысл notudp (кадры TCP с ClientHello проходили дальше,
+ * чем отбор UDP/53), и сводка начинала врать. */
 static unsigned long g_c_recv, g_c_notudp, g_c_notdns, g_c_malformed, g_c_stored;
 static unsigned long g_c_capped;
+static unsigned long g_c_sni_seen, g_c_sni_named, g_c_sni_stored;
 
 /* 1 = пара домен+IP записана или обновлена, 0 = не записана. */
-static int dns_store(const char *domain, const char *ip, int ttl)
+static int dns_store(const char *domain, const char *ip, int ttl, int src)
 {
     time_t now = time(NULL);
     unsigned long h;
@@ -119,8 +133,11 @@ static int dns_store(const char *domain, const char *ip, int ttl)
                  * бессрочная запись (never pin идёт с timeout 0) остаётся в
                  * susanin_never навсегда: после ротации IP у CDN следующий
                  * владелец прежнего адреса уходил бы мимо VPN, и никто бы его
-                 * обратно не вернул — флагов-то уже нет. */
-                if (g_cfg) {
+                 * обратно не вернул — флагов-то уже нет.
+                 * Только для DNS-источника: SNI-притязание — слишком слабое
+                 * основание трогать судьбу прежнего адреса, а пины,
+                 * поставленные SNI-записью, и так ограничены TTL. */
+                if (g_cfg && e->src == ESRC_DNS) {
                     if (e->pinned &&
                         !other_entry_matches(now, s, 0, g_cfg, old)) {
                         backend_ok_pin_del(g_cfg, old);
@@ -141,10 +158,18 @@ static int dns_store(const char *domain, const char *ip, int ttl)
                 e->pinned = 0;
                 e->pinned_never = 0;
             }
+            /* DNS сильнее SNI: апгрейд разрешён, понижение — нет (пока
+             * запись жива, факт реального A-ответа важнее позднего
+             * самоутверждения). */
+            if (src == ESRC_DNS)
+                e->src = ESRC_DNS;
             e->expire = now + ttl;
             if (g_cfg)
                 reconcile_entry(g_cfg, e, s, now);   /* мгновенный пин */
-            g_c_stored++;
+            if (src == ESRC_DNS)
+                g_c_stored++;
+            else
+                g_c_sni_stored++;
             return 1;
         }
         if (e->expire <= now && reuse < 0)
@@ -159,6 +184,7 @@ static int dns_store(const char *domain, const char *ip, int ttl)
     snprintf(e->domain, sizeof(e->domain), "%s", domain);
     snprintf(e->ip, sizeof(e->ip), "%s", ip);
     e->expire = now + ttl;
+    e->src = (unsigned char)src;
     e->pinned = 0;
     e->pinned_never = 0;
     e->vgen = 0;                /* вердикты ещё не считали */
@@ -168,7 +194,10 @@ static int dns_store(const char *domain, const char *ip, int ttl)
     e->v_ru = -1;
     if (g_cfg)
         reconcile_entry(g_cfg, e, reuse, now);       /* мгновенный пин */
-    g_c_stored++;
+    if (src == ESRC_DNS)
+        g_c_stored++;
+    else
+        g_c_sni_stored++;
     return 1;
 }
 
@@ -283,9 +312,9 @@ static int dns_parse(const uint8_t *p, int len)
              * от соединения к соединению. Каноническое имя тоже сохраняем:
              * если в списке указана сама CDN-зона, пин по ней должен работать. */
             if (qname[0])
-                stored += dns_store(qname, ip, ttl);
+                stored += dns_store(qname, ip, ttl, ESRC_DNS);
             if (aname[0] && strcasecmp(aname, qname) != 0)
-                stored += dns_store(aname, ip, ttl);
+                stored += dns_store(aname, ip, ttl, ESRC_DNS);
         }
         off += rdlen;
     }
@@ -405,6 +434,7 @@ int dns_sniff_start(const susanin_config *cfg)
     /* Счётчики — с нуля: сводка должна описывать текущий запуск, а не
      * сумму с предыдущего (после stop/start смешивать их было бы нельзя). */
     g_c_recv = g_c_notudp = g_c_notdns = g_c_malformed = g_c_capped = g_c_stored = 0;
+    g_c_sni_seen = g_c_sni_named = g_c_sni_stored = 0;
     g_cfg = cfg;
     g_nfd = 0;
     sniff_sync(cfg);
@@ -479,6 +509,7 @@ static void sni_take_packet(const unsigned char *ip, size_t len)
     size_t ihl, doff;
     const unsigned char *tcp, *payload;
     unsigned dport;
+    uint32_t dst4;
     size_t plen;
     char name[256], dst[16];
 
@@ -498,13 +529,23 @@ static void sni_take_packet(const unsigned char *ip, size_t len)
         return;
     payload = tcp + doff;
     plen = len - ihl - doff;
-    if (plen < 9 || payload[0] != 0x16)
+    if (plen < 9 || payload[0] != 0x16 || payload[5] != 0x01)
         return;
+    g_c_sni_seen++;
     if (!sni_parse_client_hello(payload, plen, name, sizeof(name)))
         return;
+    g_c_sni_named++;
     if (!inet_ntop(AF_INET, ip + 16, dst, sizeof(dst)))
         return;
-    dns_sniff_note_name(name, dst, 0);
+    /* Приватные/петлевые/link-local/multicast назначения — не «имя из сети»:
+     * LAN-принтер, роутер, соседний контейнер. Обучение такой фильтр уже
+     * применяет (clf_is_private4), и SNI-наблюдение не должно быть слабее —
+     * иначе самоутверждённое имя запинит внутренний адрес. */
+    dst4 = ((uint32_t)ip[16] << 24) | ((uint32_t)ip[17] << 16) |
+           ((uint32_t)ip[18] << 8) | (uint32_t)ip[19];
+    if (clf_is_private4(dst4))
+        return;
+    dns_sniff_note_name(name, dst, 0);   /* g_c_sni_stored считает dns_store */
 }
 
 void dns_sniff_poll(void)
@@ -539,9 +580,14 @@ void dns_sniff_poll(void)
                 continue;
             }
             ihl = (unsigned)(buf[0] & 0x0f) * 4;
-            if ((ihl >= 20 && (ssize_t)ihl + 8 <= r) && buf[9] == 6 &&
-                g_cfg && g_cfg->sni_sniff)
-                sni_take_packet(buf, (size_t)r);   /* имя из TLS ClientHello */
+            if (ihl >= 20 && (ssize_t)ihl + 8 <= r && buf[9] == 6) {
+                /* TCP: здесь только SNI. Кадр вычитывается и уходит: счётчик
+                 * notudp должен честно означать «не UDP/53» для DNS-ветки,
+                 * а не молча глотать каждый TLS-сегмент. */
+                if (g_cfg && g_cfg->sni_sniff)
+                    sni_take_packet(buf, (size_t)r);   /* имя из TLS ClientHello */
+                continue;
+            }
             if (ihl < 20 || (ssize_t)ihl + 8 > r || buf[9] != 17) {
                 /* Здесь же теряется и случай «кадр пришёл не с IP-заголовка»:
                  * тогда buf[9] — байт MAC-адреса, и отсекается практически
@@ -631,20 +677,26 @@ static const char *list_cache(int slot, const char *file)
         return NULL;
     }
     buf[0] = '\0';
+    /* Единая грамматика списка для всех читателей: строку разбирает
+     * entry_parse — тот же разбор, что у vpn_always/vpn_never. Раньше этот
+     * кэш принимал всё, что не похоже на CIDR/IPv6, и расходился с
+     * движком списков: "?domain" (мягкая запись) здесь работала, в
+     * vpn_never — нет, "*domain" без точки совпадало здесь и отбрасывалось
+     * там. Что entry_parse отверг — мусор и для сверки пинов. */
     while (fgets(line, sizeof(line), fp)) {
-        char *p = line + strlen(line);
+        char entry[288];
+        char clean[256];
+        int wild = 0, net = 0, soft = 0;
         size_t l;
-        while (p > line && (p[-1] == ' ' || p[-1] == '\t' ||
-                            p[-1] == '\r' || p[-1] == '\n'))
-            *--p = '\0';
-        p = line;
-        while (*p == ' ' || *p == '\t')
-            p++;
-        if (*p == '\0' || *p == '#')
+        if (!entry_parse(line, clean, sizeof(clean), &wild, &net, &soft))
             continue;
-        if (strchr(p, '/') || strchr(p, ':'))
-            continue;               /* CIDR/IPv6 — не домен */
-        l = strlen(p);
+        if (net)
+            continue;               /* CIDR — не домен */
+        if (soft && slot != 0)
+            continue;               /* '?' осмысленна только в vpn_always */
+        snprintf(entry, sizeof(entry), "%s%s%s",
+                 soft ? "?" : "", wild ? "*." : "", clean);
+        l = strlen(entry);
         if (len + l + 2 > cap) {
             char *nb;
             cap = (len + l + 2) * 2;
@@ -653,12 +705,8 @@ static const char *list_cache(int slot, const char *file)
                 break;
             buf = nb;
         }
-        {
-            size_t j;
-            for (j = 0; j < l; j++)
-                buf[len + j] = (char)tolower((unsigned char)p[j]);
-            len += l;
-        }
+        memcpy(buf + len, entry, l);
+        len += l;
         buf[len++] = '\n';
         buf[len] = '\0';
     }
@@ -717,15 +765,18 @@ int dns_sniff_is_soft_domain(const susanin_config *cfg, const char *dom)
 }
 
 /* Внешний источник имени (SNI из TLS ClientHello): кладём пару «домен -> IP»
- * в ту же таблицу, что и DNS-ответы. Дальше всё работает единообразно:
- * списки пинятся сразу, ru_guard видит домен, в логе появляется «(домен)». */
-void dns_sniff_note_name(const char *domain, const char *ip, int ttl)
+ * в ту же таблицу, что и DNS-ответы, помечая источник как более слабый:
+ * это самоутверждение клиента. Дальше всё работает единообразно: списки
+ * пинятся сразу, ru_guard видит домен, в логе появляется «(домен)»;
+ * бессрочный never-пин, снятие чужих пинов и обрыв соединений SNI не делает.
+ * Возврат 1 = пара попала в таблицу. */
+int dns_sniff_note_name(const char *domain, const char *ip, int ttl)
 {
     if (!domain || !domain[0] || !ip || !ip[0])
-        return;
+        return 0;
     if (ttl <= 0)
         ttl = (g_cfg && g_cfg->dns_sniff_ttl > 0) ? g_cfg->dns_sniff_ttl : 300;
-    dns_store(domain, ip, ttl);
+    return dns_store(domain, ip, ttl, ESRC_SNI);
 }
 
 void dns_sniff_set_state(susanin_state *st)
@@ -815,13 +866,22 @@ static void reconcile_entry(const susanin_config *cfg, dns_entry *e, int i,
      * ним. Ручной vpn_always для конкретного домена сильнее guard'а. */
     ru_force = cfg->ru_guard && cfg->ru_guard_direct && e->v_ru && !va && !e->v_soft;
     if (!e->pinned_never && (e->v_never || ru_force)) {
-        backend_set_add(cfg, "susanin_never", e->ip, 0);
+        /* Бессрочный never — только когда за направлением стоит решение
+         * оператора (vpn_never) и имя подтверждено DNS-ответом. SNI-пара по
+         * ru_guard живёт ровно dns_sniff_ttl: клиент мог назвать что угодно. */
+        int nttl = 0;
+        if (e->src == ESRC_SNI && !e->v_never)
+            nttl = cfg->dns_sniff_ttl > 0 ? cfg->dns_sniff_ttl : CFG_DEF_DNS_SNIFF_TTL;
+        backend_set_add(cfg, "susanin_never", e->ip, nttl);
         e->pinned_never = 1;
         if (g_state)
-            /* В ipset запись бессрочная (ttl 0) — в state так же. */
-            state_touch(&g_state->never, e->ip, now, 0);
+            /* В ipset и в state — одинаковый срок (0 = бессрочно). */
+            state_touch(&g_state->never, e->ip, now, nttl);
         /* Конфликт ok <-> never: адрес мог быть уже выучен в VPN — снимаем
-         * и рвём его соединения, иначе «прямо» не заработает. */
+         * и рвём его соединения, иначе «прямо» не заработает.
+         * Обрыв (ct_flush) делает только DNS-подтверждённая запись: по
+         * самоутверждённому имени рвать живые соединения соседа нельзя
+         * (сам пин при этом TTL-ограничен и снимется сам). */
         if (g_state) {
             if (state_has(st_ok(g_state, 0), e->ip, now) ||
                 state_has(st_ok(g_state, 1), e->ip, now) ||
@@ -832,13 +892,15 @@ static void reconcile_entry(const susanin_config *cfg, dns_entry *e, int i,
                 state_remove(st_test(g_state, 0), e->ip);
                 state_remove(st_test(g_state, 1), e->ip);
                 backend_ok_pin_del(cfg, e->ip);
-                backend_ct_flush_ip(e->ip);
-                slogf(SL_INFO, "dns-sniff: %s -> %s снят из VPN (конфликт с vpn_never)",
-                      e->domain, e->ip);
+                if (e->src != ESRC_SNI)
+                    backend_ct_flush_ip(e->ip);
+                slogf(SL_INFO, "dns-sniff: %s -> %s снят из VPN (конфликт с vpn_never)%s",
+                      e->domain, e->ip, e->src == ESRC_SNI ? ", соединения не рву" : "");
             }
         }
-        slogf(SL_INFO, "dns-sniff: %s -> %s (%s)", e->domain, e->ip,
-              e->v_never ? "vpn_never" : "ru-guard");
+        slogf(SL_INFO, "dns-sniff: %s -> %s (%s%s)", e->domain, e->ip,
+              e->v_never ? "vpn_never" : "ru-guard",
+              nttl > 0 ? ", SNI — только на TTL" : "");
     }
     /* Снятие пина, когда записи УЖЕ НЕТ в списке: раньше dns_sniff-пин
      * переживал удаление строки (never — бессрочно, always — до ok_ttl),
@@ -863,7 +925,9 @@ static void reconcile_entry(const susanin_config *cfg, dns_entry *e, int i,
             backend_set_del(cfg, "susanin_never", e->ip);
             if (g_state)
                 state_remove(&g_state->never, e->ip);
-            backend_ct_flush_ip(e->ip);
+            /* Обрыв соединений — действие уровня DNS-доверия (см. выше). */
+            if (e->src != ESRC_SNI)
+                backend_ct_flush_ip(e->ip);
             slogf(SL_INFO, "dns-sniff: %s -> %s unpinned (нет в vpn_never)",
                   e->domain, e->ip);
         }
@@ -910,16 +974,23 @@ int dns_sniff_count(void)
  * интерфейсе нет» (recv=0), «кадр приходит не с IP-заголовка» (recv>0,
  * notudp≈recv), «трафик есть, но не 53-порт» (notdns — DoT/DoH/QUIC) и
  * «разбираем, но не сохраняем» (stored=0 при parse-хлебе). До этого ни один
- * из четырёх случаев не проверялся вовсе. */
+ * из четырёх случаев не проверялся вовсе.
+ * notudp/stored — только DNS-ветка (UDP/53): TCP-кадр с SNI уходит из
+ * приёма до этого счётчика, иначе «notudp≈recv ⇒ кадры не с IP» врёт.
+ * SNI идёт своими счётчиками: seen = разобран ClientHello, named = имя
+ * признано доменом, stored = пара легла в таблицу (между named и stored
+ * стоит ещё и фильтр приватных адресов). */
 int dns_sniff_stats(char *out, size_t n)
 {
     if (!out || n == 0)
         return 0;
     snprintf(out, n,
-             "recv=%lu notudp=%lu notdns=%lu bad=%lu capped=%lu stored=%lu table=%d",
+             "recv=%lu notudp=%lu notdns=%lu bad=%lu capped=%lu stored=%lu "
+             "table=%d sni=%lu sni_named=%lu sni_stored=%lu",
              g_c_recv, g_c_notudp, g_c_notdns, g_c_malformed, g_c_capped,
-             g_c_stored, dns_sniff_count());
-    return (int)(g_c_recv + g_c_stored);
+             g_c_stored, dns_sniff_count(),
+             g_c_sni_seen, g_c_sni_named, g_c_sni_stored);
+    return (int)(g_c_recv + g_c_stored + g_c_sni_stored);
 }
 
 int dns_sniff_domain_of(const char *ip, char *domain_out, unsigned n)
@@ -1056,13 +1127,15 @@ void dns_sniff_ru_audit(const susanin_config *cfg)
  * пишется вовсе (носитель может быть только для чтения). */
 void dns_sniff_stats_write(const susanin_config *cfg)
 {
-    static char last[256];
-    char line[256], wp[544];
+    static char last[384];
+    char line[384], wp[544];
     FILE *f;
 
     if (!cfg || !strcmp(cfg->disk_mode, "soft"))
         return;
-    if (!cfg->dns_sniff) {
+    /* Снимок нужен любому активному источнику имени: счётчики SNI иначе
+     * не наблюдались бы вовсе. */
+    if (!cfg->dns_sniff && !cfg->sni_sniff) {
         if (last[0])
             last[0] = '\0';       /* выключили — пусть файл остынет последним */
         return;

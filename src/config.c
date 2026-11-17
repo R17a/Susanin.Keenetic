@@ -266,7 +266,10 @@ void config_set_defaults(susanin_config *c)
     c->egress_failback = 1;
     c->egress_failback_debounce = 30;
     c->dns_sniff = 0;
-    c->sni_sniff = 1;
+    /* SNI по умолчанию выключен: имя из ClientHello — самоутверждение
+     * клиента, и включать захват всего LAN-IPv4-трафика вслепую при
+     * апгрейде нельзя. Решение о фиче — за оператором. */
+    c->sni_sniff = 0;
     c->dns_sniff_ttl = 300;
     c->dns_hijack = 0;
     c->vpn_always_cdn_prefix = 0;
@@ -1155,6 +1158,11 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "dp_check_interval=%d\n", out_dur(c->dp_check_interval, U_SEC));
     fprintf(fp, "# DNS-снифинг (домен->IP, зеркально, штатный DNS не трогаем): 0 | 1.\n");
     fprintf(fp, "dns_sniff=%d\n", c->dns_sniff);
+    fprintf(fp, "# SNI-снифинг (домен из TLS ClientHello, не зависит от DNS): 0 | 1.\n");
+    fprintf(fp, "# Источник — самоутверждение клиента: SNI-имя не запирает направление\n");
+    fprintf(fp, "# навсегда (never-пин получает dns_sniff_ttl вместо бессрочного).\n");
+    fprintf(fp, "# Не покрывает QUIC/HTTP3 (UDP 443) и уже установленные соединения;\n");
+    fprintf(fp, "# IPv6 не разбирается.\n");
     fprintf(fp, "sni_sniff=%d\n", c->sni_sniff);
     fprintf(fp, "# TTL записи домен->IP в снифинге, сек.\n");
     fprintf(fp, "dns_sniff_ttl=%d\n", out_dur(c->dns_sniff_ttl, U_SEC));
@@ -1732,6 +1740,16 @@ int config_validate(const susanin_config *c, char *out, size_t n)
     if (c->health_interval < 1)
         CFGV("health_interval=%d: меньше 1 с — пробы чаще, чем успевает ответить туннель",
              c->health_interval);
+    /* Аудит пинов автообучения: движок клампит нижнюю границу до 30 с (проба
+     * — ребёнок с сетевым таймаутом, чаще гонять бессмысленно), а сутки и
+     * больше — это «залипший» пин живёт столько же; об обоих случаях говорим
+     * с именем ключа, чтобы правка конфига была адресной. */
+    if (c->vpin_check && c->vpin_interval < 30)
+        CFGV("vpin_interval=%d: аудит пинов проверяет не чаще раза в 30 с — "
+             "меньшее значение будет кламплено до 30", c->vpin_interval);
+    else if (c->vpin_check && c->vpin_interval > 86400)
+        CFGV("vpin_interval=%d: аудит пинов реже раза в сутки — мёртвый туннельный "
+             "пин будет жить столько же", c->vpin_interval);
 
     /* А здесь 0 = «взять действующий default» (CFG_DEF_* в config.h), и та же
      * подстановка сделана в месте потребления — то есть ноль законен.

@@ -244,7 +244,7 @@ static int file_load(const char *path, char names[][256], int wilds[],
 {
     FILE *fp = fopen(path, "r");
     char line[320];
-    int n = 0;
+    int n = 0, nq = 0;
     if (!fp)
         return -1;
     while (fgets(line, sizeof(line), fp)) {
@@ -255,6 +255,13 @@ static int file_load(const char *path, char names[][256], int wilds[],
         trim_line(line);
         if (line[0] == '\0' || line[0] == '#')
             continue;
+        if (line[0] == '?') {
+            /* «?» здесь молча отбрасывалась как мусорное имя, и оператор
+             * узнавал об этом только из исходников. Правило одно: мягкие
+             * записи поддержаны только в vpn_always. */
+            nq++;
+            continue;
+        }
         if (line[0] == '*' && line[1] == '.') {
             wild = 1;
             p = line + 2;
@@ -278,6 +285,11 @@ static int file_load(const char *path, char names[][256], int wilds[],
         }
     }
     fclose(fp);
+    /* Одно WARN на перечитывание файла, а не на строку: список мог быть
+     * большой, спам в warn-логе не нужен. */
+    if (nq > 0)
+        slogf(SL_WARN, "vpn_never: проигнорировано строк с «?»: %d — мягкие "
+              "записи поддержаны только в vpn_always", nq);
     return n;
 }
 

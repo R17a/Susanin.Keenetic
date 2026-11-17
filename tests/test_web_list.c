@@ -79,7 +79,7 @@ int main(void)
         snprintf(text, sizeof(text),
                  "# комментарий\nvalid.example.com\nbad line with spaces\n\n"
                  "*.wild.example.com\n1.2.3.0/24\n");
-        r = list_replace(list, text, &kept, &dropped, err, sizeof(err));
+        r = list_replace(list, text, 1, &kept, &dropped, err, sizeof(err));
         CHECK(r == 0, "list_replace выполнен");
         CHECK(kept == 3, "принято 3 записи");
         CHECK(dropped == 1, "отброшена 1 строка");
@@ -99,7 +99,7 @@ int main(void)
                  "*.wild.example.com\n1.2.3.0/24\n");
         f = fopen(bak, "rb");
         if (f) { size_t n = fread(before, 1, sizeof(before) - 1, f); before[n] = '\0'; fclose(f); }
-        r = list_replace(list, text, &kept, &dropped, err, sizeof(err));
+        r = list_replace(list, text, 1, &kept, &dropped, err, sizeof(err));
         CHECK(r == 0 && kept == 3, "повторная запись того же текста");
         {
             char after[1024] = "";
@@ -107,6 +107,42 @@ int main(void)
             if (f) { size_t n = fread(after, 1, sizeof(after) - 1, f); after[n] = '\0'; fclose(f); }
             CHECK(!strcmp(before, after), "бэкап не перезаписан (содержимое то же)");
         }
+    }
+
+    printf("=== мягкие записи ?domain проходят через панель ===\n");
+    {
+        /* Двиок разбирает «?domain» (src/entryparse.c), и панель обязана
+         * пропускать такую строку: иначе добавление из поля ввода отклоняется,
+         * а сохранение редактора молча выбрасывает запись из списка. */
+        CHECK(valid_entry("?bitrix24.ru", 1) == 1, "?domain принимается в vpn_always");
+        CHECK(valid_entry("?*.bitrix24.ru", 1) == 1, "?*.domain принимается в vpn_always");
+        CHECK(valid_entry("bitrix24.ru", 1) == 1, "обычная запись как была");
+        CHECK(valid_entry("?", 1) == 0, "голый ? отклоняется");
+        CHECK(valid_entry("bi?trix.ru", 1) == 0, "? внутри имени отклоняется");
+        CHECK(valid_entry("??x.ru", 1) == 0, "двойной ? отклоняется");
+        /* В vpn_never мягких записей нет: движок такую строку записью не считает,
+         * и панель не должна делать вид, что её приняла. */
+        CHECK(valid_entry("?bitrix24.ru", 0) == 0, "?domain отклоняется в vpn_never");
+        CHECK(valid_entry("bitrix24.ru", 0) == 1, "обычная запись в vpn_never как была");
+    }
+    {
+        char text[512];
+        snprintf(text, sizeof(text),
+                 "# мягкая зона\n?*.bitrix24.ru\n?soft.example.ru\nhard.example.com\n");
+        r = list_replace(list, text, 1, &kept, &dropped, err, sizeof(err));
+        CHECK(r == 0, "list_replace с мягкими записями выполнен");
+        CHECK(kept == 3 && dropped == 0, "мягкие записи сохранены, а не отброшены");
+        {
+            char got[512] = "";
+            FILE *f = fopen(list, "rb");
+            if (f) { size_t n = fread(got, 1, sizeof(got) - 1, f); got[n] = '\0'; fclose(f); }
+            CHECK(strstr(got, "?*.bitrix24.ru") && strstr(got, "?soft.example.ru"),
+                  "текст списка на диске содержит обе мягкие строки");
+        }
+        snprintf(text, sizeof(text), "# тот же текст в vpn_never\n?*.bitrix24.ru\nhard.example.com\n");
+        r = list_replace(list, text, 0, &kept, &dropped, err, sizeof(err));
+        CHECK(r == 0 && kept == 1 && dropped == 1,
+              "в vpn_never мягкая строка отброшена и посчитана");
     }
 
     printf("=== files_equal ===\n");
