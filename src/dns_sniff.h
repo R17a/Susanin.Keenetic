@@ -55,6 +55,8 @@ void dns_sniff_stats_write(const susanin_config *cfg);
 /* r5.2: домен оканчивается на русский TLD из cfg->ru_guard_tlds
  * (регистронезависимо, punycode-варианты включаются в список). */
 int  dns_sniff_is_ru_domain(const susanin_config *cfg, const char *dom);
+/* 1, если домен записан в vpn_always с префиксом ? (мягкая запись). */
+int  dns_sniff_is_soft_domain(const susanin_config *cfg, const char *dom);
 
 /* r5.4: сколько RU-доменов сейчас сидит в VPN (ok_tcp) — пишет
  * /opt/susanin/var/ru-in-vpn для панели; вызывать из reconcile. */

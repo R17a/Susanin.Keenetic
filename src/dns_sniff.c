@@ -36,6 +36,7 @@ typedef struct {
      * поколения списков (файлы перечитаны / TLD-набор изменён). */
     unsigned vgen;          /* поколение списков, на котором считали */
     signed char v_always;   /* -1 = не считали, 0/1 = вердикт */
+    signed char v_soft;     /* 1 = запись в vpn_always с префиксом ? (мягкая) */
     signed char v_never;
     signed char v_ru;
 } dns_entry;
@@ -161,6 +162,7 @@ static int dns_store(const char *domain, const char *ip, int ttl)
     e->pinned_never = 0;
     e->vgen = 0;                /* вердикты ещё не считали */
     e->v_always = -1;
+    e->v_soft = -1;
     e->v_never = -1;
     e->v_ru = -1;
     if (g_cfg)
@@ -653,13 +655,26 @@ static int list_match(int slot, const char *file, const char *domain)
             l = sizeof(line) - 1;
         memcpy(line, p, l);
         line[l] = '\0';
-        if (line[0] && zone_match(domain, line))
+        if (line[0] == '?') {
+            if (zone_match(domain, line + 1))
+                return 2;   /* мягкая запись: не пинить, guard не запирает */
+        } else if (line[0] && zone_match(domain, line)) {
             return 1;
+        }
         if (!nl)
             break;
         p = nl + 1;
     }
     return 0;
+}
+
+/* Мягкая запись (?domain) в vpn_always: RU-guard такую не запирает напрямую,
+ * чтобы у домена остался VPN-фолбэк на случай деградации прямого пути. */
+int dns_sniff_is_soft_domain(const susanin_config *cfg, const char *dom)
+{
+    if (!cfg || !dom || !dom[0])
+        return 0;
+    return list_match(0, cfg->vpn_always_file, dom) == 2;
 }
 
 void dns_sniff_set_state(susanin_state *st)
@@ -711,7 +726,11 @@ static void entry_verdicts(const susanin_config *cfg, dns_entry *e)
 {
     if (e->vgen == g_list_gen && e->v_always >= 0)
         return;
-    e->v_always = (signed char)list_match(0, cfg->vpn_always_file, e->domain);
+    {
+        int m = list_match(0, cfg->vpn_always_file, e->domain);
+        e->v_always = (signed char)(m != 0);
+        e->v_soft = (signed char)(m == 2);
+    }
     e->v_never = (signed char)list_match(1, cfg->vpn_never_file, e->domain);
     e->v_ru = (signed char)dns_sniff_is_ru_domain(cfg, e->domain);
     e->vgen = g_list_gen;
@@ -727,7 +746,7 @@ static void reconcile_entry(const susanin_config *cfg, dns_entry *e, int i,
     if (!cfg || !e->domain[0] || e->expire <= now)
         return;
     entry_verdicts(cfg, e);
-    va = e->v_always;
+    va = e->v_always && !e->v_soft;
     if (!e->pinned && va) {
         backend_ok_pin_add(cfg, e->ip, cfg->ok_ttl);
         e->pinned = 1;
@@ -743,7 +762,7 @@ static void reconcile_entry(const susanin_config *cfg, dns_entry *e, int i,
      * «не учить»: IP .рф-сайта может совпадать с выученным VPN-адресом
      * чужого сервиса (общий CDN/хостинг) и уезжать в туннель вместе с
      * ним. Ручной vpn_always для конкретного домена сильнее guard'а. */
-    ru_force = cfg->ru_guard && cfg->ru_guard_direct && e->v_ru && !va;
+    ru_force = cfg->ru_guard && cfg->ru_guard_direct && e->v_ru && !va && !e->v_soft;
     if (!e->pinned_never && (e->v_never || ru_force)) {
         backend_set_add(cfg, "susanin_never", e->ip, 0);
         e->pinned_never = 1;

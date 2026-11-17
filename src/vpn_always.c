@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "vpn_always.h"
+#include "entryparse.h"
 #include "backend.h"
 #include "cdn.h"
 #include "log.h"
@@ -45,6 +46,7 @@ typedef struct {
     int fails;              /* подряд неудачных резолвов (backoff) */
     int is_net;             /* строка файла — CIDR (a.b.c.d/n), не домен */
     int wild;               /* *.domain: домен и все поддомены */
+    int soft;               /* ?domain: мягкая запись — не пинить, ru_guard не запирает */
     time_t next_try;        /* когда перепроверять домен */
 } va_dom;
 
@@ -95,72 +97,10 @@ static void trim_line(char *s)
         *--p = '\0';
 }
 
-static void lower_str(char *s)
-{
-    for (; *s; s++)
-        *s = (char)tolower((unsigned char)*s);
-}
-
-/* Валидно: IPv4 (пинится как есть), CIDR a.b.c.d/n (в susanin_ok_net) или
- * DNS-имя из [a-z0-9.-]. */
-static int valid_cidr(const char *s, char *out, size_t n)
-{
-    char buf[48], *slash, *e;
-    struct in_addr a;
-    long pre;
-    if (strlen(s) >= sizeof(buf))
-        return 0;
-    snprintf(buf, sizeof(buf), "%s", s);
-    slash = strchr(buf, '/');
-    if (!slash)
-        return 0;
-    *slash = '\0';
-    if (inet_pton(AF_INET, buf, &a) != 1)
-        return 0;
-    errno = 0;
-    pre = strtol(slash + 1, &e, 10);
-    if (e == slash + 1 || *e != '\0' || errno != 0 || pre < 0 || pre > 32)
-        return 0;
-    {
-        in_addr_t mask = pre == 0 ? 0u : (in_addr_t)(0xffffffffu << (32 - (int)pre));
-        struct in_addr na;
-        char nb[INET_ADDRSTRLEN];
-        na.s_addr = htonl(ntohl(a.s_addr) & mask);
-        if (!inet_ntop(AF_INET, &na, nb, sizeof(nb)))
-            return 0;
-        snprintf(out, n, "%s/%ld", nb, pre);
-    }
-    return 1;
-}
-
-static int valid_name(const char *s, char *out, size_t n)
-{
-    struct in_addr a;
-    const char *p;
-    size_t len = strlen(s);
-    if (len == 0 || len >= n)
-        return 0;
-    if (inet_pton(AF_INET, s, &a) == 1) {
-        snprintf(out, n, "%s", s);
-        return 1;
-    }
-    if (strchr(s, '/'))
-        return valid_cidr(s, out, n);
-    if (len > 253)
-        return 0;
-    for (p = s; *p; p++) {
-        char c = *p;
-        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
-              c == '.' || c == '-'))
-            return 0;
-    }
-    snprintf(out, n, "%s", s);
-    return 1;
-}
 
 /* Читает файл, дедуплицирует имена. -1 если файл недоступен. */
 static int file_load(const char *path, char names[][256], int wilds[],
-                     int maxnames)
+                     int softs[], int maxnames)
 {
     FILE *fp = fopen(path, "r");
     char line[VA_LINE];
@@ -169,17 +109,11 @@ static int file_load(const char *path, char names[][256], int wilds[],
         return -1;
     while (fgets(line, sizeof(line), fp)) {
         char buf[256];
-        const char *p = line;
-        int i, wild = 0;
+        int i, wild = 0, soft = 0;
         trim_line(line);
         if (line[0] == '\0' || line[0] == '#')
             continue;
-        if (line[0] == '*' && line[1] == '.') {
-            wild = 1;
-            p = line + 2;
-        }
-        lower_str((char *)p);
-        if (!valid_name(p, buf, sizeof(buf)))
+        if (!entry_parse(line, buf, sizeof(buf), &wild, NULL, &soft))
             continue;
         if (n >= maxnames) {
             /* Раньше здесь был просто break: список молча обрезался, и записи из
@@ -208,6 +142,7 @@ static int file_load(const char *path, char names[][256], int wilds[],
             memcpy(names[n], buf, l);
             names[n][sizeof(names[n]) - 1] = '\0';
             wilds[n] = wild;
+            softs[n] = soft;
             n++;
         }
     }
@@ -226,7 +161,8 @@ static va_dom *dom_find(vpn_always *v, const char *name, int wild)
 
 /* Согласует список доменов с файлом: новые — next_try=0 (резолвить сразу),
  * удалённые выкидываются вместе с их IP. */
-static void doms_reconcile(vpn_always *v, char names[][256], int wilds[], int n)
+static void doms_reconcile(vpn_always *v, char names[][256], int wilds[],
+                           int softs[], int n)
 {
     /* VA_MAXDOM × sizeof(va_dom) = 400 КБ при лимите 512 — держим в куче, а не
      * на стеке: на роутере с 128 МБ RAM такой стек ни к чему. */
@@ -249,6 +185,7 @@ static void doms_reconcile(vpn_always *v, char names[][256], int wilds[], int n)
             d->name[sizeof(d->name) - 1] = '\0';
             d->is_net = strchr(d->name, '/') ? 1 : 0;
             d->wild = wilds[i];
+            d->soft = softs[i];
             d->next_try = 0;
         }
     }
@@ -897,13 +834,15 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
         v->seen_size != st.st_size) {
         char (*names)[256] = calloc(VA_MAXDOM, sizeof(*names));
         int *wilds = calloc(VA_MAXDOM, sizeof(*wilds));
-        if (names && wilds) {
-            int nf = file_load(cfg->vpn_always_file, names, wilds, VA_MAXDOM);
+        int *softs = calloc(VA_MAXDOM, sizeof(*softs));
+        if (names && wilds && softs) {
+            int nf = file_load(cfg->vpn_always_file, names, wilds, softs, VA_MAXDOM);
             if (nf >= 0)
-                doms_reconcile(v, names, wilds, nf);
+                doms_reconcile(v, names, wilds, softs, nf);
         }
         free(names);
         free(wilds);
+        free(softs);
         v->seen_mtime = st.st_mtime;
         v->seen_size = st.st_size;
         /* Файл изменился: снимаем устаревшие пины СРАЗУ (dirty обходит
@@ -937,7 +876,7 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
         for (i = 0; i < v->nd && nb < VA_PAR; i++) {
             va_dom *d = &v->dom[i];
             struct in_addr lit;
-            if (d->is_net || d->wild || d->next_try > now)
+            if (d->is_net || d->wild || d->soft || d->next_try > now)
                 continue;
             if (inet_pton(AF_INET, d->name, &lit) == 1)
                 continue;
@@ -984,7 +923,7 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
         long long spent = now_ms() - t0;
         long left;
         int to;
-        if (d->next_try > now)
+        if (d->next_try > now || d->soft)
             continue;
         if (d->is_net) {
             /* CIDR — пинится как есть, без DNS */
@@ -1044,6 +983,8 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
     /* 2) желаемый набор = объединение IP доменов + CIDR-строк списка */
     for (i = 0; i < v->nd; i++) {
         int k;
+        if (v->dom[i].soft)
+            continue;
         if (v->dom[i].is_net) {
             int j;
             for (j = 0; j < ndesn; j++)

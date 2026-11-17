@@ -1196,8 +1196,11 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
     if (cfg->ru_guard) {
         char rgd[DNS_DOMAIN_MAX];
         rgd[0] = '\0';
+        /* Мягкая запись ?domain — исключение: RU-домену нужен VPN-фолбэк,
+         * иначе в волну ТСПУ он остаётся без рабочего пути. */
         if (dns_sniff_domain_of(f->dst, rgd, sizeof(rgd)) && rgd[0] &&
-            dns_sniff_is_ru_domain(cfg, rgd)) {
+            dns_sniff_is_ru_domain(cfg, rgd) &&
+            !dns_sniff_is_soft_domain(cfg, rgd)) {
             skip_note(f->src, f->dst, f->dport, now, SK_RU);
             return;
         }
