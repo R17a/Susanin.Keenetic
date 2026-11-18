@@ -333,19 +333,22 @@ static int dns_parse(const uint8_t *p, int len)
 }
 
 /* Открыть сокет на конкретном интерфейсе. 0 = слушаем. */
-/* Фильтр для сокета ПОРТА моста: нужны только ОТВЕТЫ DNS (UDP, источник 53).
- * Порты видят весь трафик моста, включая видео/IPTV и TCP к внешним серверам:
- * без фильтра каждый кадр копируется в userspace, и на слабом CPU главный цикл
- * начинает отставать от сети. Запросы клиента и ClientHello (SNI) по-прежнему
- * приходят с сокета самого моста, поэтому здесь достаточно одной ветки.
- * Классический BPF: X = IHL из байта 0, протокол из [9], порт из X+0. */
-static int sniff_attach_dns_answer_filter(int fd)
+/* Фильтр для сокета ПОРТА/РОДИТЕЛЯ моста: нужны только ОТВЕТЫ DNS (UDP,
+ * источник 53). Такие сокеты видят весь трафик своего устройства, включая
+ * видео/IPTV и TCP к внешним серверам: без фильтра каждый кадр копируется в
+ * userspace, и на слабом CPU главный цикл начинает отставать от сети.
+ * base — сдвиг начала IP-заголовка в том буфере, который отдаёт этот сокет:
+ * 0 для SOCK_DGRAM на интерфейсе без тега и 4 для сокета ETH_P_8021Q на
+ * родителе VLAN (буфер начинается с 4-байтового заголовка VLAN).
+ * Классический BPF: X = IHL из байта base, протокол из [base+9], порт из
+ * X+base. */
+static int sniff_attach_dns_answer_filter(int fd, int base)
 {
     struct sock_filter code[] = {
-        BPF_STMT(BPF_LDX | BPF_MSH | BPF_B, 0),          /* X = 4*(ip[0]&0xf) */
-        BPF_STMT(BPF_LD | BPF_B | BPF_ABS, 9),           /* A = proto      */
+        BPF_STMT(BPF_LDX | BPF_MSH | BPF_B, base),       /* X = 4*(ip[0]&0xf) */
+        BPF_STMT(BPF_LD | BPF_B | BPF_ABS, base + 9),    /* A = proto      */
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 17, 0, 4),   /* не UDP -> 7    */
-        BPF_STMT(BPF_LD | BPF_H | BPF_IND, 0),           /* A = sport      */
+        BPF_STMT(BPF_LD | BPF_H | BPF_IND, base),        /* A = sport      */
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 53, 1, 0),   /* 53 -> 6, иначе 5 */
         BPF_STMT(BPF_RET | BPF_K, 0),                    /* 5: отбросить   */
         BPF_STMT(BPF_RET | BPF_K, 0xffff),               /* 6: принять     */
@@ -358,7 +361,12 @@ static int sniff_attach_dns_answer_filter(int fd)
     return setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &prog, sizeof(prog));
 }
 
-static int sniff_bind(const char *name, int dns_answers_only, int quiet)
+/* eth_proto — ETH_P_IP (обычный интерфейс) или ETH_P_8021Q (родитель VLAN:
+ * ответы уходят через vlan_dev_hard_start_xmit, и на родителе кадр уже с
+ * тегом 802.1Q, а сокет ETH_P_IP такие кадры не получает вовсе).
+ * filter_base — 0/4 для фильтра «только ответы DNS», -1 = без фильтра. */
+static int sniff_bind(const char *name, int eth_proto, int filter_base,
+                      int quiet)
 {
     unsigned idx;
     int fd;
@@ -369,20 +377,20 @@ static int sniff_bind(const char *name, int dns_answers_only, int quiet)
     idx = if_nametoindex(name);
     if (idx == 0)
         return -1;                  /* интерфейса сейчас нет */
-    fd = socket(AF_PACKET, SOCK_DGRAM, htons(ETH_P_IP));
+    fd = socket(AF_PACKET, SOCK_DGRAM, htons((uint16_t)eth_proto));
     if (fd < 0)
         return -1;
     memset(&sll, 0, sizeof(sll));
     sll.sll_family = AF_PACKET;
-    sll.sll_protocol = htons(ETH_P_IP);
+    sll.sll_protocol = htons((uint16_t)eth_proto);
     sll.sll_ifindex = (int)idx;
     if (bind(fd, (struct sockaddr *)&sll, sizeof(sll)) != 0) {
         slogf(SL_WARN, "dns_sniff: не привязаться к %s — пропускаю", name);
         close(fd);
         return -1;
     }
-    if (dns_answers_only &&
-        sniff_attach_dns_answer_filter(fd) != 0) {
+    if (filter_base >= 0 &&
+        sniff_attach_dns_answer_filter(fd, filter_base) != 0) {
         /* Фильтр не встал — сокет продолжает работать без него (лишний объём,
          * но ответы видны). Молчать об этом нельзя: это разница в нагрузке. */
         slogf(SL_WARN, "dns_sniff: %s — фильтр DNS-ответов не встал (%s), "
@@ -458,8 +466,30 @@ static void sniff_cool(const char *name)
     }
     if (slot < 0)
         slot = 0;
-    snprintf(g_cool[slot].name, sizeof(g_cool[0].name), "%s", name);
+    snprintf(g_cool[slot].name, sizeof(g_cool[0].name), "%.31s", name);
     g_cool[slot].until = time(NULL) + SNIFF_COOL_SEC;
+}
+
+/* Ответ DNS от роутера уходит через vlan_dev_hard_start_xmit: на самом
+ * VLAN-подынтерфейсе (eth2.1) кадра не видно, а на родителе (eth2) он уже с
+ * тегом 802.1Q. Поэтому для порта с точкой в имени открываем ещё сокет
+ * ETH_P_8021Q на родителе: фильтр там считает offsets от +4 (заголовок VLAN). */
+static void sniff_bind_parent(const char *port, int *opened)
+{
+    char parent[64];
+    char *dot;
+
+    snprintf(parent, sizeof(parent), "%.63s", port);
+    dot = strrchr(parent, '.');
+    if (!dot || dot == parent || dot[1] == '\0')
+        return;                     /* не VLAN-подынтерфейс */
+    *dot = '\0';
+    if (sniff_is_open(parent) || sniff_cooled(parent))
+        return;
+    if (if_nametoindex(parent) == 0)
+        return;
+    if (sniff_bind(parent, ETH_P_8021Q, 4, 1) == 0)
+        (*opened)++;
 }
 
 /* Привязать сокеты к портам моста (каталог /sys/class/net/<br>/brif) — там
@@ -482,12 +512,12 @@ static int sniff_bind_bridge_ports(const char *br)
         if (de->d_name[0] == '.')
             continue;
         ports++;
-        if (g_nfd >= DNS_MAX_IFACES || sniff_is_open(de->d_name))
+        if (g_nfd >= DNS_MAX_IFACES)
             continue;
-        if (sniff_cooled(de->d_name))
-            continue;
-        if (sniff_bind(de->d_name, 1, 1) == 0)
+        if (!sniff_is_open(de->d_name) && !sniff_cooled(de->d_name) &&
+            sniff_bind(de->d_name, ETH_P_IP, 0, 1) == 0)
             opened++;
+        sniff_bind_parent(de->d_name, &opened);
     }
     closedir(d);
     if (opened)
@@ -512,7 +542,7 @@ static int sniff_open_one(const char *name)
     }
     if (sniff_is_bridge(name))
         sniff_bind_bridge_ports(name);
-    return sniff_bind(name, 0, 0) == 0;
+    return sniff_bind(name, ETH_P_IP, -1, 0) == 0;
 }
 
 /* Раскрыть шаблон ("oc+", "wdtt*") по фактическим интерфейсам и открыть
@@ -734,55 +764,65 @@ void dns_sniff_poll(void)
                 break;
             }
             g_c_frames++;
-            if (r < 20)
-                continue;     /* ниже любого заголовка: разница frames-udp53 покажет */
-            ihl = (unsigned)(buf[0] & 0x0f) * 4;
-            if (ihl >= 20 && (ssize_t)ihl + 8 <= r && buf[9] == 6) {
-                /* TCP: здесь только SNI. Кадр уходит из приёма до DNS-шагов:
-                 * sni_* счётчики независимы, и frames-udp53 не выдаёт TLS
-                 * за «не DNS-трафик» — SNI-составляющая видна по своим именам. */
-                if (g_cfg && g_cfg->sni_sniff)
-                    sni_take_packet(buf, (size_t)r);   /* имя из TLS ClientHello */
-                continue;
-            }
-            if (ihl < 20 || (ssize_t)ihl + 8 > r || buf[9] != 17)
-                continue;     /* не UDP/53: случай виден как разница
-                               * frames без прироста udp53 (сюда же попадает
-                               * редкое «кадр не с IP-заголовка», когда buf[9]
-                               * — байт MAC) */
+            /* Сокет ETH_P_8021Q (родитель VLAN) отдаёт кадр с 4-байтовым
+             * заголовком VLAN перед IP: сдвигаем начало разбора. */
             {
-                const uint8_t *udp = buf + ihl;
-                const uint8_t *dns;
-                uint16_t sp = (uint16_t)((udp[0] << 8) | udp[1]);
-                uint16_t dp = (uint16_t)((udp[2] << 8) | udp[3]);
-                int dlen, rv;
-                if (sp != 53 && dp != 53)
-                    continue;         /* UDP, но не DNS-порт (DoT/QUIC-шум) */
-                g_c_udp53++;
-                ulen = (unsigned)((udp[4] << 8) | udp[5]);
-                if (ulen < 8 || ihl + ulen > (unsigned)r) {
-                    g_c_parse_fail++;
+                const uint8_t *ip = buf;
+                ssize_t n = r;
+                if (n >= 4 && ip[0] == 0x81 && ip[1] == 0x00) {
+                    ip += 4;
+                    n -= 4;
+                }
+                if (n < 20)
+                    continue; /* ниже любого заголовка: разница frames-udp53 покажет */
+                ihl = (unsigned)(ip[0] & 0x0f) * 4;
+                if (ihl >= 20 && (ssize_t)ihl + 8 <= n && ip[9] == 6) {
+                    /* TCP: здесь только SNI. Кадр уходит из приёма до DNS-шагов:
+                     * sni_* счётчики независимы, и frames-udp53 не выдаёт TLS
+                     * за «не DNS-трафик» — SNI-составляющая видна по своим именам. */
+                    if (g_cfg && g_cfg->sni_sniff)
+                        sni_take_packet(ip, (size_t)n);   /* имя из TLS ClientHello */
                     continue;
                 }
-                dns = udp + 8;
-                dlen = (int)(ulen - 8);
-                if (dlen < 12) {
-                    g_c_parse_fail++; /* заголовок DNS не читается целиком */
-                    continue;
+                if (ihl < 20 || (ssize_t)ihl + 8 > n || ip[9] != 17)
+                    continue;     /* не UDP/53: случай виден как разница
+                                   * frames без прироста udp53 (сюда же попадает
+                                   * редкое «кадр не с IP-заголовка», когда buf[9]
+                                   * — байт MAC) */
+                {
+                    const uint8_t *udp = ip + ihl;
+                    const uint8_t *dns;
+                    uint16_t sp = (uint16_t)((udp[0] << 8) | udp[1]);
+                    uint16_t dp = (uint16_t)((udp[2] << 8) | udp[3]);
+                    int dlen, rv;
+                    if (sp != 53 && dp != 53)
+                        continue;         /* UDP, но не DNS-порт (DoT/QUIC-шум) */
+                    g_c_udp53++;
+                    ulen = (unsigned)((udp[4] << 8) | udp[5]);
+                    if (ulen < 8 || ihl + ulen > (unsigned)n) {
+                        g_c_parse_fail++;
+                        continue;
+                    }
+                    dns = udp + 8;
+                    dlen = (int)(ulen - 8);
+                    if (dlen < 12) {
+                        g_c_parse_fail++; /* заголовок DNS не читается целиком */
+                        continue;
+                    }
+                    if (!(dns[2] & 0x80)) {
+                        /* Запрос: пинить по нему нечего — адрес придёт с ответом.
+                         * Но считать надо: «запросы видим, ответов нет» — отдельный
+                         * диагноз, раньше он был неотличим от мусора. */
+                        g_c_queries++;
+                        g_c_if_q[f]++;
+                        continue;
+                    }
+                    g_c_answers++;
+                    g_c_if_a[f]++;
+                    rv = dns_parse(dns, dlen);
+                    if (rv < 0)
+                        g_c_parse_fail++;
                 }
-                if (!(dns[2] & 0x80)) {
-                    /* Запрос: пинить по нему нечего — адрес придёт с ответом.
-                     * Но считать надо: «запросы видим, ответов нет» — отдельный
-                     * диагноз, раньше он был неотличим от мусора. */
-                    g_c_queries++;
-                    g_c_if_q[f]++;
-                    continue;
-                }
-                g_c_answers++;
-                g_c_if_a[f]++;
-                rv = dns_parse(dns, dlen);
-                if (rv < 0)
-                    g_c_parse_fail++;
             }
         }
         if (guard > 128)
