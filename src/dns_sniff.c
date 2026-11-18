@@ -657,33 +657,49 @@ void dns_sniff_poll(void)
                 break;
             }
             g_c_frames++;
-            /* Сокет ETH_P_8021Q (родитель VLAN) отдаёт кадр с 4-байтовым
-             * заголовком VLAN перед IP: сдвигаем начало разбора. */
+            /* Кадр может прийти с 4-байтовым тегом VLAN (если интерфейс задан
+             * VLAN-подынтерфейсом): сдвигаем начало разбора. */
             {
                 const uint8_t *ip = buf;
                 ssize_t n = r;
+                unsigned udp_off;
+                int ver;
                 if (n >= 4 && ip[0] == 0x81 && ip[1] == 0x00) {
                     ip += 4;
                     n -= 4;
                 }
                 if (n < 20)
                     continue; /* ниже любого заголовка: разница frames-udp53 покажет */
-                ihl = (unsigned)(ip[0] & 0x0f) * 4;
-                if (ihl >= 20 && (ssize_t)ihl + 8 <= n && ip[9] == 6) {
-                    /* TCP: здесь только SNI. Кадр уходит из приёма до DNS-шагов:
-                     * sni_* счётчики независимы, и frames-udp53 не выдаёт TLS
-                     * за «не DNS-трафик» — SNI-составляющая видна по своим именам. */
-                    if (g_cfg && g_cfg->sni_sniff)
-                        sni_take_packet(ip, (size_t)n);   /* имя из TLS ClientHello */
+                ver = ip[0] >> 4;
+                if (ver == 6) {
+                    /* IPv6: клиенты Keenetic получают DNS-сервер по RA и ходят
+                     * на link-local адрес роутера, поэтому ответы резолвера
+                     * приходят в IPv6 — без этой ветки сокет их видит, но
+                     * разбор молча пропускал (и «ответов нет» врало). Заголовок
+                     * IPv6 фиксированный (40 байт); расширения не разбираем:
+                     * next-header не UDP — не наш кадр. Порты и длина — те же
+                     * поля UDP, что и в IPv4, поэтому дальше разбор общий. */
+                    if (n < 40 || ip[6] != 17)
+                        continue;
+                    udp_off = 40;
+                } else if (ver == 4) {
+                    ihl = (unsigned)(ip[0] & 0x0f) * 4;
+                    if (ihl < 20 || (ssize_t)ihl + 8 > n)
+                        continue;
+                    if (ip[9] == 6) {
+                        /* TCP: здесь только SNI. sni_take_packet ждёт IPv4. */
+                        if (g_cfg && g_cfg->sni_sniff)
+                            sni_take_packet(ip, (size_t)n);
+                        continue;
+                    }
+                    if (ip[9] != 17)
+                        continue; /* не UDP: видно как разница frames/udp53 */
+                    udp_off = ihl;
+                } else {
                     continue;
                 }
-                if (ihl < 20 || (ssize_t)ihl + 8 > n || ip[9] != 17)
-                    continue;     /* не UDP/53: случай виден как разница
-                                   * frames без прироста udp53 (сюда же попадает
-                                   * редкое «кадр не с IP-заголовка», когда buf[9]
-                                   * — байт MAC) */
                 {
-                    const uint8_t *udp = ip + ihl;
+                    const uint8_t *udp = ip + udp_off;
                     const uint8_t *dns;
                     uint16_t sp = (uint16_t)((udp[0] << 8) | udp[1]);
                     uint16_t dp = (uint16_t)((udp[2] << 8) | udp[3]);
@@ -692,7 +708,7 @@ void dns_sniff_poll(void)
                         continue;         /* UDP, но не DNS-порт (DoT/QUIC-шум) */
                     g_c_udp53++;
                     ulen = (unsigned)((udp[4] << 8) | udp[5]);
-                    if (ulen < 8 || ihl + ulen > (unsigned)n) {
+                    if (ulen < 8 || udp_off + ulen > (unsigned)n) {
                         g_c_parse_fail++;
                         continue;
                     }

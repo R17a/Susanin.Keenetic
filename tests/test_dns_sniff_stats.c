@@ -81,6 +81,26 @@ static int build_ip(uint8_t *b, int dstport)
     return total;
 }
 
+/* IPv6 + UDP(src 53) + DNS_RESP: клиенты Keenetic получают DNS-сервер по RA
+ * и ходят на link-local адрес роутера, поэтому ответы резолвера приходят в
+ * IPv6. До этой ветки такие кадры сокет видел, а разбор молча пропускал. */
+static int build_ip6(uint8_t *b, int dstport)
+{
+    int iplen = 40, udplen = 8 + DNS_LEN, total = iplen + udplen;
+    memset(b, 0, (size_t)total);
+    b[0] = 0x60;                        /* version 6 */
+    b[4] = (uint8_t)(udplen >> 8); b[5] = (uint8_t)(udplen & 0xff);
+    b[6] = 17;                          /* next header: UDP */
+    b[7] = 64;                          /* hop limit */
+    b[8] = 0xfe; b[9] = 0x80; b[23] = 0x01;   /* src fe80::1 */
+    b[24] = 0xfe; b[25] = 0x80; b[39] = 0x02; /* dst fe80::2 */
+    b[40] = 0; b[41] = 53;              /* sport 53 */
+    b[42] = (uint8_t)(dstport >> 8); b[43] = (uint8_t)(dstport & 0xff);
+    b[44] = (uint8_t)(udplen >> 8); b[45] = (uint8_t)(udplen & 0xff);
+    memcpy(b + 48, DNS_RESP, DNS_LEN);
+    return total;
+}
+
 /* Тот же кадр, но с Ethernet-заголовком спереди: ровно то, что выдаёт
  * версию «L2 не срезан» — должна отлавливаться как «не IP», а не молча. */
 static int build_ethernet_prefixed(uint8_t *b)
@@ -89,8 +109,7 @@ static int build_ethernet_prefixed(uint8_t *b)
     memset(b, 0, 14);
     b[12] = 0x08; b[13] = 0x00;          /* ethertype IPv4 */
     n = build_ip(b + 14, 5353);
-    return n + 14;
-}
+    return n + 14;}
 
 /* TLS ClientHello с SNI=sni.example.net (тот же разбор, что в test_snisniff,
  * в компактном виде одного расширения). */
@@ -363,6 +382,20 @@ int main(void)
         CHECK(!strcmp(dns_sniff_stats_path(&cfg), DNS_SNIFF_SOFT_STATS_FILE),
               "soft -> tmpfs, носитель не трогаем");
         snprintf(cfg.disk_mode, sizeof(cfg.disk_mode), "normal");
+    }
+
+    printf("=== IPv6: ответ резолвера на link-local ===");
+    {
+        dns_sniff_counters a, b;
+        uint8_t f[512];
+        int n = build_ip6(f, 40000);
+        dns_sniff_get_counters(&a);
+        feed(0, f, n);
+        dns_sniff_get_counters(&b);
+        CHECK(b.udp53 == a.udp53 + 1, "IPv6-кадр дошёл до DNS-разбора");
+        CHECK(b.answers == a.answers + 1, "учтён как ответ");
+        CHECK(b.parse_fail == a.parse_fail, "разбор не сломался");
+        CHECK(b.stored == a.stored + 1, "пара домен->IP сохранена");
     }
 
     printf("=== интерфейс, которого нет ===\n");
