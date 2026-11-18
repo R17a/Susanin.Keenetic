@@ -9,7 +9,7 @@ VARDIR = $(PREFIX)/susanin/var
 SRCS = src/main.c src/config.c src/discover.c src/conntrack.c src/state.c \
        src/backend.c src/classifier.c src/health.c src/engine.c src/log.c src/ops.c \
        src/vpn_always.c src/vpn_never.c src/web.c src/web_choices.c \
-       src/udp_relay.c src/cdn.c src/dns_sniff.c src/profiles.c src/release.c src/vpin.c src/entryparse.c src/snisniff.c src/lang.c src/lang_catalog.c src/dns_lan.c
+       src/udp_relay.c src/cdn.c src/dns_sniff.c src/profiles.c src/release.c src/vpin.c src/entryparse.c src/snisniff.c src/lang.c src/lang_catalog.c src/dns_lan.c src/ops_dnsprobe.c
 OBJS = $(SRCS:.c=.o)
 
 TARGET = susanin-agent

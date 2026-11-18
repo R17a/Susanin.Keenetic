@@ -6,6 +6,10 @@
 
 int ops_setup(const susanin_config *cfg, const char *conf_path, int argc, char **argv);
 int ops_status(const susanin_config *cfg, const char *conf_path);
+
+/* DNS-запрос напрямую в форвардер/сервер: проверка пути без DNAT. */
+int ops_dnsprobe(const susanin_config *cfg, const char *name, const char *server,
+                 int port, int verbose);
 int ops_apply(const susanin_config *cfg, const char *conf_path, int dry_run);
 /* Сбросить адрес (IP или домен) из кэша/ipsets и conntrack — «забыть» для
  * повторного обучения. `forget <ip>` — синоним. */

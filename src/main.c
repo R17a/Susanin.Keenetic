@@ -270,6 +270,13 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "status"))
         return ops_status(&cfg, cfg_path());
 
+    if (!strcmp(cmd, "dnsprobe")) {
+        const char *nm = argc > 2 ? argv[2] : "";
+        const char *srv = argc > 3 ? argv[3] : "127.0.0.1";
+        int port = argc > 4 ? atoi(argv[4]) : 5399;
+        return ops_dnsprobe(&cfg, nm, srv, port, 0);
+    }
+
     if (!strcmp(cmd, "apply")) {
         int dry = argc > 2 && !strcmp(argv[2], "--dry-run");
         return ops_apply(&cfg, cfg_path(), dry);

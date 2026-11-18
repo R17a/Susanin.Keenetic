@@ -787,7 +787,7 @@ int config_load(const char *path, susanin_config *c)
         else if (!strcmp(key, "dns_lan_upstream"))
             set_str(c->dns_lan_upstream, sizeof(c->dns_lan_upstream), val);
         else if (!strcmp(key, "dns_lan_fallback"))
-            c->dns_lan_fallback = (int)cfg_num(c, key, val);
+            c->dns_lan_fallback = val[0] ? (int)cfg_num(c, key, val) : 1;
         else if (!strcmp(key, "soft_state_interval"))
             c->soft_state_interval = cfg_dur(c, key, val, U_HOUR);
         else if (!strcmp(key, "learn_exclude_ports"))

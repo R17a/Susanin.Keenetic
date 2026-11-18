@@ -588,14 +588,33 @@ void dns_lan_poll(void)
             g_q_tunnel++;
         } else if (g_cfg->dns_lan_fallback == 1) {
             rn = dl_direct(q, n, resp, sizeof(resp), DNS_LAN_FALLBACK_MS);
-            if (rn > 12)
+            if (rn > 12) {
+                static time_t last_dir;
+                time_t now = time(NULL);
                 g_q_direct++;
+                if (now - last_dir >= 60) {
+                    last_dir = now;
+                    slogf(SL_WARN, "dns_lan: туннель не ответил, ask %s напрямую "
+                          "(fail-open) — ответ может быть подменён", name);
+                }
+            }
         }
         if (rn <= 12) {
+            static time_t last_warn;
+            time_t now = time(NULL);
             g_q_fail++;
+            if (now - last_warn >= 60) {
+                last_warn = now;
+                slogf(SL_WARN, "dns_lan: upstream не ответил (%s, %s) — "
+                      "проверьте SOCKS/туннель и dns_lan_upstream",
+                      g_mode == DL_VIA_SOCKS ? "socks" :
+                      g_mode == DL_VIA_IFACE ? g_tun_name : "direct", name);
+            }
             continue;
         }
         dl_send(g_fd, resp, (size_t)rn, &from);
+        if (g_cfg)
+            dns_lan_write_snapshot(g_cfg);
         {
             int ttl = dl_ttl(resp, rn);
             if (ttl > 0)
