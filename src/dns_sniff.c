@@ -332,41 +332,15 @@ static int dns_parse(const uint8_t *p, int len)
     return stored;
 }
 
-/* Открыть сокет на конкретном интерфейсе. 0 = слушаем. */
-/* Фильтр для сокета ПОРТА/РОДИТЕЛЯ моста: нужны только ОТВЕТЫ DNS (UDP,
- * источник 53). Такие сокеты видят весь трафик своего устройства, включая
- * видео/IPTV и TCP к внешним серверам: без фильтра каждый кадр копируется в
- * userspace, и на слабом CPU главный цикл начинает отставать от сети.
- * base — сдвиг начала IP-заголовка в том буфере, который отдаёт этот сокет:
- * 0 для SOCK_DGRAM на интерфейсе без тега и 4 для сокета ETH_P_8021Q на
- * родителе VLAN (буфер начинается с 4-байтового заголовка VLAN).
- * Классический BPF: X = IHL из байта base, протокол из [base+9], порт из
- * X+base. */
-static int sniff_attach_dns_answer_filter(int fd, int base)
-{
-    struct sock_filter code[] = {
-        BPF_STMT(BPF_LDX | BPF_MSH | BPF_B, base),       /* X = 4*(ip[0]&0xf) */
-        BPF_STMT(BPF_LD | BPF_B | BPF_ABS, base + 9),    /* A = proto      */
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 17, 0, 4),   /* не UDP -> 7    */
-        BPF_STMT(BPF_LD | BPF_H | BPF_IND, base),        /* A = sport      */
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 53, 1, 0),   /* 53 -> 6, иначе 5 */
-        BPF_STMT(BPF_RET | BPF_K, 0),                    /* 5: отбросить   */
-        BPF_STMT(BPF_RET | BPF_K, 0xffff),               /* 6: принять     */
-        BPF_STMT(BPF_RET | BPF_K, 0),                    /* 7: отбросить   */
-    };
-    struct sock_fprog prog;
-
-    prog.len = (unsigned short)(sizeof(code) / sizeof(code[0]));
-    prog.filter = code;
-    return setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &prog, sizeof(prog));
-}
-
-/* eth_proto — ETH_P_IP (обычный интерфейс) или ETH_P_8021Q (родитель VLAN:
- * ответы уходят через vlan_dev_hard_start_xmit, и на родителе кадр уже с
- * тегом 802.1Q, а сокет ETH_P_IP такие кадры не получает вовсе).
- * filter_base — 0/4 для фильтра «только ответы DNS», -1 = без фильтра. */
-static int sniff_bind(const char *name, int eth_proto, int filter_base,
-                      int quiet)
+/* Открыть сокет на конкретном интерфейсе. 0 = слушаем.
+ *
+ * Протокол — ETH_P_ALL, а не ETH_P_IP. Причина измерена на живом роутере:
+ * ответ DNS, который роутер отдаёт клиенту (br0 Out / eth2.1 Out / eth2 Out),
+ * у локально сгенерированного пакета идёт с skb->protocol, не выставленным в
+ * ETH_P_IP, и сокет, привязанный к ETH_P_IP, такие кадры не получает вовсе —
+ * видны только входящие запросы (br0 In). tcpdump, привязанный к ETH_P_ALL,
+ * те же ответы видит. Поэтому слушаем всё, а нужное отбираем разбором. */
+static int sniff_bind(const char *name)
 {
     unsigned idx;
     int fd;
@@ -377,34 +351,24 @@ static int sniff_bind(const char *name, int eth_proto, int filter_base,
     idx = if_nametoindex(name);
     if (idx == 0)
         return -1;                  /* интерфейса сейчас нет */
-    fd = socket(AF_PACKET, SOCK_DGRAM, htons((uint16_t)eth_proto));
+    fd = socket(AF_PACKET, SOCK_DGRAM, htons(ETH_P_ALL));
     if (fd < 0)
         return -1;
     memset(&sll, 0, sizeof(sll));
     sll.sll_family = AF_PACKET;
-    sll.sll_protocol = htons((uint16_t)eth_proto);
+    sll.sll_protocol = htons(ETH_P_ALL);
     sll.sll_ifindex = (int)idx;
     if (bind(fd, (struct sockaddr *)&sll, sizeof(sll)) != 0) {
         slogf(SL_WARN, "dns_sniff: не привязаться к %s — пропускаю", name);
         close(fd);
         return -1;
     }
-    if (filter_base >= 0 &&
-        sniff_attach_dns_answer_filter(fd, filter_base) != 0) {
-        /* Фильтр не встал — сокет продолжает работать без него (лишний объём,
-         * но ответы видны). Молчать об этом нельзя: это разница в нагрузке. */
-        slogf(SL_WARN, "dns_sniff: %s — фильтр DNS-ответов не встал (%s), "
-              "слушаю без него", name, strerror(errno));
-    }
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
     g_fds[g_nfd] = fd;
     snprintf(g_open[g_nfd], sizeof(g_open[0]), "%s", name);
     g_c_if_q[g_nfd] = g_c_if_a[g_nfd] = 0;   /* слот новый — счётчики с нуля */
     g_nfd++;
-    if (quiet)
-        slogf(SL_DEBUG, "dns_sniff: слушаю DNS-ответы на %s (порт моста)", name);
-    else
-        slogf(SL_INFO, "dns_sniff: слушаю DNS на %s", name);
+    slogf(SL_INFO, "dns_sniff: слушаю DNS на %s", name);
     return 0;
 }
 
@@ -415,21 +379,6 @@ static int sniff_is_open(const char *name)
         if (!strcmp(g_open[i], name))
             return 1;
     return 0;
-}
-
-/* Мост это или нет. Ответы DNS, которые роутер отдаёт клиенту, уходят через
- * ПОРТ моста (skb->dev — порт), и сокет, привязанный к самому br*, их не
- * видит: у бр-устройства на этом пути нет кадра. Запросы клиента при этом
- * видны, потому что доставляются локально уже как br*. Отсюда и «запросы
- * видим, ответов нет» на всех мостовых LAN. */
-static int sniff_is_bridge(const char *name)
-{
-    char p[128];
-
-    if (!name || !name[0])
-        return 0;
-    snprintf(p, sizeof(p), "/sys/class/net/%s/bridge", name);
-    return access(p, F_OK) == 0;
 }
 
 /* Интерфейс, который только что отвалился, не пытаемся открыть заново на
@@ -470,64 +419,10 @@ static void sniff_cool(const char *name)
     g_cool[slot].until = time(NULL) + SNIFF_COOL_SEC;
 }
 
-/* Ответ DNS от роутера уходит через vlan_dev_hard_start_xmit: на самом
- * VLAN-подынтерфейсе (eth2.1) кадра не видно, а на родителе (eth2) он уже с
- * тегом 802.1Q. Поэтому для порта с точкой в имени открываем ещё сокет
- * ETH_P_8021Q на родителе: фильтр там считает offsets от +4 (заголовок VLAN). */
-static void sniff_bind_parent(const char *port, int *opened)
-{
-    char parent[64];
-    char *dot;
-
-    snprintf(parent, sizeof(parent), "%.63s", port);
-    dot = strrchr(parent, '.');
-    if (!dot || dot == parent || dot[1] == '\0')
-        return;                     /* не VLAN-подынтерфейс */
-    *dot = '\0';
-    if (sniff_is_open(parent) || sniff_cooled(parent))
-        return;
-    if (if_nametoindex(parent) == 0)
-        return;
-    if (sniff_bind(parent, ETH_P_8021Q, 4, 1) == 0)
-        (*opened)++;
-}
-
-/* Привязать сокеты к портам моста (каталог /sys/class/net/<br>/brif) — там
- * видны ОБА направления: входящий кадр клиента и исходящий ответ роутера.
- * Сокет порта получает только ответы DNS (фильтр в ядре): остальное уже видно
- * с сокета моста, а видео/IPTV с портов в userspace не нужно.
- * Возврат — сколько портов у моста (0 = портов нет или мост не читается). */
-static int sniff_bind_bridge_ports(const char *br)
-{
-    char dir[128];
-    DIR *d;
-    struct dirent *de;
-    int ports = 0, opened = 0;
-
-    snprintf(dir, sizeof(dir), "/sys/class/net/%s/brif", br);
-    d = opendir(dir);
-    if (!d)
-        return 0;
-    while ((de = readdir(d)) != NULL) {
-        if (de->d_name[0] == '.')
-            continue;
-        ports++;
-        if (g_nfd >= DNS_MAX_IFACES)
-            continue;
-        if (!sniff_is_open(de->d_name) && !sniff_cooled(de->d_name) &&
-            sniff_bind(de->d_name, ETH_P_IP, 0, 1) == 0)
-            opened++;
-        sniff_bind_parent(de->d_name, &opened);
-    }
-    closedir(d);
-    if (opened)
-        slogf(SL_INFO, "dns_sniff: %s — слушаю ответы DNS с портов моста "
-              "(+%d)", br, opened);
-    return ports;
-}
-
-/* Открыть один интерфейс из конфига. Мост: сам мост (запросы и SNI) ПЛЮС его
- * порты (ответы DNS). Если портов нет, остаётся только мост. */
+/* Открыть один интерфейс из конфига. Мост раскрывать в порты не нужно:
+ * с сокетом ETH_P_ALL ответ DNS виден и на самом br* (проверено tcpdump-ом:
+ * «br0 Out IP 192.168.1.1.53 > клиент»), а порты/родители VLAN только давали
+ * бы дубли и лишний объём. */
 static int sniff_open_one(const char *name)
 {
     if (sniff_cooled(name)) {
@@ -540,9 +435,7 @@ static int sniff_open_one(const char *name)
         slogf(SL_DEBUG, "dns_sniff: %s сейчас нет — пропускаю", name);
         return 0;
     }
-    if (sniff_is_bridge(name))
-        sniff_bind_bridge_ports(name);
-    return sniff_bind(name, ETH_P_IP, -1, 0) == 0;
+    return sniff_bind(name) == 0;
 }
 
 /* Раскрыть шаблон ("oc+", "wdtt*") по фактическим интерфейсам и открыть
