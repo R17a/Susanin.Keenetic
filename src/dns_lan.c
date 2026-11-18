@@ -30,7 +30,7 @@
 #define DNS_LAN_PORT 5399
 #define DNS_LAN_CACHE 128
 #define DNS_LAN_MAX_UP 4
-#define DNS_LAN_WAIT_MS 700
+#define DNS_LAN_WAIT_MS 1500
 #define DNS_LAN_FALLBACK_MS 500
 #define DNS_LAN_REASSOC_SEC 60
 
@@ -52,6 +52,8 @@ static unsigned long g_q_total, g_q_cache, g_q_tunnel, g_q_direct, g_q_fail;
 static int g_ctl = -1;                 /* TCP-контроль SOCKS5 */
 static struct sockaddr_in g_relay;     /* куда слать датаграммы */
 static time_t g_assoc_at;
+static time_t g_tunnel_dead_until;
+static int g_tunnel_fail;
 
 /* Куда уводить запросы:
  *   0 — через SOCKS5-UDP Xray (egress_type=tproxy);
@@ -63,6 +65,7 @@ static time_t g_assoc_at;
 #define DL_VIA_DIRECT 2
 static int g_mode = DL_VIA_DIRECT;
 static int g_tun_fd = -1;
+static int g_udp_fd = -1;   /* SOCKS-UDP: источник 127.0.0.1, как у TCP-контроля */
 static char g_tun_name[32];
 
 static void dl_stats_reset(void)
@@ -383,18 +386,47 @@ static int dl_tunnel(const unsigned char *q, int qlen, unsigned char *resp,
     memcpy(pkt + 4, &up.sin_addr.s_addr, 4);
     memcpy(pkt + 8, &up.sin_port, 2);
     memcpy(pkt + hdr, q, (size_t)qlen);
-    if (dl_send(g_fd, pkt, (size_t)(hdr + qlen), &g_relay) < 0)
+    if (dl_send(g_udp_fd >= 0 ? g_udp_fd : g_fd, pkt, (size_t)(hdr + qlen),
+                &g_relay) < 0)
         return -1;
-    if (!dl_wait(g_fd, timeout_ms))
+    if (!dl_wait(g_udp_fd >= 0 ? g_udp_fd : g_fd, timeout_ms))
         return -1;
-    n = (int)recv(g_fd, pkt, sizeof(pkt), 0);
-    if (n <= hdr || pkt[3] != 0x01)
-        return -1;
-    n -= hdr;
-    if (n > rn)
-        n = rn;
-    memcpy(resp, pkt + hdr, (size_t)n);
-    return n;
+    for (;;) {
+        int off, left;
+        n = (int)recv(g_udp_fd >= 0 ? g_udp_fd : g_fd, pkt, sizeof(pkt), 0);
+        if (n < 4)
+            return -1;
+        /* RSV(2) FRAG(1) ATYP(1) ADDR PORT DATA — адрес может быть любого типа */
+        off = 3;
+        {
+            int a = pkt[off];
+            if (a == 1)
+                off += 1 + 4;
+            else if (a == 4)
+                off += 1 + 16;
+            else if (a == 3) {
+                if (n < 5)
+                    return -1;
+                off += 2 + pkt[off + 1];
+            } else {
+                return -1;
+            }
+            off += 2;           /* port */
+        }
+        if (off + 12 > n)
+            return -1;
+        left = n - off;
+        /* Чужой/запоздалый ответ (id не наш) — дочитываем следующий. */
+        if (pkt[off] != q[0] || pkt[off + 1] != q[1]) {
+            if (!dl_wait(g_udp_fd >= 0 ? g_udp_fd : g_fd, 200))
+                return -1;
+            continue;
+        }
+        if (left > rn)
+            left = rn;
+        memcpy(resp, pkt + off, (size_t)left);
+        return left;
+    }
 }
 
 /* Интерфейс туннеля из egress_interface: первый, на который удалось
@@ -549,6 +581,20 @@ int dns_lan_start(const susanin_config *cfg)
         }
     }
     fcntl(g_fd, F_SETFL, fcntl(g_fd, F_GETFL, 0) | O_NONBLOCK);
+    if (g_mode == DL_VIA_SOCKS) {
+        struct sockaddr_in lo;
+        g_udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (g_udp_fd >= 0) {
+            memset(&lo, 0, sizeof(lo));
+            lo.sin_family = AF_INET;
+            lo.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            lo.sin_port = 0;
+            if (bind(g_udp_fd, (struct sockaddr *)&lo, sizeof(lo)) != 0) {
+                close(g_udp_fd);
+                g_udp_fd = -1;
+            }
+        }
+    }
     for (i = 0; i < DNS_LAN_CACHE; i++) {
         free(g_cache[i].resp);
         memset(&g_cache[i], 0, sizeof(g_cache[i]));
@@ -570,6 +616,9 @@ void dns_lan_stop(void)
     if (g_tun_fd >= 0)
         close(g_tun_fd);
     g_tun_fd = -1;
+    if (g_udp_fd >= 0)
+        close(g_udp_fd);
+    g_udp_fd = -1;
     g_tun_name[0] = '\0';
     dl_assoc_close();
     for (i = 0; i < DNS_LAN_CACHE; i++) {
@@ -642,7 +691,9 @@ void dns_lan_poll(void)
             continue;
         }
         rn = -1;
-        if (g_mode == DL_VIA_SOCKS) {
+        if (g_mode == DL_VIA_SOCKS && g_tunnel_dead_until > time(NULL)) {
+            /* недавно туннель не отвечал: сразу fail-open, без 1.5 с ожидания */
+        } else if (g_mode == DL_VIA_SOCKS) {
             int u;
             for (u = 0; u < g_up_n && rn <= 12; u++)
                 rn = dl_tunnel(q, n, resp, sizeof(resp), DNS_LAN_WAIT_MS, u);
@@ -653,7 +704,13 @@ void dns_lan_poll(void)
         }
         if (rn > 12) {
             g_q_tunnel++;
+            g_tunnel_fail = 0;
+            g_tunnel_dead_until = 0;
         } else if (g_cfg->dns_lan_fallback == 1) {
+            if (g_mode == DL_VIA_SOCKS && ++g_tunnel_fail >= 3) {
+                g_tunnel_dead_until = time(NULL) + 60;
+                g_tunnel_fail = 0;
+            }
             rn = dl_direct(q, n, resp, sizeof(resp), DNS_LAN_FALLBACK_MS);
             if (rn > 12) {
                 static time_t last_dir;
