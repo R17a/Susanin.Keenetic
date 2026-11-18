@@ -698,10 +698,12 @@ dns_hijack_clean() {
 }
 
 # DNS клиентов LAN через туннель (dns_lan=1): DNAT 53 на локальный форвардер
-# агента (127.0.0.1:5399 он слушает на всех адресах). Так ответы приходят из
-# туннеля, а не с прямого пути, где провайдер подменяет/фильтрует DNS.
-DNS_LAN_COMMENT=susanin-dnslan
+# агента (порт 5399). Так ответы приходят из туннеля, а не с прямого пути, где
+# провайдер подменяет/фильтрует DNS. Правила живут в отдельных цепях — искать и
+# снимать их можно по имени цепи, без -m comment (на части прошивок его нет).
 DNS_LAN_PORT=5399
+DNS_LAN_CHAIN=SUSANIN_DNSLAN
+DNS_LAN_IN_CHAIN=SUSANIN_DNSLAN_IN
 DNS_LAN_PRIVATE="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.0/8"
 
 _dns_lan_ifaces() {
@@ -729,16 +731,12 @@ _dns_lan_dest() {
 }
 
 dns_lan_clean() {
-    "ipt" -t nat -S PREROUTING 2>/dev/null | grep -F -- "$DNS_LAN_COMMENT" | \
-        while IFS= read -r _line; do
-            _spec=$(printf '%s' "$_line" | sed 's/^-A PREROUTING //')
-            "ipt" -t nat -D PREROUTING $_spec >/dev/null 2>&1 || true
-        done || true
-    "ipt" -t filter -S INPUT 2>/dev/null | grep -F -- "$DNS_LAN_COMMENT" | \
-        while IFS= read -r _line; do
-            _spec=$(printf '%s' "$_line" | sed 's/^-A INPUT //')
-            "ipt" -t filter -D INPUT $_spec >/dev/null 2>&1 || true
-        done || true
+    while "ipt" -t nat -D PREROUTING -j "$DNS_LAN_CHAIN" >/dev/null 2>&1; do :; done
+    "ipt" -t nat -F "$DNS_LAN_CHAIN" >/dev/null 2>&1 || true
+    "ipt" -t nat -X "$DNS_LAN_CHAIN" >/dev/null 2>&1 || true
+    while "ipt" -t filter -D INPUT -j "$DNS_LAN_IN_CHAIN" >/dev/null 2>&1; do :; done
+    "ipt" -t filter -F "$DNS_LAN_IN_CHAIN" >/dev/null 2>&1 || true
+    "ipt" -t filter -X "$DNS_LAN_IN_CHAIN" >/dev/null 2>&1 || true
 }
 
 dns_lan_rules() {
@@ -750,29 +748,48 @@ dns_lan_rules() {
         say "dns_lan=1, но не нашёл LAN-адрес/интерфейсы — DNS клиентов не трогаю"
         return 0
     fi
+    if ! _msg=$("ipt" -t nat -N "$DNS_LAN_CHAIN" 2>&1); then
+        say "dns_lan: цепь $DNS_LAN_CHAIN не создана: ${_msg:-неизвестная ошибка}"
+        return 0
+    fi
+    # Роутер обычно и есть «приватное назначение» (192.168.x.x): его сеть из
+    # исключений убираем, иначе RETURN выше DNAT съедал все запросы клиентов.
+    _dstip=${_dst%:*}
+    case "$_dstip" in
+        10.*) _skip_net="10.0.0.0/8" ;;
+        172.1[6-9].*|172.2[0-9].*|172.3[01].*) _skip_net="172.16.0.0/12" ;;
+        192.168.*) _skip_net="192.168.0.0/16" ;;
+        *) _skip_net="" ;;
+    esac
     _n=0
     _err=""
     for _i in $_ifaces; do
-        if _msg=$("ipt" -t nat -I PREROUTING 1 -i "$_i" -p udp --dport 53 \
-                -m comment --comment "$DNS_LAN_COMMENT" \
+        # Приватные назначения не перехватываем: RETURN должен стоять выше DNAT.
+        for _net in $DNS_LAN_PRIVATE; do
+            [ "$_net" = "$_skip_net" ] && continue
+            "ipt" -t nat -A "$DNS_LAN_CHAIN" -i "$_i" -p udp --dport 53 \
+                -d "$_net" -j RETURN >/dev/null 2>&1 || true
+        done
+        if _msg=$("ipt" -t nat -A "$DNS_LAN_CHAIN" -i "$_i" -p udp --dport 53 \
                 -j DNAT --to-destination "$_dst" 2>&1); then
             _n=$((_n + 1))
         else
             [ -n "$_err" ] || _err="$_msg"
         fi
-        # Приватные назначения (свой резолвер в другом сегменте) не перехватываем.
-        for _net in $DNS_LAN_PRIVATE; do
-            "ipt" -t nat -I PREROUTING 1 -i "$_i" -p udp --dport 53 -d "$_net" \
-                -m comment --comment "$DNS_LAN_COMMENT" -j RETURN >/dev/null 2>&1 || true
-        done
     done
+    if [ "$_n" -gt 0 ]; then
+        "ipt" -t nat -I PREROUTING 1 -j "$DNS_LAN_CHAIN" >/dev/null 2>&1 || true
+    fi
     # Порт форвардера — только из LAN, снаружи закрыт.
-    "ipt" -t filter -I INPUT 1 -p udp --dport "$DNS_LAN_PORT" \
-        -m comment --comment "$DNS_LAN_COMMENT" -j DROP >/dev/null 2>&1 || true
-    for _i in $_ifaces; do
-        "ipt" -t filter -I INPUT 1 -i "$_i" -p udp --dport "$DNS_LAN_PORT" \
-            -m comment --comment "$DNS_LAN_COMMENT" -j ACCEPT >/dev/null 2>&1 || true
-    done
+    if "ipt" -t filter -N "$DNS_LAN_IN_CHAIN" >/dev/null 2>&1; then
+        for _i in $_ifaces; do
+            "ipt" -t filter -A "$DNS_LAN_IN_CHAIN" -i "$_i" -p udp \
+                --dport "$DNS_LAN_PORT" -j ACCEPT >/dev/null 2>&1 || true
+        done
+        "ipt" -t filter -A "$DNS_LAN_IN_CHAIN" -p udp --dport "$DNS_LAN_PORT" \
+            -j DROP >/dev/null 2>&1 || true
+        "ipt" -t filter -I INPUT 1 -j "$DNS_LAN_IN_CHAIN" >/dev/null 2>&1 || true
+    fi
     if [ "$_n" -gt 0 ]; then
         say "dns_lan: DNS клиентов ($_ifaces) -> $_dst через туннель (правил: $_n)"
     else
@@ -993,11 +1010,11 @@ command_status() {
     else
         echo "dns_hijack: off"
     fi
-    _dl=$("ipt" -t nat -S PREROUTING 2>/dev/null | grep -cF -- "$DNS_LAN_COMMENT" || true)
+    _dl=$("ipt" -t nat -S "$DNS_LAN_CHAIN" 2>/dev/null | grep -c '^-A' || true)
     if [ "$DNS_LAN" = "1" ]; then
-        echo "dns_lan: on (клиенты LAN -> $(_dns_lan_dest); наших правил=$_dl)"
+        echo "dns_lan: on (клиенты LAN -> $(_dns_lan_dest); правил=$_dl)"
     elif [ "${_dl:-0}" -gt 0 ] 2>/dev/null; then
-        echo "dns_lan: 0 в конфиге, но наши правила DNAT остались ($_dl) — снимутся при следующем up/down"
+        echo "dns_lan: 0 в конфиге, но правила остались ($_dl) — снимутся при следующем up/down"
     else
         echo "dns_lan: off"
     fi
