@@ -360,11 +360,18 @@
   "tab.status.label": "状态",
   "tab.timers.label": "定时器与缓存",
   "tab.web.label": "诊断与 Web",
-  "tab.xray.label": "Xray 与 DNS",
-  "tab.xray.note": "DNS 嗅探有助于更准确地将列表中的域名连同子域名一起分流（默认关闭）。",
+  "tab.xray.label": "隧道与 DNS",
+  "tab.xray.note": "DNS 嗅探可把列表中的域名连同子域一起精确分流；另外可将局域网客户端的 DNS 走隧道，用于运营商改写应答的情况。",
   "toast.opErr": "{op}：{err}",
   "toast.opOk": "{op}：成功",
   "toast.resetNeed": "重置：请指定 IP 或域名",
   "cfg.lang.label": "日志语言",
-  "cfg.lang.desc": "ru | en | zh：代理写文件和面板日志所用语言；随界面语言切换"
+  "cfg.lang.desc": "ru | en | zh：代理写文件和面板日志所用语言；随界面语言切换",
+  "grp.xray.4": "局域网客户端 DNS 走隧道",
+  "cfg.dns_lan.label": "客户端 DNS 走隧道",
+  "cfg.dns_lan.desc": "把 br0/br1 的 udp/53 重定向到代理的转发器：应答来自隧道，而不是运营商改写的直连路径",
+  "cfg.dns_lan_upstream.label": "转发器上游",
+  "cfg.dns_lan_upstream.desc": "逗号分隔的 IPv4：8.8.8.8,1.1.1.1",
+  "cfg.dns_lan_fallback.label": "Fail-open：直接查询",
+  "cfg.dns_lan_fallback.desc": "隧道无应答时直接查询，避免域名丢失 DNS"
 }

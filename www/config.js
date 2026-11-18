@@ -111,6 +111,11 @@
           f('mark_mask', 'mark_mask', 'fwmark, hex', 'text', { kind: 'hex' }),
           f('ip_rule_priority_start', 'Приоритет ip rule (старт)', '', 'number', { kind: 'int' })
         ]},
+        { title: 'DNS клиентов LAN через туннель', fields: [
+          f('dns_lan', 'DNS клиентов через туннель', 'DNAT udp/53 клиентов br0/br1 на форвардер агента: ответы приходят из туннеля, а не с прямого пути, где провайдер их подменяет', 'bool'),
+          f('dns_lan_upstream', 'Upstream-ы форвардера', 'через запятую, IPv4: 8.8.8.8,1.1.1.1', 'text'),
+          f('dns_lan_fallback', 'Fail-open: спросить напрямую', 'если туннель не ответил — обычный запрос, чтобы не оставить дом без DNS', 'bool')
+        ]},
         { title: 'Kernel-offload (быстрый путь для CDN)', fields: [
           f('kernel_offload', 'Offload включён', 'адреса из ok_net идут маршрутом через интерфейс, минуя userspace-обработку', 'bool'),
           f('kernel_egress', 'Интерфейс offload', 'например nwg0; пусто = выключено', 'text', { kind: 'iface' }),
@@ -207,7 +212,7 @@
       ]
     },
     {
-      id: 'xray', label: 'Xray и DNS',
+      id: 'xray', label: 'Туннель и DNS',
       groups: [
         { title: 'Xray (память и watchdog)', fields: [
           f('xray_watchdog', 'Самоподъём упавшего Xray', 'агент сам перезапускает Xray при падении (режим tproxy)', 'bool'),

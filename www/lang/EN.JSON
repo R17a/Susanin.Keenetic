@@ -360,11 +360,18 @@
   "tab.status.label": "Status",
   "tab.timers.label": "Timers & cache",
   "tab.web.label": "Diagnostics & Web",
-  "tab.xray.label": "Xray & DNS",
-  "tab.xray.note": "DNS sniffing helps route domains from the lists together with subdomains more precisely (disabled by default).",
+  "tab.xray.label": "Tunnel & DNS",
+  "tab.xray.note": "DNS sniffing routes domains from the lists together with subdomains; separately, LAN client DNS can be sent through the tunnel when the ISP rewrites answers.",
   "toast.opErr": "{op}: {err}",
   "toast.opOk": "{op}: ok",
   "toast.resetNeed": "reset: specify an IP or domain",
   "cfg.lang.label": "Log language",
-  "cfg.lang.desc": "ru | en | zh: the language the agent writes the file and panel log in; follows the UI language switch"
+  "cfg.lang.desc": "ru | en | zh: the language the agent writes the file and panel log in; follows the UI language switch",
+  "grp.xray.4": "LAN client DNS through the tunnel",
+  "cfg.dns_lan.label": "Route client DNS through the tunnel",
+  "cfg.dns_lan.desc": "DNAT udp/53 from br0/br1 to the agent's forwarder: answers come from the tunnel, not from the direct path where the ISP rewrites them",
+  "cfg.dns_lan_upstream.label": "Forwarder upstreams",
+  "cfg.dns_lan_upstream.desc": "comma-separated IPv4: 8.8.8.8,1.1.1.1",
+  "cfg.dns_lan_fallback.label": "Fail-open: ask directly",
+  "cfg.dns_lan_fallback.desc": "if the tunnel did not answer, ask directly so the domain does not lose DNS"
 }

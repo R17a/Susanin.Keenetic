@@ -26,7 +26,7 @@
  * туннель приходит настоящий адрес. Есть кэш и fail-open: если туннель не
  * ответил, по настройке спрашиваем напрямую, чтобы не оставить дом без DNS. */
 
-#define DNS_LAN_PORT 5353
+#define DNS_LAN_PORT 5399
 #define DNS_LAN_CACHE 128
 #define DNS_LAN_MAX_UP 4
 #define DNS_LAN_WAIT_MS 700

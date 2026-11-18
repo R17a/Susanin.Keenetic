@@ -698,10 +698,10 @@ dns_hijack_clean() {
 }
 
 # DNS клиентов LAN через туннель (dns_lan=1): DNAT 53 на локальный форвардер
-# агента (127.0.0.1:5353 он слушает на всех адресах). Так ответы приходят из
+# агента (127.0.0.1:5399 он слушает на всех адресах). Так ответы приходят из
 # туннеля, а не с прямого пути, где провайдер подменяет/фильтрует DNS.
 DNS_LAN_COMMENT=susanin-dnslan
-DNS_LAN_PORT=5353
+DNS_LAN_PORT=5399
 DNS_LAN_PRIVATE="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.0/8"
 
 _dns_lan_ifaces() {
@@ -751,10 +751,15 @@ dns_lan_rules() {
         return 0
     fi
     _n=0
+    _err=""
     for _i in $_ifaces; do
-        "ipt" -t nat -I PREROUTING 1 -i "$_i" -p udp --dport 53 \
-            -m comment --comment "$DNS_LAN_COMMENT" \
-            -j DNAT --to-destination "$_dst" 2>/dev/null && _n=$((_n + 1))
+        if _msg=$("ipt" -t nat -I PREROUTING 1 -i "$_i" -p udp --dport 53 \
+                -m comment --comment "$DNS_LAN_COMMENT" \
+                -j DNAT --to-destination "$_dst" 2>&1); then
+            _n=$((_n + 1))
+        else
+            [ -n "$_err" ] || _err="$_msg"
+        fi
         # Приватные назначения (свой резолвер в другом сегменте) не перехватываем.
         for _net in $DNS_LAN_PRIVATE; do
             "ipt" -t nat -I PREROUTING 1 -i "$_i" -p udp --dport 53 -d "$_net" \
@@ -771,7 +776,7 @@ dns_lan_rules() {
     if [ "$_n" -gt 0 ]; then
         say "dns_lan: DNS клиентов ($_ifaces) -> $_dst через туннель (правил: $_n)"
     else
-        say "dns_lan=1, но правила не добавлены — фича не работает (нет xt_comment/nat?)"
+        say "dns_lan=1, но правила не добавлены: ${_err:-неизвестная ошибка}"
     fi
 }
 
