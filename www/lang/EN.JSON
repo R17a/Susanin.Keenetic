@@ -364,5 +364,7 @@
   "tab.xray.note": "DNS sniffing helps route domains from the lists together with subdomains more precisely (disabled by default).",
   "toast.opErr": "{op}: {err}",
   "toast.opOk": "{op}: ok",
-  "toast.resetNeed": "reset: specify an IP or domain"
+  "toast.resetNeed": "reset: specify an IP or domain",
+  "cfg.lang.label": "Log language",
+  "cfg.lang.desc": "ru | en | zh: the language the agent writes the file and panel log in; follows the UI language switch"
 }

@@ -6,6 +6,7 @@
 #include "conntrack.h"
 #include "dns_sniff.h"
 #include "health.h"
+#include "lang.h"
 #include "log.h"
 #include "release.h"
 #include "state.h"
@@ -1653,6 +1654,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         log_prev_size = prev_sz;
     }
     slog_init(cfg->log_level);
+    lang_set(cfg->lang);   /* язык журнала: ru|en|zh */
     backend_batch_enable(cfg->ipset_batch);
     if (g_agentlog[0] && path_on_tmpfs(g_agentlog))
         slogf(SL_WARN, "log: %s лежит на tmpfs (это RAM!): рост логов отнимает память, "
@@ -1880,6 +1882,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                  * «сделал тише, а оно пишет». slog_init дешёвый и побочных
                  * эффектов не имеет. */
                 slog_init(cfg->log_level);
+                lang_set(cfg->lang);
                 if (slog_level() != old_sl)
                     slogf(SL_WARN, "log_level: %s -> %s (применено без перезапуска)",
                           old_level[0] ? old_level : "(пусто)",

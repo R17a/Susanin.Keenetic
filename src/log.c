@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "log.h"
+#include "lang.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -57,8 +58,10 @@ void slogf(int lvl, const char *fmt, ...)
     localtime_r(&now, &tmv);
     strftime(ts, sizeof(ts), "%H:%M:%S", &tmv);
     fprintf(stdout, "%s %s: ", ts, tag);
+    /* Перевод шаблона по выбранному языку: ключ — русская строка из вызова,
+     * поэтому сами вызовы slogf() менять не нужно. */
     va_start(ap, fmt);
-    vfprintf(stdout, fmt, ap);
+    vfprintf(stdout, lang_tr(fmt), ap);
     va_end(ap);
     fputc('\n', stdout);
     fflush(stdout);

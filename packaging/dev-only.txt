@@ -10,6 +10,10 @@ tools/make-ipk.sh           — сборка .ipk-пакетов (инструм
 tools/stage-release.sh      — раскладка tar-архива релиза по манифесту
 tools/check-shipping.sh     — сверка манифеста с .ipk
 tools/check-lang.sh         — сверка языковых словарей www/lang (dev)
+tools/extract-slog.py       — извлечение шаблонов slogf() (dev)
+tools/gen-lang.py           — сборка src/lang_catalog.c из lang/slog.json (build)
+tools/split-lang.py         — раскладка lang/slog.json на RU/EN/ZH.json (dev)
+tools/make-lang-skeleton.py — каркас словаря из извлечённых строк (dev)
 tools/dev-web.py            — локальный сервер www с мок-API для проверки UI (dev)
 
 # --- внешний наблюдатель "интерфейс -> Xray" (штатный путь — кандидат tproxy) ---

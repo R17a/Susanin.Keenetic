@@ -49,6 +49,9 @@ share   vpn_always.txt
 share   vpn_never.txt
 share   xray-tproxy.json.example
 share   xray-tproxy-cdn.json.example
+share   lang/RU.json
+share   lang/EN.json
+share   lang/ZH.json
 
 www     www
 

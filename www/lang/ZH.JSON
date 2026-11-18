@@ -364,5 +364,7 @@
   "tab.xray.note": "DNS 嗅探有助于更准确地将列表中的域名连同子域名一起分流（默认关闭）。",
   "toast.opErr": "{op}：{err}",
   "toast.opOk": "{op}：成功",
-  "toast.resetNeed": "重置：请指定 IP 或域名"
+  "toast.resetNeed": "重置：请指定 IP 或域名",
+  "cfg.lang.label": "日志语言",
+  "cfg.lang.desc": "ru | en | zh：代理写文件和面板日志所用语言；随界面语言切换"
 }

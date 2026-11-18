@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "config.h"
+#include "lang.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -211,6 +212,7 @@ void config_set_defaults(susanin_config *c)
      * на мегабайты, а в tmpfs это отнятая у системы память. */
     c->xray_log_max_kb = 2048;
     snprintf(c->disk_mode, sizeof(c->disk_mode), "%s", "normal");
+    snprintf(c->lang, sizeof(c->lang), "%s", "ru");   /* язык журнала */
     c->soft_state_interval = 12 * 3600;   /* soft: сохранять состояние раз в 12 ч */
     /* Порты, которые не участвуют в автообучении (типовой скан-шум). */
     snprintf(c->learn_exclude_ports, sizeof(c->learn_exclude_ports), "%s",
@@ -774,6 +776,8 @@ int config_load(const char *path, susanin_config *c)
                 c->xray_log_max_kb = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "disk_mode"))
             set_str(c->disk_mode, sizeof(c->disk_mode), val);
+        else if (!strcmp(key, "lang"))
+            set_str(c->lang, sizeof(c->lang), val);
         else if (!strcmp(key, "soft_state_interval"))
             c->soft_state_interval = cfg_dur(c, key, val, U_HOUR);
         else if (!strcmp(key, "learn_exclude_ports"))
@@ -1174,6 +1178,8 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "xray_log_max_kb=%d\n", c->xray_log_max_kb);
     fprintf(fp, "# Режим носителя: normal | soft (минимум записей на NAND/flash).\n");
     fprintf(fp, "disk_mode=%s\n", c->disk_mode);
+    fprintf(fp, "# Язык сообщений журнала: ru | en | zh (см. lang/slog.json).\n");
+    fprintf(fp, "lang=%s\n", c->lang);
     fprintf(fp, "# Период сохранения состояния в soft-режиме, ч; 0 = никогда.\n");
     out_dur_exact(c->soft_state_interval, U_HOUR, dv, sizeof(dv));
     fprintf(fp, "soft_state_interval=%s\n", dv);
@@ -1849,6 +1855,10 @@ int config_validate(const susanin_config *c, char *out, size_t n)
     else if (c->stall_confirm > 6)
         CFGV("stall_confirm=%d: адрес уедет в VPN лишь после %d окон подряд — при блокировке защита опоздает",
              c->stall_confirm, c->stall_confirm);
+    /* Язык журнала: иначе сообщения останутся на русском, а в конфиге
+     * будет строка, которая выглядит как настройка. */
+    if (c->lang[0] && !lang_known(c->lang))
+        CFGV("lang=%s: допустимо ru|en|zh — журнал останется на русском", c->lang);
     /* Порты. Разбор по способу подстановки, а не «нуль везде плох»:
      *   - tproxy_port и udp_relay_port уходят в сравнение и bind как есть,
      *     поэтому 0 там = сломанный порт (у релеев ещё и ephemeral-bind);
@@ -1956,6 +1966,7 @@ void config_print(const susanin_config *c)
     printf("xray_min_mem_kb=%d\n", c->xray_min_mem_kb);
     printf("xray_log_max_kb=%d\n", c->xray_log_max_kb);
     printf("disk_mode=%s\n", c->disk_mode);
+    printf("lang=%s\n", c->lang);
     out_dur_exact(c->soft_state_interval, U_HOUR, dv, sizeof(dv));
     printf("soft_state_interval=%s\n", dv);
     printf("learn_exclude_ports=%s\n", c->learn_exclude_ports);

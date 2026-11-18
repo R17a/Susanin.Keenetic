@@ -507,6 +507,28 @@
   }
   document.addEventListener('susanin:lang', relabel);
 
+  /* Язык журнала живёт в агенте, а не в браузере: при смене языка панели
+   * сообщаем его агенту (ключ lang), иначе файл и новые строки лога останутся
+   * на прежнем языке. Отправляем только при реальной смене, чтобы не дёргать
+   * Reload агента на каждую перерисовку. */
+  (function syncLogLang() {
+    var sent = null;
+    var push = function (code) {
+      if (!code || code === sent) return;
+      sent = code;
+      try {
+        post('/api/config', { lang: code }).catch(function () {
+          sent = null;      /* не сохранилось — попробуем при следующей смене */
+        });
+      } catch (e) { sent = null; }
+    };
+    document.addEventListener('susanin:lang', function (ev) {
+      push(ev && ev.detail && ev.detail.lang);
+    });
+    /* Панель уже знает свой язык — синхронизируем один раз при загрузке. */
+    if (window.I18N && window.I18N.lang) push(window.I18N.lang);
+  })();
+
   /* Высота липкой шапки в CSS-переменную: на узком экране шапка выше одной
    * строки, и жёсткий top:76px у навигации ломал вёрстку (дефект 2026-10-14). */
   (function trackTopbar() {

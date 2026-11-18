@@ -1,0 +1,957 @@
+[
+ {
+  "ru": "%s: применено %d, ошибок %d, остаток (%zu байт) — следующим проходом",
+  "en": "%s: applied %d, errors %d, leftover (%zu bytes) — next pass",
+  "zh": "%s：已应用 %d，错误 %d，剩余（%zu 字节）— 下一轮处理"
+ },
+ {
+  "ru": "%s: применено %d, ошибок %d",
+  "en": "%s: applied %d, errors %d",
+  "zh": "%s：已应用 %d，错误 %d"
+ },
+ {
+  "ru": "батч ipset восстановлен без перезапуска агента",
+  "en": "ipset batch restored without agent restart",
+  "zh": "ipset 批次已恢复，无需重启 agent"
+ },
+ {
+  "ru": "ipset restore завис (больше %d мс) — процесс убит, батч на паузе, пачка (%zu байт) сохранена для повторной попытки",
+  "en": "ipset restore hung (more than %d ms) — process killed, batch paused, chunk (%zu bytes) saved for retry",
+  "zh": "ipset restore 卡住（超过 %d 毫秒）— 进程已被杀死，批次暂停，数据块（%zu 字节）已保存以便重试"
+ },
+ {
+  "ru": "ipset restore rc=%d (%s): применено поштучно %d, ошибок %d, пропущено %d (предел), первая: %s",
+  "en": "ipset restore rc=%d (%s): applied one by one %d, errors %d, skipped %d (limit), first: %s",
+  "zh": "ipset restore rc=%d（%s）：逐条应用 %d，错误 %d，跳过 %d（已达上限），第一条：%s"
+ },
+ {
+  "ru": "ipset restore rc=%d (%s): применил поштучно %d команд",
+  "en": "ipset restore rc=%d (%s): applied %d commands one by one",
+  "zh": "ipset restore rc=%d（%s）：已逐条应用 %d 条命令"
+ },
+ {
+  "ru": "ipset restore: пачка команд не применена (rc=%d)",
+  "en": "ipset restore: command chunk not applied (rc=%d)",
+  "zh": "ipset restore：命令块未应用（rc=%d）"
+ },
+ {
+  "ru": "datapath provisioning failed (rc=%d, no output)",
+  "en": "datapath provisioning failed (rc=%d, no output)",
+  "zh": "datapath provisioning 失败（rc=%d，无输出）"
+ },
+ {
+  "ru": "datapath provisioning failed (rc=%d): %s",
+  "en": "datapath provisioning failed (rc=%d): %s",
+  "zh": "datapath provisioning 失败（rc=%d）：%s"
+ },
+ {
+  "ru": "datapath provisioning failed (rc=%d)",
+  "en": "datapath provisioning failed (rc=%d)",
+  "zh": "datapath provisioning 失败（rc=%d）"
+ },
+ {
+  "ru": "ready check: xtables lock busy after %d tries (rc=%d) — assume OK, retry on next pass",
+  "en": "ready check: xtables lock busy after %d tries (rc=%d) — assume OK, retry on next pass",
+  "zh": "ready check：%d 次尝试后 xtables 锁仍被占用（rc=%d）— 视为正常，下一轮重试"
+ },
+ {
+  "ru": "preflight: egress %s отсутствует (кандидатов %d) — ждём подъёма туннеля",
+  "en": "preflight: egress %s missing (%d candidates) — waiting for tunnel to come up",
+  "zh": "preflight：egress %s 不存在（候选 %d 个）— 等待隧道建立"
+ },
+ {
+  "ru": "egress %s: Xray не слушает порт %d — в tproxy-режим не перехожу",
+  "en": "egress %s: Xray is not listening on port %d — not switching to tproxy mode",
+  "zh": "egress %s：Xray 未监听端口 %d — 不切换到 tproxy 模式"
+ },
+ {
+  "ru": "egress %s: пере-провижн датаплейна не удался (rc=%d)",
+  "en": "egress %s: datapath re-provision failed (rc=%d)",
+  "zh": "egress %s：datapath 重新配置失败（rc=%d）"
+ },
+ {
+  "ru": "egress: режим датаплейна -> %s",
+  "en": "egress: datapath mode -> %s",
+  "zh": "egress：datapath 模式 -> %s"
+ },
+ {
+  "ru": "egress %s: переключение не удалось (rc=%d)",
+  "en": "egress %s: switch failed (rc=%d)",
+  "zh": "egress %s：切换失败（rc=%d）"
+ },
+ {
+  "ru": "ipset: пропускаю невалидное значение '%s' (%s)",
+  "en": "ipset: skipping invalid value '%s' (%s)",
+  "zh": "ipset：跳过无效值 '%s'（%s）"
+ },
+ {
+  "ru": "CDN: скачивание не завершилось за 2 минуты — процесс убит",
+  "en": "CDN: download did not finish in 2 minutes — process killed",
+  "zh": "CDN：下载未在 2 分钟内完成 — 进程已被杀死"
+ },
+ {
+  "ru": "CDN: диапазоны обновлены (%d сетей) из %s",
+  "en": "CDN: ranges updated (%d networks) from %s",
+  "zh": "CDN：已更新网段（%d 个网络），来源 %s"
+ },
+ {
+  "ru": "CDN: обновить диапазоны не удалось (повтор через интервал)",
+  "en": "CDN: failed to update ranges (retry after interval)",
+  "zh": "CDN：更新网段失败（间隔后重试）"
+ },
+ {
+  "ru": "FROZEN-NET: не агрегирую %s — адрес в vpn_never",
+  "en": "FROZEN-NET: not aggregating %s — address is in vpn_never",
+  "zh": "FROZEN-NET：不聚合 %s — 地址在 vpn_never 中"
+ },
+ {
+  "ru": "FROZEN-NET: %s копит подтверждения (нужно %d разных IP)",
+  "en": "FROZEN-NET: %s accumulating confirmations (need %d distinct IPs)",
+  "zh": "FROZEN-NET：%s 正在累积确认（需要 %d 个不同 IP）"
+ },
+ {
+  "ru": "FROZEN-NET: %s -> vpn (%d подтверждений, последний %s, ttl=%ds)",
+  "en": "FROZEN-NET: %s -> vpn (%d confirmations, last %s, ttl=%ds)",
+  "zh": "FROZEN-NET：%s -> vpn（%d 次确认，最后一次 %s，ttl=%ds）"
+ },
+ {
+  "ru": "TEST-NET: %s копит подтверждения (нужно %d разных IP за %d с)",
+  "en": "TEST-NET: %s accumulating confirmations (need %d distinct IPs in %d s)",
+  "zh": "TEST-NET：%s 正在累积确认（需要 %d 个不同 IP，%d 秒内）"
+ },
+ {
+  "ru": "TEST-NET: не агрегирую %s — адрес в vpn_never",
+  "en": "TEST-NET: not aggregating %s — address is in vpn_never",
+  "zh": "TEST-NET：不聚合 %s — 地址在 vpn_never 中"
+ },
+ {
+  "ru": "TEST-NET: %s -> vpn (%d IP в test за %d с, последний %s, ttl=%ds)",
+  "en": "TEST-NET: %s -> vpn (%d IPs in test in %d s, last %s, ttl=%ds)",
+  "zh": "TEST-NET：%s -> vpn（%d 个 IP 在 test 中，%d 秒内，最后一次 %s，ttl=%ds）"
+ },
+ {
+  "ru": "CDN: не агрегирую %s — адрес в vpn_never",
+  "en": "CDN: not aggregating %s — address is in vpn_never",
+  "zh": "CDN：不聚合 %s — 地址在 vpn_never 中"
+ },
+ {
+  "ru": "CDN: %s копит подтверждения (нужно %d разных адресов)",
+  "en": "CDN: %s accumulating confirmations (need %d distinct addresses)",
+  "zh": "CDN：%s 正在累积确认（需要 %d 个不同地址）"
+ },
+ {
+  "ru": "CDN: %s -> ok (reason=CONFIRMED %s), ttl=%ds",
+  "en": "CDN: %s -> ok (reason=CONFIRMED %s), ttl=%ds",
+  "zh": "CDN：%s -> ok（reason=CONFIRMED %s），ttl=%ds"
+ },
+ {
+  "ru": "MEDIA: %s ждёт возраст/скорость (age>=%ds, rate>=%d B/s)",
+  "en": "MEDIA: %s waiting for age/rate (age>=%ds, rate>=%d B/s)",
+  "zh": "MEDIA：%s 等待时间/速率条件（age>=%ds，rate>=%d B/s）"
+ },
+ {
+  "ru": "MEDIA: не агрегирую %s — адрес в vpn_never",
+  "en": "MEDIA: not aggregating %s — address is in vpn_never",
+  "zh": "MEDIA：不聚合 %s — 地址在 vpn_never 中"
+ },
+ {
+  "ru": "MEDIA: %s копит подтверждения",
+  "en": "MEDIA: %s accumulating confirmations",
+  "zh": "MEDIA：%s 正在累积确认"
+ },
+ {
+  "ru": "MEDIA: %s -> vpn из %s (rb=%lu, ob=%lu)",
+  "en": "MEDIA: %s -> vpn from %s (rb=%lu, ob=%lu)",
+  "zh": "MEDIA：%s -> vpn 来自 %s（rb=%lu，ob=%lu）"
+ },
+ {
+  "ru": "AUTO-SUSANIN: skip %s -> %s:%u (%s)",
+  "en": "AUTO-SUSANIN: skip %s -> %s:%u (%s)",
+  "zh": "AUTO-SUSANIN：skip %s -> %s:%u（%s）"
+ },
+ {
+  "ru": "STALL-WATCH: %s — окно %d/%d, решение после всей серии",
+  "en": "STALL-WATCH: %s — window %d/%d, decision after the whole series",
+  "zh": "STALL-WATCH：%s — 窗口 %d/%d，整轮序列结束后再决定"
+ },
+ {
+  "ru": "AUTO-SUSANIN: %s skip %s -> %s:%u (прямой путь отвечает)",
+  "en": "AUTO-SUSANIN: %s skip %s -> %s:%u (direct path responds)",
+  "zh": "AUTO-SUSANIN：%s skip %s -> %s:%u（直连路径有响应）"
+ },
+ {
+  "ru": "AUTO-SUSANIN: %s %s %s -> %s:%u (%s)",
+  "en": "AUTO-SUSANIN: %s %s %s -> %s:%u (%s)",
+  "zh": "AUTO-SUSANIN：%s %s %s -> %s:%u（%s）"
+ },
+ {
+  "ru": "AUTO-SUSANIN: %s %s %s -> %s:%u",
+  "en": "AUTO-SUSANIN: %s %s %s -> %s:%u",
+  "zh": "AUTO-SUSANIN：%s %s %s -> %s:%u"
+ },
+ {
+  "ru": "AUTO-SUSANIN: CONFIRMED %s -> %s:%u (%s)",
+  "en": "AUTO-SUSANIN: CONFIRMED %s -> %s:%u (%s)",
+  "zh": "AUTO-SUSANIN：CONFIRMED %s -> %s:%u（%s）"
+ },
+ {
+  "ru": "AUTO-SUSANIN: CONFIRMED %s -> %s:%u",
+  "en": "AUTO-SUSANIN: CONFIRMED %s -> %s:%u",
+  "zh": "AUTO-SUSANIN：CONFIRMED %s -> %s:%u"
+ },
+ {
+  "ru": "AUTO-SUSANIN: COOLDOWN %s:%u",
+  "en": "AUTO-SUSANIN: COOLDOWN %s:%u",
+  "zh": "AUTO-SUSANIN：COOLDOWN %s:%u"
+ },
+ {
+  "ru": "D1: %s -> soft-direct (%ds)",
+  "en": "D1: %s -> soft-direct (%ds)",
+  "zh": "D1：%s -> soft-direct（%ds）"
+ },
+ {
+  "ru": "AUTO-SUSANIN: OK-CHURN %s:%u",
+  "en": "AUTO-SUSANIN: OK-CHURN %s:%u",
+  "zh": "AUTO-SUSANIN：OK-CHURN %s:%u"
+ },
+ {
+  "ru": "AUTO-SUSANIN: OK-CHURN: %d за ~5 мин (последний %s)",
+  "en": "AUTO-SUSANIN: OK-CHURN: %d in ~5 min (last %s)",
+  "zh": "AUTO-SUSANIN：OK-CHURN：~5 分钟内 %d 次（最后一次 %s）"
+ },
+ {
+  "ru": "discover: egress += %s (новый живой туннель)",
+  "en": "discover: egress += %s (new live tunnel)",
+  "zh": "discover：egress += %s（新的可用隧道）"
+ },
+ {
+  "ru": "discover: egress auto -> %s",
+  "en": "discover: egress auto -> %s",
+  "zh": "discover：egress auto -> %s"
+ },
+ {
+  "ru": "discover: VPN-интерфейс не найден, оставляю '%s'",
+  "en": "discover: VPN interface not found, keeping '%s'",
+  "zh": "discover：未找到 VPN 接口，保留 '%s'"
+ },
+ {
+  "ru": "dns_sniff: не привязаться к %s — пропускаю",
+  "en": "dns_sniff: cannot bind to %s — skipping",
+  "zh": "dns_sniff：无法绑定到 %s — 跳过"
+ },
+ {
+  "ru": "dns_sniff: слушаю DNS на %s",
+  "en": "dns_sniff: listening for DNS on %s",
+  "zh": "dns_sniff: 在 %s 上监听 DNS"
+ },
+ {
+  "ru": "dns_sniff: %s недавно отвалился — пропускаю",
+  "en": "dns_sniff: %s went down recently — skipping",
+  "zh": "dns_sniff: %s 最近掉线 — 跳过"
+ },
+ {
+  "ru": "dns_sniff: %s сейчас нет — пропускаю",
+  "en": "dns_sniff: %s not present now — skipping",
+  "zh": "dns_sniff: %s 当前不存在 — 跳过"
+ },
+ {
+  "ru": "dns_sniff: не привязаться ни к одному интерфейсу — выключено",
+  "en": "dns_sniff: cannot bind to any interface — disabled",
+  "zh": "dns_sniff: 无法绑定任何接口 — 已关闭"
+ },
+ {
+  "ru": "dns_sniff: включён reload-ом",
+  "en": "dns_sniff: enabled by reload",
+  "zh": "dns_sniff: 已由 reload 启用"
+ },
+ {
+  "ru": "dns_sniff: выключён reload-ом (сокеты закрыты)",
+  "en": "dns_sniff: disabled by reload (sockets closed)",
+  "zh": "dns_sniff: 已由 reload 关闭（socket 已关闭）"
+ },
+ {
+  "ru": "dns-sniff: %s -> %s pinned (vpn_always)",
+  "en": "dns-sniff: %s -> %s pinned (vpn_always)",
+  "zh": "dns-sniff: %s -> %s 已固定 (vpn_always)"
+ },
+ {
+  "ru": "dns-sniff: %s -> %s снят из VPN (конфликт с vpn_never)%s",
+  "en": "dns-sniff: %s -> %s removed from VPN (conflict with vpn_never)%s",
+  "zh": "dns-sniff: %s -> %s 已从 VPN 移除（与 vpn_never 冲突）%s"
+ },
+ {
+  "ru": "dns-sniff: %s -> %s (%s%s)",
+  "en": "dns-sniff: %s -> %s (%s%s)",
+  "zh": "dns-sniff: %s -> %s (%s%s)"
+ },
+ {
+  "ru": "dns-sniff: %s -> %s unpinned (нет в vpn_always)",
+  "en": "dns-sniff: %s -> %s unpinned (not in vpn_always)",
+  "zh": "dns-sniff: %s -> %s 已取消固定（不在 vpn_always 中）"
+ },
+ {
+  "ru": "dns-sniff: %s -> %s unpinned (нет в vpn_never)",
+  "en": "dns-sniff: %s -> %s unpinned (not in vpn_never)",
+  "zh": "dns-sniff: %s -> %s 已取消固定（不在 vpn_never 中）"
+ },
+ {
+  "ru": "AUTO-SUSANIN: подсеть %s — потоки из LAN, не покрытой lan_subnets (клиенты там не обрабатываются; добавьте подсеть в lan_subnets)",
+  "en": "AUTO-SUSANIN: subnet %s — flows from LAN not covered by lan_subnets (clients there are not processed; add the subnet to lan_subnets)",
+  "zh": "AUTO-SUSANIN: 子网 %s — 流量来自未被 lan_subnets 覆盖的 LAN（该处客户端不会被处理；请将该子网加入 lan_subnets）"
+ },
+ {
+  "ru": "vpn_never: сброшен помеченный поток %s:%u (должен идти напрямую)",
+  "en": "vpn_never: dropped marked flow %s:%u (must go direct)",
+  "zh": "vpn_never: 已重置标记的流 %s:%u（应走直连）"
+ },
+ {
+  "ru": "vpn_never: %s убран из кэша (%s)",
+  "en": "vpn_never: %s removed from cache (%s)",
+  "zh": "vpn_never: %s 已从缓存中移除（%s）"
+ },
+ {
+  "ru": "GC: evict ok %s (%s), limit %d",
+  "en": "GC: evict ok %s (%s), limit %d",
+  "zh": "GC: 淘汰 ok %s（%s），上限 %d"
+ },
+ {
+  "ru": "egress %s отсутствует — DOWN",
+  "en": "egress %s missing — DOWN",
+  "zh": "egress %s 不存在 — DOWN"
+ },
+ {
+  "ru": "egress %s UP",
+  "en": "egress %s UP",
+  "zh": "egress %s UP"
+ },
+ {
+  "ru": "egress %s DOWN",
+  "en": "egress %s DOWN",
+  "zh": "egress %s DOWN"
+ },
+ {
+  "ru": "health %s: ICMP 0/%d, TCP %d — считаю живым",
+  "en": "health %s: ICMP 0/%d, TCP %d — assuming alive",
+  "zh": "health %s: ICMP 0/%d, TCP %d — 视为存活"
+ },
+ {
+  "ru": "VPIN: %s — %s через туннель (%d мс), промах %d/%d, перепроверка через %d с",
+  "en": "VPIN: %s — %s via tunnel (%d ms), miss %d/%d, recheck in %d s",
+  "zh": "VPIN: %s — %s 经隧道（%d ms），未命中 %d/%d，%d s 后复查"
+ },
+ {
+  "ru": "VPIN: %s — %s через туннель (%d мс), два промаха подряд, возвращаю напрямую",
+  "en": "VPIN: %s — %s via tunnel (%d ms), two misses in a row, returning to direct",
+  "zh": "VPIN: %s — %s 经隧道（%d ms），连续两次未命中，恢复直连"
+ },
+ {
+  "ru": "VPIN: %s — прямой путь снова жив, снимаю VPN-пин",
+  "en": "VPIN: %s — direct path alive again, removing VPN pin",
+  "zh": "VPIN: %s — 直连路径恢复可用，取消 VPN 固定"
+ },
+ {
+  "ru": "VPIN: %s — прямой мёртв %d раз подряд, снимаю с аудита",
+  "en": "VPIN: %s — direct dead %d times in a row, dropping from audit",
+  "zh": "VPIN: %s — 直连连续 %d 次不可用，停止审计"
+ },
+ {
+  "ru": "прошлый запуск завершён штатно; его последняя строка: %s",
+  "en": "previous run finished cleanly; its last line: %s",
+  "zh": "上次运行正常结束；其最后一行：%s"
+ },
+ {
+  "ru": "прошлый запуск не завершался штатно (обрыв питания, kill или зависание). Строки того запуска: [%s]%s%s",
+  "en": "previous run did not finish cleanly (power loss, kill or hang). Lines of that run: [%s]%s%s",
+  "zh": "上次运行未正常结束（断电、kill 或卡死）。该次运行的日志行：[%s]%s%s"
+ },
+ {
+  "ru": "uptime устройства: %.0f с%s",
+  "en": "device uptime: %.0f s%s",
+  "zh": "设备 uptime: %.0f s%s"
+ },
+ {
+  "ru": "tproxy: xray.log обрезан (был больше %d КБ)",
+  "en": "tproxy: xray.log truncated (was over %d KB)",
+  "zh": "tproxy: xray.log 已截断（原大于 %d KB）"
+ },
+ {
+  "ru": "tproxy: Xray не поднимаю — мало памяти (MemAvailable=%ld КБ, порог %d КБ)",
+  "en": "tproxy: not starting Xray — low memory (MemAvailable=%ld KB, threshold %d KB)",
+  "zh": "tproxy: 不启动 Xray — 内存不足（MemAvailable=%ld KB，阈值 %d KB）"
+ },
+ {
+  "ru": "tproxy: запуск Xray через S93xray-tproxy restart (асинхронно)",
+  "en": "tproxy: starting Xray via S93xray-tproxy restart (async)",
+  "zh": "tproxy: 通过 S93xray-tproxy restart 启动 Xray（异步）"
+ },
+ {
+  "ru": "tproxy: S93xray-tproxy недоступен — подняли Xray напрямую (fallback)",
+  "en": "tproxy: S93xray-tproxy unavailable — started Xray directly (fallback)",
+  "zh": "tproxy: S93xray-tproxy 不可用 — 已直接启动 Xray（fallback）"
+ },
+ {
+  "ru": "tproxy: Xray не запустить: %s",
+  "en": "tproxy: cannot start Xray: %s",
+  "zh": "tproxy: 无法启动 Xray: %s"
+ },
+ {
+  "ru": "profiles: применено %d профил(ей) (profiles.sh up)",
+  "en": "profiles: applied %d profile(s) (profiles.sh up)",
+  "zh": "profiles: 已应用 %d 个配置（profiles.sh up）"
+ },
+ {
+  "ru": "profiles: profiles.sh up завершился с кодом %d (профили могут не работать)",
+  "en": "profiles: profiles.sh up exited with code %d (profiles may not work)",
+  "zh": "profiles: profiles.sh up 退出码 %d（配置可能不生效）"
+ },
+ {
+  "ru": "конфиг (%s): %s",
+  "en": "config (%s): %s",
+  "zh": "配置（%s）：%s"
+ },
+ {
+  "ru": "vpin_interval=%d: минимальный период аудита пинов %d с — дальше работает %d",
+  "en": "vpin_interval=%d: minimum pin audit interval %d s — using %d",
+  "zh": "vpin_interval=%d: 固定审计最小周期 %d s — 实际使用 %d"
+ },
+ {
+  "ru": "log: %s лежит на tmpfs (это RAM!): рост логов отнимает память, при reboot улики исчезают. Держите лог на flash (так дешевле для носителя, чем кажется) или disk_mode=soft",
+  "en": "log: %s is on tmpfs (that is RAM!): log growth consumes memory, and evidence is lost on reboot. Keep the log on flash (cheaper for the media than it seems) or use disk_mode=soft",
+  "zh": "log: %s 位于 tmpfs（这是内存！）：日志增长会占用内存，重启后证据会消失。请把日志放在 flash 上（对介质而言比看上去更划算）或使用 disk_mode=soft"
+ },
+ {
+  "ru": "disk_mode=soft: лог не ведётся (вывод в /dev/null), state не сохраняется (кроме soft_state_interval), бэкапов нет",
+  "en": "disk_mode=soft: no logging (output to /dev/null), state not saved (except soft_state_interval), no backups",
+  "zh": "disk_mode=soft: 不写日志（输出到 /dev/null），state 不保存（soft_state_interval 除外），无备份"
+ },
+ {
+  "ru": "ok_ttl=0: выученные адреса не истекают (наборы будут расти); рекомендуется конечный TTL, напр. ok_ttl=21600",
+  "en": "ok_ttl=0: learned addresses never expire (sets will grow); a finite TTL is recommended, e.g. ok_ttl=21600",
+  "zh": "ok_ttl=0: 学到的地址不会过期（集合会持续增长）；建议使用有限 TTL，例如 ok_ttl=21600"
+ },
+ {
+  "ru": "preflight: %s",
+  "en": "preflight: %s",
+  "zh": "preflight: %s"
+ },
+ {
+  "ru": "CDN: загружено %d диапазонов из %s",
+  "en": "CDN: loaded %d ranges from %s",
+  "zh": "CDN: 已从 %s 加载 %d 个网段"
+ },
+ {
+  "ru": "tproxy: процесс Xray есть, но порт %d не слушается — повторный запуск пропускаю (нужен ручной restart)",
+  "en": "tproxy: Xray process exists but port %d is not listening — skipping restart (manual restart needed)",
+  "zh": "tproxy: Xray 进程存在但端口 %d 未监听 — 跳过再次启动（需手动 restart）"
+ },
+ {
+  "ru": "tproxy: порт %d не слушается — поднимаю Xray (watchdog)",
+  "en": "tproxy: port %d not listening — starting Xray (watchdog)",
+  "zh": "tproxy: 端口 %d 未监听 — 启动 Xray（watchdog）"
+ },
+ {
+  "ru": "tproxy: порт %d не слушается (Xray не запущен?) — правила НЕ поднимаю, трафик DIRECT. Запустите: /opt/etc/init.d/S93xray-tproxy start",
+  "en": "tproxy: port %d not listening (Xray not running?) — NOT installing rules, traffic DIRECT. Run: /opt/etc/init.d/S93xray-tproxy start",
+  "zh": "tproxy: 端口 %d 未监听（Xray 未运行？）— 不安装规则，流量 DIRECT。请执行：/opt/etc/init.d/S93xray-tproxy start"
+ },
+ {
+  "ru": "data plane is NOT active; traffic stays DIRECT until set-up succeeds",
+  "en": "data plane is NOT active; traffic stays DIRECT until set-up succeeds",
+  "zh": "data plane 未生效；setup 成功前流量保持 DIRECT"
+ },
+ {
+  "ru": "restored cache from %s",
+  "en": "restored cache from %s",
+  "zh": "已从 %s 恢复缓存"
+ },
+ {
+  "ru": "engine started (egress=%s table=%d)",
+  "en": "engine started (egress=%s table=%d)",
+  "zh": "引擎已启动（egress=%s table=%d）"
+ },
+ {
+  "ru": "dns_sniff: %s",
+  "en": "dns_sniff: %s",
+  "zh": "dns_sniff: %s"
+ },
+ {
+  "ru": "dns_sniff: ответы приходят (%lu), в таблицу не лёг ни один (parse_fail=%lu) — разбор не доходит до таблицы: %s",
+  "en": "dns_sniff: replies are arriving (%lu), but none made it into the table (parse_fail=%lu) — parsing does not reach the table: %s",
+  "zh": "dns_sniff: 有应答到达（%lu），但没有任何一条进入表（parse_fail=%lu）— 解析未能到达该表：%s"
+ },
+ {
+  "ru": "dns_sniff: запросы видим (%lu, с %s), ответов нет; слушаем %s — проверить, проходят ли ответы через эти интерфейсы: %s",
+  "en": "dns_sniff: requests visible (%lu, since %s), no replies; listening on %s — check whether replies pass through these interfaces: %s",
+  "zh": "dns_sniff: 看到请求 (%lu, 自 %s)，但没有响应；正在监听 %s — 请检查响应是否经过这些接口: %s"
+ },
+ {
+  "ru": "dns_sniff: на захвате ни запросов, ни ответов DNS (frames=%lu, udp53=%lu): слушаем %s — там нет трафика UDP/53 (DoT/DoH/QUIC) либо выбраны не те интерфейсы: %s",
+  "en": "dns_sniff: capture has neither DNS requests nor replies (frames=%lu, udp53=%lu): listening on %s — no UDP/53 traffic there (DoT/DoH/QUIC) or wrong interfaces selected: %s",
+  "zh": "dns_sniff: 抓包中既没有 DNS 请求也没有响应 (frames=%lu, udp53=%lu): 正在监听 %s — 那里没有 UDP/53 流量 (DoT/DoH/QUIC)，或者选错了接口: %s"
+ },
+ {
+  "ru": "log_level: %s -> %s (применено без перезапуска)",
+  "en": "log_level: %s -> %s (applied without restart)",
+  "zh": "log_level: %s -> %s (已应用，无需重启)"
+ },
+ {
+  "ru": "config reloaded: %s",
+  "en": "config reloaded: %s",
+  "zh": "配置已重新加载: %s"
+ },
+ {
+  "ru": "vpn_always: модуль поднят reload-ом",
+  "en": "vpn_always: module brought up by reload",
+  "zh": "vpn_always: 模块已通过 reload 启用"
+ },
+ {
+  "ru": "vpn_always: не выделено памяти, список не активен до перезапуска",
+  "en": "vpn_always: memory not allocated, list inactive until restart",
+  "zh": "vpn_always: 未分配内存，列表在重启前不生效"
+ },
+ {
+  "ru": "vpn_always: путь очищен, пины сняты, модуль выключен",
+  "en": "vpn_always: path cleared, pins removed, module disabled",
+  "zh": "vpn_always: 路径已清除，pin 已撤销，模块已关闭"
+ },
+ {
+  "ru": "vpn_never: модуль поднят reload-ом",
+  "en": "vpn_never: module brought up by reload",
+  "zh": "vpn_never: 模块已通过 reload 启用"
+ },
+ {
+  "ru": "vpn_never: не выделено памяти, список не активен до перезапуска",
+  "en": "vpn_never: memory not allocated, list inactive until restart",
+  "zh": "vpn_never: 未分配内存，列表在重启前不生效"
+ },
+ {
+  "ru": "vpn_never: путь очищен, пины сняты, модуль выключен",
+  "en": "vpn_never: path cleared, pins removed, module disabled",
+  "zh": "vpn_never: 路径已清除，pin 已撤销，模块已关闭"
+ },
+ {
+  "ru": "tproxy: порт %d не слушается — правила не поднимаю (DIRECT)",
+  "en": "tproxy: port %d not listening — not installing rules (DIRECT)",
+  "zh": "tproxy: 端口 %d 未监听 — 不下发规则 (DIRECT)"
+ },
+ {
+  "ru": "config reload failed: %s",
+  "en": "config reload failed: %s",
+  "zh": "配置重新加载失败: %s"
+ },
+ {
+  "ru": "conntrack scan failed",
+  "en": "conntrack scan failed",
+  "zh": "conntrack 扫描失败"
+ },
+ {
+  "ru": "conntrack: %lu записей длиннее %d байт — эти потоки не были разобраны и не участвовали в обучении",
+  "en": "conntrack: %lu entries longer than %d bytes — these flows were not parsed and did not take part in learning",
+  "zh": "conntrack: %lu 条记录超过 %d 字节 — 这些流未被解析，也未参与学习"
+ },
+ {
+  "ru": "all egress DOWN, fail-open DIRECT",
+  "en": "all egress DOWN, fail-open DIRECT",
+  "zh": "所有 egress DOWN，fail-open DIRECT"
+ },
+ {
+  "ru": "health: все egress недоступны %ld c — трафик DIRECT, обучение стоит",
+  "en": "health: all egress unreachable for %ld s — traffic DIRECT, learning stalled",
+  "zh": "health: 所有 egress 不可用 %ld 秒 — 流量 DIRECT，学习暂停"
+ },
+ {
+  "ru": "egress %s: Xray не слушает порт %d — переключение отложено",
+  "en": "egress %s: Xray not listening on port %d — switch deferred",
+  "zh": "egress %s: Xray 未监听端口 %d — 切换已推迟"
+ },
+ {
+  "ru": "egress %s -> %s (%s)",
+  "en": "egress %s -> %s (%s)",
+  "zh": "egress %s -> %s (%s)"
+ },
+ {
+  "ru": "tunnel UP via %s, recovery",
+  "en": "tunnel UP via %s, recovery",
+  "zh": "tunnel UP via %s，已恢复"
+ },
+ {
+  "ru": "race: %s -> %s (fastest %dms, было %dms)",
+  "en": "race: %s -> %s (fastest %dms, was %dms)",
+  "zh": "race: %s -> %s (最快 %dms，原为 %dms)"
+ },
+ {
+  "ru": "state: сохранить %s не удалось — после рестарта обучения начнётся с нуля",
+  "en": "state: failed to save %s — after restart learning starts from scratch",
+  "zh": "state: 保存 %s 失败 — 重启后学习将从零开始"
+ },
+ {
+  "ru": "never: вытесняю пину %s (лимит 4096)",
+  "en": "never: evicting pin %s (limit 4096)",
+  "zh": "never: 淘汰 pin %s (上限 4096)"
+ },
+ {
+  "ru": "data plane missing (fast check), re-provisioning",
+  "en": "data plane missing (fast check), re-provisioning",
+  "zh": "data plane 缺失 (快速检查)，正在重新配置"
+ },
+ {
+  "ru": "датаплейн не проверялся %u с: xtables-lock занят — пропажу правил увидеть нельзя",
+  "en": "data plane not checked for %u s: xtables-lock busy — rule loss cannot be seen",
+  "zh": "data plane 已有 %u 秒未检查: xtables-lock 被占用 — 无法发现规则丢失"
+ },
+ {
+  "ru": "tproxy: Xray есть, но :%d не слушает (%d проверок) — принудительный restart",
+  "en": "tproxy: Xray present but :%d not listening (%d checks) — forced restart",
+  "zh": "tproxy: Xray 存在但 :%d 未监听 (%d 次检查) — 强制 restart"
+ },
+ {
+  "ru": "tproxy: процесс Xray есть, но :%d не слушает — повторный запуск пропускаю (проверка %d из %d)",
+  "en": "tproxy: Xray process present but :%d not listening — skipping relaunch (check %d of %d)",
+  "zh": "tproxy: Xray 进程存在但 :%d 未监听 — 跳过再次启动 (检查 %d / %d)"
+ },
+ {
+  "ru": "tproxy: Xray :%d не слушает — поднимаю (try %d, повтор через %d c)",
+  "en": "tproxy: Xray :%d not listening — starting (try %d, retry in %d s)",
+  "zh": "tproxy: Xray :%d 未监听 — 正在启动 (try %d，%d 秒后重试)"
+ },
+ {
+  "ru": "tproxy: Xray не поднялся (try %d) — трафик DIRECT, следующая попытка через %d c",
+  "en": "tproxy: Xray failed to start (try %d) — traffic DIRECT, next attempt in %d s",
+  "zh": "tproxy: Xray 未能启动 (try %d) — 流量 DIRECT，%d 秒后重试"
+ },
+ {
+  "ru": "tproxy: Xray :%d пропал — снимаю правила, fail-open DIRECT (процесс %s)",
+  "en": "tproxy: Xray :%d gone — removing rules, fail-open DIRECT (process %s)",
+  "zh": "tproxy: Xray :%d 消失 — 撤销规则，fail-open DIRECT (进程 %s)"
+ },
+ {
+  "ru": "tproxy: P5 (proxy_egress) оставлен активным при fail-open",
+  "en": "tproxy: P5 (proxy_egress) left active on fail-open",
+  "zh": "tproxy: fail-open 时保留 P5 (proxy_egress) 处于活动状态"
+ },
+ {
+  "ru": "data plane missing (NDM rebuild?), re-provisioning",
+  "en": "data plane missing (NDM rebuild?), re-provisioning",
+  "zh": "data plane 缺失 (NDM rebuild?)，正在重新配置"
+ },
+ {
+  "ru": "tproxy: жду Xray на :%d — правила не поднимаю (DIRECT)",
+  "en": "tproxy: waiting for Xray on :%d — not installing rules (DIRECT)",
+  "zh": "tproxy: 等待 Xray 监听 :%d — 不下发规则 (DIRECT)"
+ },
+ {
+  "ru": "data plane provisioned",
+  "en": "data plane provisioned",
+  "zh": "data plane 已配置完成"
+ },
+ {
+  "ru": "vpn_always: список не задан (vpn_always_file пуст)",
+  "en": "vpn_always: list not set (vpn_always_file empty)",
+  "zh": "vpn_always: 未指定列表 (vpn_always_file 为空)"
+ },
+ {
+  "ru": "vpn_always: модуль не создан (не выделена память) — список не активен до перезапуска",
+  "en": "vpn_always: module not created (memory not allocated) — list inactive until restart",
+  "zh": "vpn_always: 模块未创建 (未分配内存) — 列表在重启前不生效"
+ },
+ {
+  "ru": "vpn_always: отложен до подъёма туннеля (fail-open)",
+  "en": "vpn_always: deferred until tunnel is up (fail-open)",
+  "zh": "vpn_always: 推迟到 tunnel 建立后 (fail-open)"
+ },
+ {
+  "ru": "vpn_always: применяется (доменов=%d, запинено пока ip=%d net=%d; остальные — в следующих проходах)",
+  "en": "vpn_always: applying (domains=%d, pinned so far ip=%d net=%d; the rest in next passes)",
+  "zh": "vpn_always: 正在应用 (域名=%d，已 pin ip=%d net=%d；其余在后续轮次)"
+ },
+ {
+  "ru": "vpn_always: применён (доменов=%d, запинено ip=%d net=%d)",
+  "en": "vpn_always: applied (domains=%d, pinned ip=%d net=%d)",
+  "zh": "vpn_always: 已应用 (域名=%d，已 pin ip=%d net=%d)"
+ },
+ {
+  "ru": "vpn_never: список не задан (vpn_never_file пуст)",
+  "en": "vpn_never: list not set (vpn_never_file empty)",
+  "zh": "vpn_never: 未指定列表 (vpn_never_file 为空)"
+ },
+ {
+  "ru": "vpn_never: модуль не создан (не выделена память) — список не активен до перезапуска",
+  "en": "vpn_never: module not created (memory not allocated) — list inactive until restart",
+  "zh": "vpn_never: 模块未创建 (未分配内存) — 列表在重启前不生效"
+ },
+ {
+  "ru": "vpn_never: применяется (доменов=%d, direct пока=%d; остальные — в следующих проходах)",
+  "en": "vpn_never: applying (domains=%d, direct so far=%d; the rest in next passes)",
+  "zh": "vpn_never: 正在应用 (域名=%d，当前 direct=%d；其余在后续轮次)"
+ },
+ {
+  "ru": "vpn_never: применён (доменов=%d, direct=%d)",
+  "en": "vpn_never: applied (domains=%d, direct=%d)",
+  "zh": "vpn_never: 已应用 (域名=%d，direct=%d)"
+ },
+ {
+  "ru": "state: сохранить %s при остановке не удалось",
+  "en": "state: failed to save %s on shutdown",
+  "zh": "state: 停止时保存 %s 失败"
+ },
+ {
+  "ru": "engine stopped",
+  "en": "engine stopped",
+  "zh": "engine 已停止"
+ },
+ {
+  "ru": "health probe to %s failed (%d)",
+  "en": "health probe to %s failed (%d)",
+  "zh": "对 %s 的 health probe 失败 (%d)"
+ },
+ {
+  "ru": "profile '%s': %s -> %s (auto)",
+  "en": "profile '%s': %s -> %s (auto)",
+  "zh": "profile '%s': %s -> %s (auto)"
+ },
+ {
+  "ru": "release: GitHub недоступен, повтор через 60 с",
+  "en": "release: GitHub unavailable, retry in 60 s",
+  "zh": "release: GitHub 不可用，60 秒后重试"
+ },
+ {
+  "ru": "release: не удалось разобрать ответ GitHub",
+  "en": "release: failed to parse GitHub response",
+  "zh": "release: 无法解析 GitHub 响应"
+ },
+ {
+  "ru": "release: последний на GitHub — %s%s",
+  "en": "release: latest on GitHub — %s%s",
+  "zh": "release: GitHub 上最新版本 — %s%s"
+ },
+ {
+  "ru": "udp-relay: rsock bind %s:%u: %s",
+  "en": "udp-relay: rsock bind %s:%u: %s",
+  "zh": "udp-relay: rsock bind %s:%u: %s"
+ },
+ {
+  "ru": "udp-relay: все %d слотов потоков заняты — новые отбрасываются",
+  "en": "udp-relay: all %d flow slots busy — new ones dropped",
+  "zh": "udp-relay: 全部 %d 个流槽位已占用 — 新流被丢弃"
+ },
+ {
+  "ru": "udp-relay: UDP ASSOCIATE к %s:%d не удался (подряд %d, пауза %lds)",
+  "en": "udp-relay: UDP ASSOCIATE to %s:%d failed (%d in a row, pause %lds)",
+  "zh": "udp-relay: UDP ASSOCIATE 到 %s:%d 失败（连续 %d 次，暂停 %lds）"
+ },
+ {
+  "ru": "udp-relay: relay socket: %s",
+  "en": "udp-relay: relay socket: %s",
+  "zh": "udp-relay: relay socket: %s"
+ },
+ {
+  "ru": "udp-relay: flow %s <- %s (ctl=%d udp=%d)",
+  "en": "udp-relay: flow %s <- %s (ctl=%d udp=%d)",
+  "zh": "udp-relay: flow %s <- %s (ctl=%d udp=%d)"
+ },
+ {
+  "ru": "udp-relay: нет IP_ORIGDSTADDR (ядро/опция?)",
+  "en": "udp-relay: no IP_ORIGDSTADDR (kernel/option?)",
+  "zh": "udp-relay: 没有 IP_ORIGDSTADDR（内核/选项？）"
+ },
+ {
+  "ru": "udp-relay: send->socks: %s",
+  "en": "udp-relay: send->socks: %s",
+  "zh": "udp-relay: send->socks: %s"
+ },
+ {
+  "ru": "udp-relay: bad socks reply (n=%d atyp=%d)",
+  "en": "udp-relay: bad socks reply (n=%d atyp=%d)",
+  "zh": "udp-relay: bad socks reply (n=%d atyp=%d)"
+ },
+ {
+  "ru": "udp-relay: reply->client: %s",
+  "en": "udp-relay: reply->client: %s",
+  "zh": "udp-relay: reply->client: %s"
+ },
+ {
+  "ru": "udp-relay: socket: %s",
+  "en": "udp-relay: socket: %s",
+  "zh": "udp-relay: socket: %s"
+ },
+ {
+  "ru": "udp-relay: bind :%d: %s",
+  "en": "udp-relay: bind :%d: %s",
+  "zh": "udp-relay: bind :%d: %s"
+ },
+ {
+  "ru": "udp-relay: fork: %s",
+  "en": "udp-relay: fork: %s",
+  "zh": "udp-relay: fork: %s"
+ },
+ {
+  "ru": "udp-relay: started :%d -> socks %s:%d",
+  "en": "udp-relay: started :%d -> socks %s:%d",
+  "zh": "udp-relay: started :%d -> socks %s:%d"
+ },
+ {
+  "ru": "udp-relay: дочерний процесс завершился (%s) — перезапускаю",
+  "en": "udp-relay: child process exited (%s) — restarting",
+  "zh": "udp-relay: 子进程已退出（%s）— 正在重启"
+ },
+ {
+  "ru": "udp-relay: параметры изменились — перезапуск работника",
+  "en": "udp-relay: parameters changed — restarting worker",
+  "zh": "udp-relay: 参数已变更 — 正在重启工作进程"
+ },
+ {
+  "ru": "udp-relay: stopped",
+  "en": "udp-relay: stopped",
+  "zh": "udp-relay: stopped"
+ },
+ {
+  "ru": "vpn_always: список обрезан — учтено %d записей, ещё %d проигнорировано (лимит VA_MAXDOM); важные записи держите в начале файла",
+  "en": "vpn_always: list truncated — %d entries taken, %d more ignored (VA_MAXDOM limit); keep important entries at the top of the file",
+  "zh": "vpn_always: 列表已截断 — 已计入 %d 条记录，另有 %d 条被忽略（上限 VA_MAXDOM）；重要记录请放在文件开头"
+ },
+ {
+  "ru": "vpn_always: \"%s%s%s\" проигнорирована — для этой зоны уже есть %s запись%s",
+  "en": "vpn_always: \"%s%s%s\" ignored — this zone already has %s entry%s",
+  "zh": "vpn_always: \"%s%s%s\" 已忽略 — 该区域已有 %s 条记录%s"
+ },
+ {
+  "ru": "vpn_always: %s%s — запись стала мягкой: не резолвим, пины снимаем",
+  "en": "vpn_always: %s%s — entry became soft: no resolve, pins removed",
+  "zh": "vpn_always: %s%s — 记录变为软记录：不再解析，移除 pin"
+ },
+ {
+  "ru": "vpn_always: %s%s — запись стала жёсткой: перерезолвим в ближайшем проходе",
+  "en": "vpn_always: %s%s — entry became hard: re-resolve on the next pass",
+  "zh": "vpn_always: %s%s — 记录变为硬记录：将在下一轮重新解析"
+ },
+ {
+  "ru": "vpn_always: cache restored (%d ip + %d net)",
+  "en": "vpn_always: cache restored (%d ip + %d net)",
+  "zh": "vpn_always: cache restored (%d ip + %d net)"
+ },
+ {
+  "ru": "vpn_always: unpin %s (file removed)",
+  "en": "vpn_always: unpin %s (file removed)",
+  "zh": "vpn_always: unpin %s (file removed)"
+ },
+ {
+  "ru": "vpn_always: список не задан (функция выключена)",
+  "en": "vpn_always: list not set (feature disabled)",
+  "zh": "vpn_always: 未设置列表（功能已关闭）"
+ },
+ {
+  "ru": "vpn_always: %s absent (disabled)",
+  "en": "vpn_always: %s absent (disabled)",
+  "zh": "vpn_always: %s absent (disabled)"
+ },
+ {
+  "ru": "vpn_always: %s -> %s",
+  "en": "vpn_always: %s -> %s",
+  "zh": "vpn_always: %s -> %s"
+ },
+ {
+  "ru": "vpn_always: literal %s",
+  "en": "vpn_always: literal %s",
+  "zh": "vpn_always: literal %s"
+ },
+ {
+  "ru": "vpn_always: %s resolved to %d ip",
+  "en": "vpn_always: %s resolved to %d ip",
+  "zh": "vpn_always: %s resolved to %d ip"
+ },
+ {
+  "ru": "vpn_always: %s resolve failed (keep %d old ip)",
+  "en": "vpn_always: %s resolve failed (keep %d old ip)",
+  "zh": "vpn_always: %s resolve failed (keep %d old ip)"
+ },
+ {
+  "ru": "vpn_always: unpin %s",
+  "en": "vpn_always: unpin %s",
+  "zh": "vpn_always: unpin %s"
+ },
+ {
+  "ru": "vpn_always: pin %s",
+  "en": "vpn_always: pin %s",
+  "zh": "vpn_always: pin %s"
+ },
+ {
+  "ru": "vpn_always: pin net %s",
+  "en": "vpn_always: pin net %s",
+  "zh": "vpn_always: pin net %s"
+ },
+ {
+  "ru": "vpn_always: +%d/-%d ip, +%d/-%d net, %d domain(s), now %d ip + %d net pinned",
+  "en": "vpn_always: +%d/-%d ip, +%d/-%d net, %d domain(s), now %d ip + %d net pinned",
+  "zh": "vpn_always: +%d/-%d ip, +%d/-%d net, %d domain(s), now %d ip + %d net pinned"
+ },
+ {
+  "ru": "vpn_always: no changes (%d ip + %d net pinned)",
+  "en": "vpn_always: no changes (%d ip + %d net pinned)",
+  "zh": "vpn_always: no changes (%d ip + %d net pinned)"
+ },
+ {
+  "ru": "vpn_always: %d домен(ов) без A-записей (напр.: %s)",
+  "en": "vpn_always: %d domain(s) without A records (e.g.: %s)",
+  "zh": "vpn_always: %d 个域名无 A 记录（例如：%s）"
+ },
+ {
+  "ru": "vpn_never: проигнорировано строк с «?»: %d — мягкие записи поддержаны только в vpn_always",
+  "en": "vpn_never: lines with \"?\" ignored: %d — soft entries supported in vpn_always only",
+  "zh": "vpn_never: 忽略含「?」的行：%d — 软记录仅在 vpn_always 中支持"
+ },
+ {
+  "ru": "vpn_never: unpin %s (удалено из списка)",
+  "en": "vpn_never: unpin %s (removed from list)",
+  "zh": "vpn_never: unpin %s（已从列表删除）"
+ },
+ {
+  "ru": "vpn_never: unpin %s (file removed)",
+  "en": "vpn_never: unpin %s (file removed)",
+  "zh": "vpn_never: unpin %s (file removed)"
+ },
+ {
+  "ru": "vpn_never: список не задан (функция выключена)",
+  "en": "vpn_never: list not set (feature disabled)",
+  "zh": "vpn_never: 未设置列表（功能已关闭）"
+ },
+ {
+  "ru": "vpn_never: %s absent (disabled)",
+  "en": "vpn_never: %s absent (disabled)",
+  "zh": "vpn_never: %s absent (disabled)"
+ },
+ {
+  "ru": "vpn_never: %s%s conflicts with vpn_always; direct wins",
+  "en": "vpn_never: %s%s conflicts with vpn_always; direct wins",
+  "zh": "vpn_never: %s%s conflicts with vpn_always; direct wins"
+ },
+ {
+  "ru": "vpn_never: %s -> %s",
+  "en": "vpn_never: %s -> %s",
+  "zh": "vpn_never: %s -> %s"
+ },
+ {
+  "ru": "vpn_never: %s resolve failed (keep %d old ip)",
+  "en": "vpn_never: %s resolve failed (keep %d old ip)",
+  "zh": "vpn_never: %s resolve failed (keep %d old ip)"
+ },
+ {
+  "ru": "vpn_never: %d домен(ов) без A-записей — НЕ защищены, могут уйти в VPN (напр.: %s)",
+  "en": "vpn_never: %d domain(s) without A records — NOT protected, may go through VPN (e.g.: %s)",
+  "zh": "vpn_never: %d 个域名无 A 记录 — 未受保护，可能走 VPN（例如：%s）"
+ },
+ {
+  "ru": "vpn_never: allow-direct off %s",
+  "en": "vpn_never: allow-direct off %s",
+  "zh": "vpn_never: allow-direct off %s"
+ },
+ {
+  "ru": "vpn_never: +%d/-%d entries, %d domain(s), now %d direct",
+  "en": "vpn_never: +%d/-%d entries, %d domain(s), now %d direct",
+  "zh": "vpn_never: +%d/-%d entries, %d domain(s), now %d direct"
+ },
+ {
+  "ru": "web: listening on %s:%d",
+  "en": "web: listening on %s:%d",
+  "zh": "web: listening on %s:%d"
+ }
+]
