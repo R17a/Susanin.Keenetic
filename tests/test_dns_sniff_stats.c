@@ -352,6 +352,23 @@ int main(void)
               "разбивка по интерфейсам доступна без разбора строки");
     }
 
+    printf("=== путь снимка по режиму носителя ===\n");
+    {
+        /* В soft снимок уходит в tmpfs: смысл режима — не писать на носитель,
+         * но журнала там нет вовсе, и наблюдаемость должна остаться. */
+        snprintf(cfg.disk_mode, sizeof(cfg.disk_mode), "normal");
+        CHECK(!strcmp(dns_sniff_stats_path(&cfg), DNS_SNIFF_STATS_FILE),
+              "normal -> /opt/susanin/var/dnssniff.state");
+        snprintf(cfg.disk_mode, sizeof(cfg.disk_mode), "soft");
+        CHECK(!strcmp(dns_sniff_stats_path(&cfg), DNS_SNIFF_SOFT_STATS_FILE),
+              "soft -> tmpfs, носитель не трогаем");
+        snprintf(cfg.disk_mode, sizeof(cfg.disk_mode), "normal");
+    }
+
+    printf("=== интерфейс, которого нет ===\n");
+    CHECK(sniff_open_one("susanin-no-such-if") == 0,
+          "несуществующий интерфейс не открывается и не падает");
+
     dns_sniff_stop();
     close(Wfd[0]);
     close(Wfd[1]);

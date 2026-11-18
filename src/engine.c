@@ -1790,9 +1790,12 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                     }
                     if (!nu)
                         snprintf(ifs, sizeof(ifs), "-");
-                    if (cn.answers > 0 && cn.stored == 0)
+                    if (cn.answers > 0 && cn.parse_fail > 0 && cn.stored == 0)
                         /* Ответы вытаскиваем из сокета, а в таблицу не
-                         * попадает ни одной пары: настоящая поломка разбора. */
+                         * попадает ни одной пары, и разбор при этом ругался на
+                         * битые сообщения — настоящая поломка разбора. Без
+                         * parse_fail>0 тот же ноль дают честные ответы без
+                         * A-записей (NXDOMAIN, только AAAA), и WARN врал бы. */
                         slogf(SL_WARN, "dns_sniff: ответы приходят (%lu), в таблицу "
                               "не лёг ни один (parse_fail=%lu) — разбор не доходит "
                               "до таблицы: %s", cn.answers, cn.parse_fail, sn);

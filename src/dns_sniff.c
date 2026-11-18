@@ -372,6 +372,70 @@ static int sniff_is_open(const char *name)
     return 0;
 }
 
+/* Мост это или нет. Ответы DNS, которые роутер отдаёт клиенту, уходят через
+ * ПОРТ моста (skb->dev — порт), и сокет, привязанный к самому br*, их не
+ * видит: у бр-устройства на этом пути нет кадра. Запросы клиента при этом
+ * видны, потому что доставляются локально уже как br*. Отсюда и «запросы
+ * видим, ответов нет» на всех мостовых LAN. */
+static int sniff_is_bridge(const char *name)
+{
+    char p[128];
+
+    if (!name || !name[0])
+        return 0;
+    snprintf(p, sizeof(p), "/sys/class/net/%s/bridge", name);
+    return access(p, F_OK) == 0;
+}
+
+/* Привязать сокеты к портам моста (каталог /sys/class/net/&lt;br&gt;/brif) — там
+ * видны ОБА направления: входящий кадр клиента и исходящий ответ роутера.
+ * Возврат — сколько портов у моста (0 = портов нет или мост не читается). */
+static int sniff_bind_bridge_ports(const char *br)
+{
+    char dir[128];
+    DIR *d;
+    struct dirent *de;
+    int ports = 0;
+
+    snprintf(dir, sizeof(dir), "/sys/class/net/%s/brif", br);
+    d = opendir(dir);
+    if (!d)
+        return 0;
+    while ((de = readdir(d)) != NULL) {
+        if (de->d_name[0] == '.')
+            continue;
+        ports++;
+        if (g_nfd >= DNS_MAX_IFACES || sniff_is_open(de->d_name))
+            continue;
+        sniff_bind(de->d_name);
+    }
+    closedir(d);
+    return ports;
+}
+
+/* Открыть один интерфейс из конфига. Мост раскрывается в свои порты; сам мост
+ * остаётся запасным вариантом, когда портов ещё нет (или мост без портов). */
+static int sniff_open_one(const char *name)
+{
+    if (sniff_is_open(name))
+        return 1;
+    if (if_nametoindex(name) == 0) {
+        slogf(SL_DEBUG, "dns_sniff: %s сейчас нет — пропускаю", name);
+        return 0;
+    }
+    if (sniff_is_bridge(name)) {
+        int ports = sniff_bind_bridge_ports(name);
+        if (ports > 0) {
+            slogf(SL_DEBUG, "dns_sniff: %s — мост, слушаю %d порт(ов)",
+                  name, ports);
+            return 1;
+        }
+        slogf(SL_INFO, "dns_sniff: %s — у моста нет портов, слушаю сам мост",
+              name);
+    }
+    return sniff_bind(name) == 0;
+}
+
 /* Раскрыть шаблон ("oc+", "wdtt*") по фактическим интерфейсам и открыть
  * недостающие. Клиент OpenConnect создаёт ocN только при подключении, поэтому
  * проверяем это периодически (в reconcile), а не только на старте. */
@@ -394,20 +458,12 @@ static void sniff_try_name(const char *name)
                 continue;
             if (strncmp(de->d_name, prefix, n) != 0)
                 continue;
-            if (sniff_is_open(de->d_name))
-                continue;
-            sniff_bind(de->d_name);
+            sniff_open_one(de->d_name);
         }
         closedir(d);
         return;
     }
-    if (sniff_is_open(name))
-        return;
-    if (if_nametoindex(name) == 0) {
-        slogf(SL_DEBUG, "dns_sniff: %s сейчас нет — пропускаю", name);
-        return;
-    }
-    sniff_bind(name);
+    sniff_open_one(name);
 }
 
 /* Пройтись по списку интерфейсов из конфига и дооткрыть недостающие. */
@@ -1232,18 +1288,27 @@ void dns_sniff_ru_audit(const susanin_config *cfg)
     }
 }
 
+/* Путь снимка для текущего режима носителя: в soft снимок идёт в tmpfs и
+ * флешку не трогает (смысл режима — отсутствие записей на носитель), но
+ * наблюдаемость сохраняется: журнала в soft нет вовсе. */
+const char *dns_sniff_stats_path(const susanin_config *cfg)
+{
+    if (cfg && !strcmp(cfg->disk_mode, "soft"))
+        return DNS_SNIFF_SOFT_STATS_FILE;
+    return DNS_SNIFF_STATS_FILE;
+}
+
 /* Снимок счётчиков для ДРУГИХ процессов (панель, `susanin-agent status`,
  * `susanin-agent why`): сводка живёт в памяти движка, и CLI-процесс,
  * прочитавший dns_sniff_stats(), увидел бы нули — ровно та ошибка, которую
  * нельзя повторять. Пишется так же, как ru-in-vpn: только при изменении и
- * атомарно. В disk_mode=soft журнал не ведётся, и снимок остаётся единственным
- * каналом наблюдаемости снифера — поэтому в soft он пишется, но не чаще
- * одного вызова движка (раз в 5 минут) и только при изменении строк:
- * килобайты вместо журнала. На носителях только для чтения fopen просто не
- * получится — status честно скажет «снимка нет». */
+ * атомарно. Путь зависит от disk_mode (см. dns_sniff_stats_path): на носителе
+ * только для чтения fopen просто не получится — status честно скажет
+ * «снимка нет». */
 void dns_sniff_stats_write(const susanin_config *cfg)
 {
     static char last[512];
+    const char *path;
     char line[512], wp[544];
     FILE *f;
 
@@ -1260,11 +1325,12 @@ void dns_sniff_stats_write(const susanin_config *cfg)
     if (!strcmp(line, last))
         return;
     snprintf(last, sizeof(last), "%s", line);
-    snprintf(wp, sizeof(wp), "%s.tmp", DNS_SNIFF_STATS_FILE);
+    path = dns_sniff_stats_path(cfg);
+    snprintf(wp, sizeof(wp), "%s.tmp", path);
     f = fopen(wp, "w");
     if (!f)
         return;
     fprintf(f, "%s\n", line);
     fclose(f);
-    rename(wp, DNS_SNIFF_STATS_FILE);
+    rename(wp, path);
 }

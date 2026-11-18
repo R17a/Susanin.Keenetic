@@ -1300,13 +1300,12 @@ static int stall_hold(classifier_ctx *ctx, const char *kf, const char *dst,
         need = 2;
 
     n = sc_note(cfg, kf, now);
-    state_touch(st_watch(ctx->st, 0), kf, now, sc_window(cfg));
     if (n >= need) {
         if (need > 1)
             snprintf(lb, lbn, "%s-CONFIRMED", reason);
         s = sc_slot_find(kf);
         if (s)
-            sc_slot_release(s);   /* серия израсходована; watch снимет путь промоушена */
+            sc_slot_release(s);   /* серия израсходована */
         return 0;
     }
     if (sf_quorum_seen(cfg, kf, now)) {
@@ -1318,7 +1317,11 @@ static int stall_hold(classifier_ctx *ctx, const char *kf, const char *dst,
     }
     /* Ожидание следующего окна — не решение и не пропуск с вердиктом,
      * поэтому только DEBUG; событие считаем: движок держит быстрый темп
-     * сканирования conntrack, а серия живёт ровно watch_ttl. */
+     * сканирования conntrack, а серия живёт ровно watch_ttl. Watch-запись
+     * ставится только здесь: в мгновенном режиме (stall_confirm<=1) решения
+     * ждать нечего, и оставленный «на будущее» watch ускорял бы чужие ветки
+     * (late-stall) по тому же назначению. */
+    state_touch(st_watch(ctx->st, 0), kf, now, sc_window(cfg));
     slogf(SL_DEBUG, "STALL-WATCH: %s — окно %d/%d, решение после всей серии",
           kf, n, need);
     g_clf_events++;
@@ -1337,6 +1340,22 @@ static void stall_release(classifier_ctx *ctx, const char *kf)
         return;
     sc_slot_release(s);
     state_remove(st_watch(ctx->st, 0), kf);
+}
+
+/* Снять серии, которые не обновлялись дольше окна. Без этого занятые слоты
+ * копятся до SC_SLOTS (серия истекает, но ключ остаётся), sc_live никогда не
+ * возвращается к нулю, и проверка «пока таблица пуста — не трогаем поток»
+ * перестаёт экономить: pair_key и перебор всех слотов начинают выполняться на
+ * каждом TCP-потоке каждого прохода. */
+static void sc_purge(const susanin_config *cfg, time_t now)
+{
+    int i, win = sc_window(cfg);
+    if (!sc_live)
+        return;
+    for (i = 0; i < SC_SLOTS; i++) {
+        if (sc_tab[i].key[0] && now - sc_tab[i].last > (time_t)win)
+            sc_slot_release(&sc_tab[i]);
+    }
 }
 
 static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
@@ -1480,6 +1499,7 @@ void clr_fast(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
 {
     const susanin_config *cfg = ctx->cfg;
     int i;
+    sc_purge(cfg, now);      /* истёкшие серии освобождают слоты (см. sc_purge) */
     for (i = 0; i < n; i++) {
         const ct_flow *f = &flows[i];
         if (f->l4proto != 6 && f->l4proto != 17) continue;

@@ -271,6 +271,37 @@ static int dp_actual_tproxy(const char *ipt, const char *ip,
     return cap_contains(ipt, a, "--to-ports");
 }
 
+/* Снимок счётчиков снифера: движок пишет его в путь, зависящий от disk_mode
+ * (в soft — tmpfs, чтобы не трогать носитель). Читаем сначала путь текущего
+ * режима, затем второй: файл мог остаться от запуска с другим режимом.
+ * Возврат 1 — строка прочитана и обрезана от переводов строки. */
+static int sniff_snapshot(const susanin_config *cfg, char *out, size_t n)
+{
+    const char *paths[2];
+    int i;
+
+    if (!out || n == 0)
+        return 0;
+    out[0] = '\0';
+    paths[0] = dns_sniff_stats_path(cfg);
+    paths[1] = !strcmp(paths[0], DNS_SNIFF_STATS_FILE)
+                   ? DNS_SNIFF_SOFT_STATS_FILE : DNS_SNIFF_STATS_FILE;
+    for (i = 0; i < 2; i++) {
+        FILE *f = fopen(paths[i], "r");
+        if (!f)
+            continue;
+        if (fgets(out, (int)n, f)) {
+            size_t l = strlen(out);
+            while (l && (out[l - 1] == '\n' || out[l - 1] == '\r'))
+                out[--l] = '\0';
+        }
+        fclose(f);
+        if (out[0])
+            return 1;
+    }
+    return 0;
+}
+
 int ops_status(const susanin_config *cfg, const char *conf_path)
 {
     const char *ipt = tool("iptables");
@@ -336,23 +367,16 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
     }
     if (cfg->dns_sniff || cfg->sni_sniff) {
         /* Снимок пишет движок: счётчики живут в его памяти, а этот процесс —
-         * отдельный, и наивно читать их у себя. Строка сводки длинная
-         * (разбивка по интерфейсам) — буфер с запасом. */
-        FILE *sf = fopen(DNS_SNIFF_STATS_FILE, "r");
+         * отдельный, и наивно читать их у себя. Путь зависит от disk_mode
+         * (в soft движок пишет в tmpfs), поэтому снимок ищется по обоим
+         * путям. Строка сводки длинная (разбивка по интерфейсам) — буфер с
+         * запасом. */
         char sl[512] = "";
-        if (sf) {
-            if (fgets(sl, sizeof(sl), sf)) {
-                size_t l = strlen(sl);
-                while (l && (sl[l - 1] == '\n' || sl[l - 1] == '\r'))
-                    sl[--l] = '\0';
-            }
-            fclose(sf);
-            printf("dns_sniff: %s\n", sl[0] ? sl
-                   : "(снимка ещё нет — движок пишет раз в 5 мин)");
-        } else {
+        if (sniff_snapshot(cfg, sl, sizeof(sl)))
+            printf("dns_sniff: %s\n", sl);
+        else
             printf("dns_sniff: (снимка нет — цикл снифера ещё не отработал; "
                    "при read-only носителе запись снимка невозможна)\n");
-        }
     }
     if (cfg->proxy_uid[0] && cfg->proxy_egress[0]) {
         printf("proxy_egress: uid=%s -> %s (table=%d mark=0x%lx)\n",
@@ -693,16 +717,10 @@ int ops_why(const susanin_config *cfg, const char *arg)
          * нет, и снимок движка — единственный способ увидеть, доходит ли
          * DNS-разбор до таблицы (имена счётчиков — в справке `status`). */
         char sn[512] = "";
-        FILE *sf = fopen(DNS_SNIFF_STATS_FILE, "r");
-        if (sf) {
-            if (fgets(sn, sizeof(sn), sf)) {
-                size_t l = strlen(sn);
-                while (l && (sn[l - 1] == '\n' || sn[l - 1] == '\r'))
-                    sn[--l] = '\0';
-            }
-            fclose(sf);
-        }
-        printf("  dns_sniff: %s\n", sn[0] ? sn : "(снимка счётчиков нет)");
+        if (sniff_snapshot(cfg, sn, sizeof(sn)))
+            printf("  dns_sniff: %s\n", sn);
+        else
+            printf("  dns_sniff: (снимка счётчиков нет)\n");
     }
 
     printf("  вывод: ");
