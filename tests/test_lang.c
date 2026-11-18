@@ -13,15 +13,16 @@ static int failures = 0;
     else { printf("FAIL %s\n", msg); failures++; } } while (0)
 
 /* Поймать вывод slogf() в файл: подменяем fd 1 и возвращаем обратно. */
-static int capture(const char *path, const char *code, const char *msg,
-                   char *out, size_t n)
+static int capture(const char *code, const char *msg, char *out, size_t n)
 {
-    fflush(stdout);
-    int saved = dup(1);
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    char path[] = "/tmp/test_lang.XXXXXX";
     FILE *f;
     size_t got;
+    int saved, fd;
 
+    fflush(stdout);
+    saved = dup(1);
+    fd = mkstemp(path);
     if (saved < 0 || fd < 0)
         return -1;
     dup2(fd, 1);
@@ -37,6 +38,7 @@ static int capture(const char *path, const char *code, const char *msg,
     got = fread(out, 1, n - 1, f);
     out[got] = '\0';
     fclose(f);
+    unlink(path);
     return 0;
 }
 
@@ -74,7 +76,7 @@ int main(void)
     }
 
     printf("=== slogf печатает на выбранном языке ===\n");
-    if (capture("/tmp/test_lang.out", "zh", ru, buf, sizeof(buf)) == 0) {
+    if (capture("zh", ru, buf, sizeof(buf)) == 0) {
         CHECK(strstr(buf, lang_tr(ru)) != NULL ||
               strstr(buf, "ipset") != NULL,
               "строка журнала содержит перевод (не пустая)");
@@ -82,7 +84,7 @@ int main(void)
     } else {
         CHECK(0, "не удалось перехватить вывод slogf");
     }
-    if (capture("/tmp/test_lang.out", "ru", ru, buf, sizeof(buf)) == 0)
+    if (capture("ru", ru, buf, sizeof(buf)) == 0)
         CHECK(strstr(buf, ru) != NULL, "при ru напечатан русский текст");
 
     printf("\n%s\n", failures ? "ЕСТЬ ОШИБКИ" : "ИТОГ: все проверки пройдены");

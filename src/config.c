@@ -213,6 +213,10 @@ void config_set_defaults(susanin_config *c)
     c->xray_log_max_kb = 2048;
     snprintf(c->disk_mode, sizeof(c->disk_mode), "%s", "normal");
     snprintf(c->lang, sizeof(c->lang), "%s", "ru");   /* язык журнала */
+    c->dns_lan = 0;                  /* DNS клиентов через туннель — по желанию */
+    snprintf(c->dns_lan_upstream, sizeof(c->dns_lan_upstream), "%s",
+             "8.8.8.8,1.1.1.1");
+    c->dns_lan_fallback = 1;         /* туннель молчит — спросить напрямую */
     c->soft_state_interval = 12 * 3600;   /* soft: сохранять состояние раз в 12 ч */
     /* Порты, которые не участвуют в автообучении (типовой скан-шум). */
     snprintf(c->learn_exclude_ports, sizeof(c->learn_exclude_ports), "%s",
@@ -778,6 +782,12 @@ int config_load(const char *path, susanin_config *c)
             set_str(c->disk_mode, sizeof(c->disk_mode), val);
         else if (!strcmp(key, "lang"))
             set_str(c->lang, sizeof(c->lang), val);
+        else if (!strcmp(key, "dns_lan"))
+            c->dns_lan = (int)cfg_num(c, key, val);
+        else if (!strcmp(key, "dns_lan_upstream"))
+            set_str(c->dns_lan_upstream, sizeof(c->dns_lan_upstream), val);
+        else if (!strcmp(key, "dns_lan_fallback"))
+            c->dns_lan_fallback = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "soft_state_interval"))
             c->soft_state_interval = cfg_dur(c, key, val, U_HOUR);
         else if (!strcmp(key, "learn_exclude_ports"))
@@ -1180,6 +1190,13 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "disk_mode=%s\n", c->disk_mode);
     fprintf(fp, "# Язык сообщений журнала: ru | en | zh (см. lang/slog.json).\n");
     fprintf(fp, "lang=%s\n", c->lang);
+    fprintf(fp, "# DNS клиентов LAN через туннель: 1 = спрашивать upstream\n");
+    fprintf(fp, "# через SOCKS-Xray (обход подмены/фильтрации DNS на пути провайдера).\n");
+    fprintf(fp, "dns_lan=%d\n", c->dns_lan);
+    fprintf(fp, "# upstream-ы для dns_lan через запятую, IPv4 (порт 53).\n");
+    fprintf(fp, "dns_lan_upstream=%s\n", c->dns_lan_upstream);
+    fprintf(fp, "# 1 = если туннель не ответил, спросить напрямую (fail-open), 0 = отдать пусто.\n");
+    fprintf(fp, "dns_lan_fallback=%d\n", c->dns_lan_fallback);
     fprintf(fp, "# Период сохранения состояния в soft-режиме, ч; 0 = никогда.\n");
     out_dur_exact(c->soft_state_interval, U_HOUR, dv, sizeof(dv));
     fprintf(fp, "soft_state_interval=%s\n", dv);
@@ -1967,6 +1984,9 @@ void config_print(const susanin_config *c)
     printf("xray_log_max_kb=%d\n", c->xray_log_max_kb);
     printf("disk_mode=%s\n", c->disk_mode);
     printf("lang=%s\n", c->lang);
+    printf("dns_lan=%d\n", c->dns_lan);
+    printf("dns_lan_upstream=%s\n", c->dns_lan_upstream);
+    printf("dns_lan_fallback=%d\n", c->dns_lan_fallback);
     out_dur_exact(c->soft_state_interval, U_HOUR, dv, sizeof(dv));
     printf("soft_state_interval=%s\n", dv);
     printf("learn_exclude_ports=%s\n", c->learn_exclude_ports);

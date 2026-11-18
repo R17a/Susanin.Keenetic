@@ -4,6 +4,7 @@
 #include "cdn.h"
 #include "classifier.h"
 #include "conntrack.h"
+#include "dns_lan.h"
 #include "dns_sniff.h"
 #include "health.h"
 #include "lang.h"
@@ -1673,6 +1674,8 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         udp_relay_start(cfg);
     if (cfg->dns_sniff || cfg->sni_sniff)
         dns_sniff_start(cfg);
+    if (cfg->dns_lan)
+        dns_lan_start(cfg);
 
     state_init(&st);
     vpin_reset();
@@ -1796,6 +1799,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
              * при dns_sniff=1 (второй — пережиток, когда SNI жил отдельным
              * вызовом), и каждый кадр вычитывался из сокетов в два захода. */
             dns_sniff_poll();   /* DNS-ответы и SNI из TLS ClientHello */
+            dns_lan_poll();     /* DNS клиентов: в туннель через SOCKS-Xray */
             /* Раз в 5 минут: сводка на DEBUG, снимок для status/why и не более
              * одного WARN. Прежнее одно условие «пакеты идут, сохранено 0»
              * сливало три разные поломки в одну и допускало вывод про
@@ -1862,6 +1866,18 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                               "выбраны не те интерфейсы: %s",
                               cn.frames, cn.udp53, ifs, sn);
                 }
+            }
+        }
+
+        if (cfg->dns_lan) {
+            static time_t dl_at;
+            if (!dl_at)
+                dl_at = now;
+            else if (now - dl_at >= 300) {
+                char dl[192];
+                dl_at = now;
+                dns_lan_stats(dl, sizeof(dl));
+                slogf(SL_INFO, "dns_lan: %s", dl);
             }
         }
 
@@ -1945,6 +1961,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 /* Снифер同样 мог быть включён/выключен уже в работающем
                  * процессе: раньше ключ применялся только при старте службы. */
                 dns_sniff_reload(cfg);
+    dns_lan_reload(cfg);
                 /* W6: перечитать настройку индикатора релиза; при включении —
                  * проверка в ближайшие 30 с, а не через 12 ч. */
                 release_init(cfg);
@@ -2570,6 +2587,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
 
     probe_job_stop();
     udp_relay_stop();
+    dns_lan_stop();
     dns_sniff_stop();
     vq_stop();
     vpin_reset();

@@ -9,11 +9,11 @@ VARDIR = $(PREFIX)/susanin/var
 SRCS = src/main.c src/config.c src/discover.c src/conntrack.c src/state.c \
        src/backend.c src/classifier.c src/health.c src/engine.c src/log.c src/ops.c \
        src/vpn_always.c src/vpn_never.c src/web.c src/web_choices.c \
-       src/udp_relay.c src/cdn.c src/dns_sniff.c src/profiles.c src/release.c src/vpin.c src/entryparse.c src/snisniff.c src/lang.c src/lang_catalog.c
+       src/udp_relay.c src/cdn.c src/dns_sniff.c src/profiles.c src/release.c src/vpin.c src/entryparse.c src/snisniff.c src/lang.c src/lang_catalog.c src/dns_lan.c
 OBJS = $(SRCS:.c=.o)
 
 TARGET = susanin-agent
-TESTS = tests/test_conntrack tests/test_config tests/test_ops tests/test_web_list tests/test_web_choices tests/test_state tests/test_backend_value tests/test_backend_lock tests/test_classifier_key tests/test_classifier_media tests/test_classifier_synfail tests/test_classifier_stall tests/test_config_sync tests/test_dns_sniff_stats tests/test_socks_timeout tests/test_web_token tests/test_release tests/test_vpin tests/test_entryparse tests/test_snisniff tests/test_va_soft tests/test_log_level tests/test_lang
+TESTS = tests/test_conntrack tests/test_config tests/test_ops tests/test_web_list tests/test_web_choices tests/test_state tests/test_backend_value tests/test_backend_lock tests/test_classifier_key tests/test_classifier_media tests/test_classifier_synfail tests/test_classifier_stall tests/test_config_sync tests/test_dns_sniff_stats tests/test_socks_timeout tests/test_web_token tests/test_release tests/test_vpin tests/test_entryparse tests/test_snisniff tests/test_va_soft tests/test_log_level tests/test_lang tests/test_dns_lan
 SAMPLES = testdata/nf_conntrack.samples
 # Объекты для тестов, которые включают .c-файл в свой TU (тогда его .o линковать нельзя).
 TEST_OBJS = $(filter-out src/main.o,$(OBJS))
@@ -73,6 +73,7 @@ test: all $(TESTS)
 	./tests/test_va_soft
 	./tests/test_log_level
 	./tests/test_lang
+	./tests/test_dns_lan
 	sh tests/test-egress-failover.sh
 	sh tests/test-installer-sync.sh
 	sh tests/test-cfg-spaces.sh
@@ -90,6 +91,9 @@ tests/test_entryparse: tests/test_entryparse.c src/entryparse.c src/entryparse.h
 
 # Уровни записи журнала: имя из конфига -> порог отсечения. log.c не требует
 # ни сети, ни конфига, поэтому линкуем только его.
+tests/test_dns_lan: tests/test_dns_lan.c src/dns_lan.h src/log.c src/log.h src/config.h
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_dns_lan.c src/log.c src/lang.c src/lang_catalog.c
+
 tests/test_lang: tests/test_lang.c src/lang.c src/lang_catalog.c src/log.c src/lang.h src/log.h
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_lang.c src/lang.c src/lang_catalog.c src/log.c
 

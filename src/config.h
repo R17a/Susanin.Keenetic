@@ -124,6 +124,9 @@ typedef struct {
     int vpn_refresh_budget_ms;
     char log_level[16];
     char lang[8];            /* ru|en|zh: язык сообщений журнала (см. lang.c) */
+    int dns_lan;             /* 1 = отдавать клиентам DNS через туннель */
+    char dns_lan_upstream[128]; /* upstream-ы через запятую (IPv4) */
+    int dns_lan_fallback;    /* 1 = если туннель не ответил, спросить напрямую */
     char xray_loglevel[16]; /* уровень логов Xray (читает xray-egress.sh, не сам агент) */
     char xray_gogc[16];      /* GOGC Xray (память; читает init/xray-egress.sh) */
     char xray_gomemlimit[16];/* GOMEMLIMIT Xray (память) */

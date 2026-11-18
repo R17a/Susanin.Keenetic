@@ -124,6 +124,7 @@ LAN=$(printf '%s' "$LAN" | tr ',' ' ')
 [ -n "${SUSANIN_MSS_CLAMP_LAN:-}" ]  || MSS_CLAMP_LAN=$(cfg_val mss_clamp_lan "$MSS_CLAMP_LAN")
 [ -n "${SUSANIN_DNS_HIJACK:-}" ]     || DNS_HIJACK=$(cfg_val dns_hijack "$DNS_HIJACK")
 [ -n "${SUSANIN_DNS_HIJACK_TARGET:-}" ] || DNS_HIJACK_TARGET=$(cfg_val dns_hijack_target "$DNS_HIJACK_TARGET")
+[ -n "${SUSANIN_DNS_LAN:-}" ]        || DNS_LAN=$(cfg_val dns_lan 0)
 [ -n "${SUSANIN_PROXY_UID:-}" ]      || PROXY_UID=$(cfg_val proxy_uid "")
 [ -n "${SUSANIN_PROXY_EGRESS:-}" ]   || PROXY_EGRESS=$(cfg_val proxy_egress "")
 [ -n "${SUSANIN_PROXY_TABLE:-}" ]    || PROXY_TABLE=$(cfg_val proxy_table "$PROXY_TABLE")
@@ -696,6 +697,84 @@ dns_hijack_clean() {
         done || true
 }
 
+# DNS клиентов LAN через туннель (dns_lan=1): DNAT 53 на локальный форвардер
+# агента (127.0.0.1:5353 он слушает на всех адресах). Так ответы приходят из
+# туннеля, а не с прямого пути, где провайдер подменяет/фильтрует DNS.
+DNS_LAN_COMMENT=susanin-dnslan
+DNS_LAN_PORT=5353
+DNS_LAN_PRIVATE="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.0/8"
+
+_dns_lan_ifaces() {
+    _out=""
+    for _i in $LAN; do
+        case "$_i" in
+            br*|eth*|ra*|wlan*|bond*) ;;
+            *) continue ;;
+        esac
+        case " $_out " in
+            *" $_i "*) ;;
+            *) _out="$_out $_i" ;;
+        esac
+    done
+    printf '%s' "$_out" | sed 's/^ *//'
+}
+
+_dns_lan_dest() {
+    for _i in $(_dns_lan_ifaces); do
+        _a=$("$IPCMD" -4 -o addr show dev "$_i" 2>/dev/null | \
+             awk '$3 == "inet" { sub(/\/.*/, "", $4); print $4; exit }')
+        [ -n "$_a" ] && { printf '%s:%d' "$_a" "$DNS_LAN_PORT"; return 0; }
+    done
+    return 0
+}
+
+dns_lan_clean() {
+    "ipt" -t nat -S PREROUTING 2>/dev/null | grep -F -- "$DNS_LAN_COMMENT" | \
+        while IFS= read -r _line; do
+            _spec=$(printf '%s' "$_line" | sed 's/^-A PREROUTING //')
+            "ipt" -t nat -D PREROUTING $_spec >/dev/null 2>&1 || true
+        done || true
+    "ipt" -t filter -S INPUT 2>/dev/null | grep -F -- "$DNS_LAN_COMMENT" | \
+        while IFS= read -r _line; do
+            _spec=$(printf '%s' "$_line" | sed 's/^-A INPUT //')
+            "ipt" -t filter -D INPUT $_spec >/dev/null 2>&1 || true
+        done || true
+}
+
+dns_lan_rules() {
+    dns_lan_clean
+    [ "$DNS_LAN" = "1" ] || return 0
+    _dst=$(_dns_lan_dest)
+    _ifaces=$(_dns_lan_ifaces)
+    if [ -z "$_dst" ] || [ -z "$_ifaces" ]; then
+        say "dns_lan=1, но не нашёл LAN-адрес/интерфейсы — DNS клиентов не трогаю"
+        return 0
+    fi
+    _n=0
+    for _i in $_ifaces; do
+        "ipt" -t nat -I PREROUTING 1 -i "$_i" -p udp --dport 53 \
+            -m comment --comment "$DNS_LAN_COMMENT" \
+            -j DNAT --to-destination "$_dst" 2>/dev/null && _n=$((_n + 1))
+        # Приватные назначения (свой резолвер в другом сегменте) не перехватываем.
+        for _net in $DNS_LAN_PRIVATE; do
+            "ipt" -t nat -I PREROUTING 1 -i "$_i" -p udp --dport 53 -d "$_net" \
+                -m comment --comment "$DNS_LAN_COMMENT" -j RETURN >/dev/null 2>&1 || true
+        done
+    done
+    # Порт форвардера — только из LAN, снаружи закрыт.
+    "ipt" -t filter -I INPUT 1 -p udp --dport "$DNS_LAN_PORT" \
+        -m comment --comment "$DNS_LAN_COMMENT" -j DROP >/dev/null 2>&1 || true
+    for _i in $_ifaces; do
+        "ipt" -t filter -I INPUT 1 -i "$_i" -p udp --dport "$DNS_LAN_PORT" \
+            -m comment --comment "$DNS_LAN_COMMENT" -j ACCEPT >/dev/null 2>&1 || true
+    done
+    if [ "$_n" -gt 0 ]; then
+        say "dns_lan: DNS клиентов ($_ifaces) -> $_dst через туннель (правил: $_n)"
+    else
+        say "dns_lan=1, но правила не добавлены — фича не работает (нет xt_comment/nat?)"
+    fi
+}
+
 dns_hijack_rules() {
     dns_hijack_clean
     [ "$DNS_HIJACK" = "1" ] || return 0
@@ -824,6 +903,7 @@ command_up() {
     ensure_table
     forward_accept_rules
     dns_hijack_rules
+    dns_lan_rules
     ipv6_block_rules
     quic_block_rules
     mss_clamp_rules
@@ -849,6 +929,7 @@ command_down() {
     tproxy_clean || true
     forward_accept_clean || true
     dns_hijack_clean || true
+    dns_lan_clean || true
     ipv6_block_clean || true
     quic_block_clean || true
     mss_clamp_clean || true
@@ -906,6 +987,14 @@ command_status() {
         echo "dns_hijack: 0 в конфиге, но наши правила DNAT 53 остались ($_dh) — снимутся при следующем up/down"
     else
         echo "dns_hijack: off"
+    fi
+    _dl=$("ipt" -t nat -S PREROUTING 2>/dev/null | grep -cF -- "$DNS_LAN_COMMENT" || true)
+    if [ "$DNS_LAN" = "1" ]; then
+        echo "dns_lan: on (клиенты LAN -> $(_dns_lan_dest); наших правил=$_dl)"
+    elif [ "${_dl:-0}" -gt 0 ] 2>/dev/null; then
+        echo "dns_lan: 0 в конфиге, но наши правила DNAT остались ($_dl) — снимутся при следующем up/down"
+    else
+        echo "dns_lan: off"
     fi
     if [ "${TPROXY_PORT:-0}" -gt 0 ] 2>/dev/null; then
         n=$("ipt" -t nat -S PREROUTING 2>/dev/null | grep -c 'REDIRECT --to-ports' || true)
