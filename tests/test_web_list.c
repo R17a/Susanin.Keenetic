@@ -114,21 +114,21 @@ int main(void)
         /* Двиок разбирает «?domain» (src/entryparse.c), и панель обязана
          * пропускать такую строку: иначе добавление из поля ввода отклоняется,
          * а сохранение редактора молча выбрасывает запись из списка. */
-        CHECK(valid_entry("?bitrix24.ru", 1) == 1, "?domain принимается в vpn_always");
-        CHECK(valid_entry("?*.bitrix24.ru", 1) == 1, "?*.domain принимается в vpn_always");
-        CHECK(valid_entry("bitrix24.ru", 1) == 1, "обычная запись как была");
+        CHECK(valid_entry("?example.net", 1) == 1, "?domain принимается в vpn_always");
+        CHECK(valid_entry("?*.example.net", 1) == 1, "?*.domain принимается в vpn_always");
+        CHECK(valid_entry("example.net", 1) == 1, "обычная запись как была");
         CHECK(valid_entry("?", 1) == 0, "голый ? отклоняется");
         CHECK(valid_entry("bi?trix.ru", 1) == 0, "? внутри имени отклоняется");
         CHECK(valid_entry("??x.ru", 1) == 0, "двойной ? отклоняется");
         /* В vpn_never мягких записей нет: движок такую строку записью не считает,
          * и панель не должна делать вид, что её приняла. */
-        CHECK(valid_entry("?bitrix24.ru", 0) == 0, "?domain отклоняется в vpn_never");
-        CHECK(valid_entry("bitrix24.ru", 0) == 1, "обычная запись в vpn_never как была");
+        CHECK(valid_entry("?example.net", 0) == 0, "?domain отклоняется в vpn_never");
+        CHECK(valid_entry("example.net", 0) == 1, "обычная запись в vpn_never как была");
     }
     {
         char text[512];
         snprintf(text, sizeof(text),
-                 "# мягкая зона\n?*.bitrix24.ru\n?soft.example.ru\nhard.example.com\n");
+                 "# мягкая зона\n?*.example.net\n?soft.example.ru\nhard.example.com\n");
         r = list_replace(list, text, 1, &kept, &dropped, err, sizeof(err));
         CHECK(r == 0, "list_replace с мягкими записями выполнен");
         CHECK(kept == 3 && dropped == 0, "мягкие записи сохранены, а не отброшены");
@@ -136,10 +136,10 @@ int main(void)
             char got[512] = "";
             FILE *f = fopen(list, "rb");
             if (f) { size_t n = fread(got, 1, sizeof(got) - 1, f); got[n] = '\0'; fclose(f); }
-            CHECK(strstr(got, "?*.bitrix24.ru") && strstr(got, "?soft.example.ru"),
+            CHECK(strstr(got, "?*.example.net") && strstr(got, "?soft.example.ru"),
                   "текст списка на диске содержит обе мягкие строки");
         }
-        snprintf(text, sizeof(text), "# тот же текст в vpn_never\n?*.bitrix24.ru\nhard.example.com\n");
+        snprintf(text, sizeof(text), "# тот же текст в vpn_never\n?*.example.net\nhard.example.com\n");
         r = list_replace(list, text, 0, &kept, &dropped, err, sizeof(err));
         CHECK(r == 0 && kept == 1 && dropped == 1,
               "в vpn_never мягкая строка отброшена и посчитана");
