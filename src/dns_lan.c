@@ -616,6 +616,25 @@ int dns_lan_stats(char *out, size_t n)
     return (int)g_q_total;
 }
 
+const char *dns_lan_state_path(const susanin_config *cfg)
+{
+    if (cfg && !strcmp(cfg->disk_mode, "soft"))
+        return DNS_LAN_SOFT_STATE_FILE;
+    return DNS_LAN_STATE_FILE;
+}
+
+void dns_lan_write_snapshot(const susanin_config *cfg)
+{
+    char line[192];
+    FILE *f = fopen(dns_lan_state_path(cfg), "w");
+
+    if (!f)
+        return;
+    dns_lan_stats(line, sizeof(line));
+    fprintf(f, "%s\n", line);
+    fclose(f);
+}
+
 int dns_lan_active(void)
 {
     return g_fd >= 0;

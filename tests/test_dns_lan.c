@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* Тест разбора DNS-запроса и TTL ответа для dns_lan (форвардер LAN -> туннель). */
 #include <stdio.h>
 #include <string.h>

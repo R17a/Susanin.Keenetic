@@ -1870,7 +1870,11 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         }
 
         if (cfg->dns_lan) {
-            static time_t dl_at;
+            static time_t dl_at, dl_snap;
+            if (!dl_snap || now - dl_snap >= 60) {
+                dl_snap = now;
+                dns_lan_write_snapshot(cfg);
+            }
             if (!dl_at)
                 dl_at = now;
             else if (now - dl_at >= 300) {

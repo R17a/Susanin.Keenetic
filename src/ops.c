@@ -3,6 +3,7 @@
 #include "backend.h"
 #include "cdn.h"
 #include "classifier.h"
+#include "dns_lan.h"
 #include "dns_sniff.h"
 #include "log.h"
 #include "release.h"
@@ -377,6 +378,25 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
         else
             printf("dns_sniff: (снимка нет — цикл снифера ещё не отработал; "
                    "при read-only носителе запись снимка невозможна)\n");
+        {
+            char dl[192] = "";
+            FILE *dlf = fopen(dns_lan_state_path(cfg), "r");
+
+            if (dlf) {
+                if (fgets(dl, (int)sizeof(dl), dlf)) {
+                    size_t l = strlen(dl);
+                    while (l && (dl[l - 1] == '\n' || dl[l - 1] == '\r'))
+                        dl[--l] = '\0';
+                }
+                fclose(dlf);
+            }
+            if (dl[0])
+                printf("dns_lan: %s\n", dl);
+            else if (cfg->dns_lan)
+                printf("dns_lan: (снимка нет — цикл ещё не отработал)\n");
+            else
+                printf("dns_lan: off (dns_lan=0)\n");
+        }
     }
     if (cfg->proxy_uid[0] && cfg->proxy_egress[0]) {
         printf("proxy_egress: uid=%s -> %s (table=%d mark=0x%lx)\n",

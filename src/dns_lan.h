@@ -14,4 +14,10 @@ void dns_lan_poll(void);
 int  dns_lan_active(void);
 int  dns_lan_stats(char *out, size_t n);
 
+/* Снимок для CLI: движок пишет строку в файл, `status`/`why` её читают. */
+#define DNS_LAN_STATE_FILE      "/opt/susanin/var/dnslan.state"
+#define DNS_LAN_SOFT_STATE_FILE "/tmp/susanin-dnslan.state"
+const char *dns_lan_state_path(const susanin_config *cfg);
+void dns_lan_write_snapshot(const susanin_config *cfg);
+
 #endif
