@@ -359,7 +359,6 @@ console.alibabacloud.com
 
 # === Qwen Chat (chat.qwen.ai) - всё через VPN ===
 qwen.ai
-*.qwen.ai
 *.alicdn.com
 *.aliyuncs.com
 *.aliyun.com
@@ -370,28 +369,17 @@ qwen.ai
 # qwen.com (сайт/биллинг-портал), alibabacloud.com (консоль/платежи)
 qwen.com
 *.qwen.com
-*.alibabacloud.com
 
 *.deepseek.com
 
 *.godaddy.com
 199.232.0.0/16
-# === 1С-Битрикс24: ВЕСЬ облачный набор через VPN ===
-# Прямые маршруты МТС-Иркутск -> облако Битрикса теряются (im/cdn/accounts timeout),
-# портал через туннель работает; антифрод к собственному порталу не применяется.
-bitrix24.ru
-bitrix24.com
-cdn.bitrix24.ru
-static.bitrix24.ru
-cloud.bitrix24.ru
-dl.bitrix24.ru
-files.bitrix24.ru
-push.bitrix24.ru
-46.235.53.0/24
-178.132.201.0/24
-im.bitrix24.ru
-pull.bitrix24.ru
-im.bitrix24.com
+# === 1С-Битрикс24: облако держится напрямую, VPN — как фолбэк ===
+# Прямые маршруты к хостам bitrix24.ru быстрее туннельных, поэтому зона
+# записана мягкой ('?'): в VPN адрес уходит только когда прямой путь деградировал,
+# и возвращается обратно, когда прямой оживёт.
+# video.bitrix24.com напрямую не отвечает вовсе — он оставлен жёсткой записью.
+?*.bitrix24.ru
 video.bitrix24.com
 # === Taobao-медиас стек Qwen (cloud.video и пр.) ===
 *.taobao.com
