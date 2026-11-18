@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <stdarg.h>
+#include <linux/filter.h>
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
 #include <net/if.h>
@@ -21,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -331,7 +333,32 @@ static int dns_parse(const uint8_t *p, int len)
 }
 
 /* Открыть сокет на конкретном интерфейсе. 0 = слушаем. */
-static int sniff_bind(const char *name)
+/* Фильтр для сокета ПОРТА моста: нужны только ОТВЕТЫ DNS (UDP, источник 53).
+ * Порты видят весь трафик моста, включая видео/IPTV и TCP к внешним серверам:
+ * без фильтра каждый кадр копируется в userspace, и на слабом CPU главный цикл
+ * начинает отставать от сети. Запросы клиента и ClientHello (SNI) по-прежнему
+ * приходят с сокета самого моста, поэтому здесь достаточно одной ветки.
+ * Классический BPF: X = IHL из байта 0, протокол из [9], порт из X+0. */
+static int sniff_attach_dns_answer_filter(int fd)
+{
+    struct sock_filter code[] = {
+        BPF_STMT(BPF_LDX | BPF_MSH | BPF_B, 0),          /* X = 4*(ip[0]&0xf) */
+        BPF_STMT(BPF_LD | BPF_B | BPF_ABS, 9),           /* A = proto      */
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 17, 0, 4),   /* не UDP -> 7    */
+        BPF_STMT(BPF_LD | BPF_H | BPF_IND, 0),           /* A = sport      */
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 53, 1, 0),   /* 53 -> 6, иначе 5 */
+        BPF_STMT(BPF_RET | BPF_K, 0),                    /* 5: отбросить   */
+        BPF_STMT(BPF_RET | BPF_K, 0xffff),               /* 6: принять     */
+        BPF_STMT(BPF_RET | BPF_K, 0),                    /* 7: отбросить   */
+    };
+    struct sock_fprog prog;
+
+    prog.len = (unsigned short)(sizeof(code) / sizeof(code[0]));
+    prog.filter = code;
+    return setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &prog, sizeof(prog));
+}
+
+static int sniff_bind(const char *name, int dns_answers_only, int quiet)
 {
     unsigned idx;
     int fd;
@@ -354,12 +381,22 @@ static int sniff_bind(const char *name)
         close(fd);
         return -1;
     }
+    if (dns_answers_only &&
+        sniff_attach_dns_answer_filter(fd) != 0) {
+        /* Фильтр не встал — сокет продолжает работать без него (лишний объём,
+         * но ответы видны). Молчать об этом нельзя: это разница в нагрузке. */
+        slogf(SL_WARN, "dns_sniff: %s — фильтр DNS-ответов не встал (%s), "
+              "слушаю без него", name, strerror(errno));
+    }
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
     g_fds[g_nfd] = fd;
     snprintf(g_open[g_nfd], sizeof(g_open[0]), "%s", name);
     g_c_if_q[g_nfd] = g_c_if_a[g_nfd] = 0;   /* слот новый — счётчики с нуля */
     g_nfd++;
-    slogf(SL_INFO, "dns_sniff: слушаю DNS на %s", name);
+    if (quiet)
+        slogf(SL_DEBUG, "dns_sniff: слушаю DNS-ответы на %s (порт моста)", name);
+    else
+        slogf(SL_INFO, "dns_sniff: слушаю DNS на %s", name);
     return 0;
 }
 
@@ -387,15 +424,55 @@ static int sniff_is_bridge(const char *name)
     return access(p, F_OK) == 0;
 }
 
-/* Привязать сокеты к портам моста (каталог /sys/class/net/&lt;br&gt;/brif) — там
+/* Интерфейс, который только что отвалился, не пытаемся открыть заново на
+ * каждом reconcile: иначе bind/close крутятся в цикле, а лог заполняется
+ * строками «слушаю DNS на …». Пауза в пару минут, затем одна повторная
+ * попытка — интерфейс мог вернуться (радио подняли, порт воткнули). */
+#define SNIFF_COOL_SEC 120
+static struct { char name[32]; time_t until; } g_cool[DNS_MAX_IFACES];
+
+static int sniff_cooled(const char *name)
+{
+    int i;
+    time_t now = time(NULL);
+    for (i = 0; i < DNS_MAX_IFACES; i++)
+        if (g_cool[i].name[0] && !strcmp(g_cool[i].name, name))
+            return now < g_cool[i].until;
+    return 0;
+}
+
+static void sniff_cool(const char *name)
+{
+    int i, slot = -1;
+
+    for (i = 0; i < DNS_MAX_IFACES; i++) {
+        if (!g_cool[i].name[0]) {
+            if (slot < 0)
+                slot = i;
+            continue;
+        }
+        if (!strcmp(g_cool[i].name, name)) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0)
+        slot = 0;
+    snprintf(g_cool[slot].name, sizeof(g_cool[0].name), "%s", name);
+    g_cool[slot].until = time(NULL) + SNIFF_COOL_SEC;
+}
+
+/* Привязать сокеты к портам моста (каталог /sys/class/net/<br>/brif) — там
  * видны ОБА направления: входящий кадр клиента и исходящий ответ роутера.
+ * Сокет порта получает только ответы DNS (фильтр в ядре): остальное уже видно
+ * с сокета моста, а видео/IPTV с портов в userspace не нужно.
  * Возврат — сколько портов у моста (0 = портов нет или мост не читается). */
 static int sniff_bind_bridge_ports(const char *br)
 {
     char dir[128];
     DIR *d;
     struct dirent *de;
-    int ports = 0;
+    int ports = 0, opened = 0;
 
     snprintf(dir, sizeof(dir), "/sys/class/net/%s/brif", br);
     d = opendir(dir);
@@ -407,33 +484,35 @@ static int sniff_bind_bridge_ports(const char *br)
         ports++;
         if (g_nfd >= DNS_MAX_IFACES || sniff_is_open(de->d_name))
             continue;
-        sniff_bind(de->d_name);
+        if (sniff_cooled(de->d_name))
+            continue;
+        if (sniff_bind(de->d_name, 1, 1) == 0)
+            opened++;
     }
     closedir(d);
+    if (opened)
+        slogf(SL_INFO, "dns_sniff: %s — слушаю ответы DNS с портов моста "
+              "(+%d)", br, opened);
     return ports;
 }
 
-/* Открыть один интерфейс из конфига. Мост раскрывается в свои порты; сам мост
- * остаётся запасным вариантом, когда портов ещё нет (или мост без портов). */
+/* Открыть один интерфейс из конфига. Мост: сам мост (запросы и SNI) ПЛЮС его
+ * порты (ответы DNS). Если портов нет, остаётся только мост. */
 static int sniff_open_one(const char *name)
 {
+    if (sniff_cooled(name)) {
+        slogf(SL_DEBUG, "dns_sniff: %s недавно отвалился — пропускаю", name);
+        return 0;
+    }
     if (sniff_is_open(name))
         return 1;
     if (if_nametoindex(name) == 0) {
         slogf(SL_DEBUG, "dns_sniff: %s сейчас нет — пропускаю", name);
         return 0;
     }
-    if (sniff_is_bridge(name)) {
-        int ports = sniff_bind_bridge_ports(name);
-        if (ports > 0) {
-            slogf(SL_DEBUG, "dns_sniff: %s — мост, слушаю %d порт(ов)",
-                  name, ports);
-            return 1;
-        }
-        slogf(SL_INFO, "dns_sniff: %s — у моста нет портов, слушаю сам мост",
-              name);
-    }
-    return sniff_bind(name) == 0;
+    if (sniff_is_bridge(name))
+        sniff_bind_bridge_ports(name);
+    return sniff_bind(name, 0, 0) == 0;
 }
 
 /* Раскрыть шаблон ("oc+", "wdtt*") по фактическим интерфейсам и открыть
@@ -536,6 +615,9 @@ void dns_sniff_reload(const susanin_config *cfg)
 static void sniff_drop(int f)
 {
     int i;
+    char gone[sizeof(g_open[0])];
+
+    snprintf(gone, sizeof(gone), "%s", g_open[f]);
     if (g_fds[f] >= 0)
         close(g_fds[f]);
     for (i = f; i < g_nfd - 1; i++) {
@@ -550,6 +632,8 @@ static void sniff_drop(int f)
         g_open[g_nfd][0] = '\0';
         g_c_if_q[g_nfd] = g_c_if_a[g_nfd] = 0;
     }
+    if (gone[0])
+        sniff_cool(gone);       /* не переоткрывать на каждом reconcile */
 }
 
 void dns_sniff_stop(void)
@@ -638,9 +722,12 @@ void dns_sniff_poll(void)
             if (r == 0)
                 break;
             if (r < 0) {
-                /* Интерфейс удалён (VPN отключили) — закрываем сокет, чтобы не
-                 * копить мёртвые fd; новый появится и будет открыт в reconcile. */
-                if (errno == ENODEV || errno == ENETDOWN || errno == EBADF) {
+                /* ENODEV/EBADF — интерфейс правда исчез: закрываем сокет, чтобы
+                 * не копить мёртвые fd; reconcile откроет заново, когда он
+                 * появится (с паузой, см. sniff_cool). ENETDOWN — интерфейс
+                 * есть, но лежит (радио без клиентов, порт без линка): сокет
+                 * оставляем, иначе bind/close крутится каждые 10 с. */
+                if (errno == ENODEV || errno == EBADF) {
                     sniff_drop(f);
                     dropped = 1;
                 }
