@@ -336,9 +336,10 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
     }
     if (cfg->dns_sniff || cfg->sni_sniff) {
         /* Снимок пишет движок: счётчики живут в его памяти, а этот процесс —
-         * отдельный, и наивно читать их у себя. */
+         * отдельный, и наивно читать их у себя. Строка сводки длинная
+         * (разбивка по интерфейсам) — буфер с запасом. */
         FILE *sf = fopen(DNS_SNIFF_STATS_FILE, "r");
-        char sl[256] = "";
+        char sl[512] = "";
         if (sf) {
             if (fgets(sl, sizeof(sl), sf)) {
                 size_t l = strlen(sl);
@@ -349,8 +350,8 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
             printf("dns_sniff: %s\n", sl[0] ? sl
                    : "(снимка ещё нет — движок пишет раз в 5 мин)");
         } else {
-            printf("dns_sniff: (снимка нет — цикл снифера ещё не отработал "
-                   "или disk_mode=soft)\n");
+            printf("dns_sniff: (снимка нет — цикл снифера ещё не отработал; "
+                   "при read-only носителе запись снимка невозможна)\n");
         }
     }
     if (cfg->proxy_uid[0] && cfg->proxy_egress[0]) {
@@ -687,6 +688,22 @@ int ops_why(const susanin_config *cfg, const char *arg)
     state_free(&st);
     printf("  state ok/never: %s/%s\n", stv_ok ? "ЕСТЬ" : "нет", stv_never ? "ЕСТЬ" : "нет");
     printf("  vpin-аудит: %s\n", vpin_queue_of(ip));
+    if (cfg->dns_sniff || cfg->sni_sniff) {
+        /* Сводка снифера рядом с выводом по адресу: в disk_mode=soft журнала
+         * нет, и снимок движка — единственный способ увидеть, доходит ли
+         * DNS-разбор до таблицы (имена счётчиков — в справке `status`). */
+        char sn[512] = "";
+        FILE *sf = fopen(DNS_SNIFF_STATS_FILE, "r");
+        if (sf) {
+            if (fgets(sn, sizeof(sn), sf)) {
+                size_t l = strlen(sn);
+                while (l && (sn[l - 1] == '\n' || sn[l - 1] == '\r'))
+                    sn[--l] = '\0';
+            }
+            fclose(sf);
+        }
+        printf("  dns_sniff: %s\n", sn[0] ? sn : "(снимка счётчиков нет)");
+    }
 
     printf("  вывод: ");
     if (in_never || in_direct || stv_never)

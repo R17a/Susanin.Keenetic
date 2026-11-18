@@ -1165,12 +1165,187 @@ static int sf_note(const susanin_config *cfg, const char *key,
     return (int)s->nflow >= q;
 }
 
+/* Подтверждение stall-сигналов: «рукопожатие прошло, ClientHello отправлен,
+ * в ответ — ни байта». Прежде одного такого наблюдения хватало, чтобы увести
+ * адрес в чужой выход, но медленный первый байт — нормальная форма антиботов
+ * и тяжёлых страниц: такому сайту чужой выход вредит сильнее (403/капча), чем
+ * ожидание по прямому пути. Первое наблюдение — только постановка пары под
+ * наблюдение (st_watch, тот же ключ и тот же TTL, что у FREEZE/late-stall
+ * веток); решение — когда признак пережил stall_confirm окон детектора.
+ *
+ * Счёт идёт по окнам, а не по пакетам и не по числу параллельных потоков:
+ * тот же принцип, что у sf_note для SYN-кворума. Проход опознаётся по метке
+ * времени наблюдения (одна секунда — одно окно), иначе разговорчивый клиент
+ * с десятью сокетами до одного сайта набрал бы весь кворум за один проход. */
+#define SC_SLOTS 128
+typedef struct {
+    char key[64];              /* dst или dst:port (как pair_key) */
+    time_t first, last;
+    int n;                     /* различных окон с признаком */
+} sc_slot;
+static sc_slot sc_tab[SC_SLOTS];
+static int sc_live;            /* занятых слотов: пока ноль, проверка на здоровую
+                                * передачу в clr_fast ничего не трогает */
+
+static sc_slot *sc_slot_find(const char *key)
+{
+    int i;
+    for (i = 0; i < SC_SLOTS; i++)
+        if (sc_tab[i].key[0] && !strcmp(sc_tab[i].key, key))
+            return &sc_tab[i];
+    return NULL;
+}
+
+static sc_slot *sc_slot_get(const char *key)
+{
+    int i, free_i = -1, oldest = 0;
+    for (i = 0; i < SC_SLOTS; i++) {
+        if (!sc_tab[i].key[0]) {
+            if (free_i < 0)
+                free_i = i;
+            continue;
+        }
+        if (!strcmp(sc_tab[i].key, key))
+            return &sc_tab[i];
+        if (sc_tab[i].last < sc_tab[oldest].last)
+            oldest = i;
+    }
+    if (free_i >= 0) {
+        sc_live++;
+        return &sc_tab[free_i];
+    }
+    return &sc_tab[oldest];    /* таблица замкнутая: вытесняем самое старое
+                                * наблюдение, счётчик занятых не меняется */
+}
+
+static void sc_slot_release(sc_slot *s)
+{
+    s->key[0] = '\0';
+    s->n = 0;
+    sc_live--;
+}
+
+/* Серия переживает не дольше watch_ttl без нового окна — те же часы, что у
+ * самой watch-записи, чтобы счётчик и состояние не противоречили друг
+ * другу. watch_ttl=0 в этом месте — действующий default, см. config.h. */
+static int sc_window(const susanin_config *cfg)
+{
+    return cfg->watch_ttl > 0 ? cfg->watch_ttl : CFG_DEF_WATCH_TTL;
+}
+
+/* Число различных окон признака для пары (1 =series только начата). */
+static int sc_note(const susanin_config *cfg, const char *key, time_t now)
+{
+    sc_slot *s = sc_slot_get(key);
+    int win = sc_window(cfg);
+
+    if (!s->key[0] || strcmp(s->key, key) != 0 || now - s->last > win) {
+        /* Новый ключ или серия остыла: счёт начинается заново. */
+        snprintf(s->key, sizeof(s->key), "%.63s", key);
+        s->first = now;
+        s->last = now;
+        s->n = 1;
+    } else if (now != s->last) {
+        /* Новое окно. Та же метка времени — тот же проход: повторные
+         * наблюдения пары в одном проходе счёт не накручивают. */
+        s->last = now;
+        s->n++;
+    }
+    return s->n;
+}
+
+/* Набран ли уже SYN-кворум для назначения — read-only взгляд на sf_tab.
+ * Сами stall-наблюдения туда не пишутся: гибели SYN — улика другого сигнала
+ * (соединения клиента реально умирают), оформлять тишину как их гибель
+ * значит подделывать доказательство. */
+static int sf_quorum_seen(const susanin_config *cfg, const char *key, time_t now)
+{
+    int i, q, win = cfg->synfail_window > 0
+                       ? cfg->synfail_window : CFG_DEF_SYNFAIL_WINDOW;
+
+    if (cfg->synfail_quorum <= 0)
+        return 0;
+    q = cfg->synfail_quorum > SF_FLOWS ? SF_FLOWS : cfg->synfail_quorum;
+    for (i = 0; i < SF_SLOTS; i++) {
+        if (!sf_tab[i].key[0] || strcmp(sf_tab[i].key, key) != 0)
+            continue;
+        if (now - sf_tab[i].first > win)
+            return 0;               /* окно истекло: прежняя серия не в счёт */
+        return (int)sf_tab[i].nflow >= q;
+    }
+    return 0;
+}
+
+/* Ворота промоушена stall-сигналов. Возврат 1 — решение отложено, пара
+ * держится (или поставлена) под наблюдением; 0 — промоушен разрешён, и тогда
+ * в lb уточнённая лог-причина: «...-CONFIRMED» — решение после всей серии
+ * окон, «...+SYN-QUORUM» — кворум погибших соединений снял ожидание.
+ * Пустая lb — прежний мгновенный режим (stall_confirm<=1 без свежей отметки
+ * «прямой жив»): в логе он неотличим от прежнего поведения, что честно.
+ *
+ * Свежая отметка dok «прямой путь отвечает» — результат недавней пробы с
+ * роутера: пока она жива, одно наблюдение тишины её не перебивает, нужно
+ * минимум два окна даже в мгновенном режиме. Гибели SYN на то же назначение
+ * — альтернатива: прямой путь сломан по факту, а отметка устарела, та же
+ * сила доказательства, что в syn-ветке promote_test. */
+static int stall_hold(classifier_ctx *ctx, const char *kf, const char *dst,
+                      const char *reason, time_t now, char *lb, size_t lbn)
+{
+    const susanin_config *cfg = ctx->cfg;
+    sc_slot *s;
+    int need = cfg->stall_confirm >= 1 ? cfg->stall_confirm : 1;
+    int n;
+
+    if (dok_has(dst, now) && need < 2)
+        need = 2;
+
+    n = sc_note(cfg, kf, now);
+    state_touch(st_watch(ctx->st, 0), kf, now, sc_window(cfg));
+    if (n >= need) {
+        if (need > 1)
+            snprintf(lb, lbn, "%s-CONFIRMED", reason);
+        s = sc_slot_find(kf);
+        if (s)
+            sc_slot_release(s);   /* серия израсходована; watch снимет путь промоушена */
+        return 0;
+    }
+    if (sf_quorum_seen(cfg, kf, now)) {
+        snprintf(lb, lbn, "%s+SYN-QUORUM", reason);
+        s = sc_slot_find(kf);
+        if (s)
+            sc_slot_release(s);
+        return 0;
+    }
+    /* Ожидание следующего окна — не решение и не пропуск с вердиктом,
+     * поэтому только DEBUG; событие считаем: движок держит быстрый темп
+     * сканирования conntrack, а серия живёт ровно watch_ttl. */
+    slogf(SL_DEBUG, "STALL-WATCH: %s — окно %d/%d, решение после всей серии",
+          kf, n, need);
+    g_clf_events++;
+    return 1;
+}
+
+/* Здоровая передача снимает stall-наблюдение: ответ пошёл — тишина была
+ * переходящей, и серия не должна потом «дозреть» из устаревших окон.
+ * Watch-запись общая с FREEZE/late-stall, поэтому трогаем только пары,
+ * за которыми действительно числится stall-наблюдение: чужие наблюдения
+ * живут свои TTL. */
+static void stall_release(classifier_ctx *ctx, const char *kf)
+{
+    sc_slot *s = sc_slot_find(kf);
+    if (!s)
+        return;
+    sc_slot_release(s);
+    state_remove(st_watch(ctx->st, 0), kf);
+}
+
 static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
                          const char *stage, const char *reason)
 {
     int udp = is_udp(f);
     const susanin_config *cfg = ctx->cfg;
     char kf[64];
+    char lb[48];
     pair_key(kf, sizeof(kf), cfg, f);
     int syn = !strcmp(reason, "TCP-SYN");
     const char *logreason = reason;
@@ -1246,6 +1421,20 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
                 return;
             }
         }
+    }
+    /* Подтверждение stall-сигналов: «рукопожатие прошло, ответа нет» — см.
+     * stall_hold. Шлюз стоит после never/recently-never/ru_guard (под
+     * наблюдение не берём то, что в VPN не поедает никогда) и после
+     * syn-ветки: проба и негативный кэш в ней относятся только к «SYN ушёл
+     * без ответа», здесь же другое доказательство и другой порядок. Сигналы,
+     * опирающиеся на явный сброс (DPI-RST) или не дошедший handshake (QUIC,
+     * TCP-SYN/CLOSE), остаются мгновенными: подтверждать в них нечего. */
+    if (!strcmp(reason, "DPI-STALL") || !strcmp(reason, "TCP-CLOSE-EMPTY")) {
+        lb[0] = '\0';
+        if (stall_hold(ctx, kf, f->dst, reason, now, lb, sizeof(lb)))
+            return;
+        if (lb[0])
+            logreason = lb;
     }
     /* D1: снимаем «мягкое прямо» (DIRECT_PREF), иначе RETURN в цепочке не даст
      * адресу уйти в VPN, когда прямой путь снова деградировал. */
@@ -1327,7 +1516,8 @@ void clr_fast(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                 /* Post-handshake «тишина» по SNI: рукопожатие прошло (rp>=1),
                  * ClientHello отправлен (ob растёт), данных нет (rb<128), но
                  * соединение ещё ESTABLISHED (ТСПУ держит тишину). Ловим на FAST,
-                 * не дожидаясь SOFT. */
+                 * не дожидаясь SOFT. Решение — не по одному наблюдению:
+                 * stall-сигналы подтверждаются серией окон (stall_hold). */
                 promote_test(ctx, f, now, "FAST", "DPI-STALL");
             else if (strcmp(f->tcp_state, "CLOSE") == 0 && f->rp >= 1 &&
                      f->rb < 128 && f->ob >= lmin_bytes(cfg) &&
@@ -1338,11 +1528,21 @@ void clr_fast(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                  * HTTP-источники на замороженных сетях (порт 80!) не ловились
                  * вообще. Плюс direct-проба (после 0.4.4) помечает такие хосты
                  * «прямой жив» по успешному connect — CLOSE-EMPTY её не
-                 * слушает и учит адрес дальше. */
+                 * слушает и учит адрес дальше. И здесь решение — после серии
+                 * окон подтверждения (stall_hold). */
                 promote_test(ctx, f, now, "FAST", "TCP-CLOSE-EMPTY");
         } else if (f->l4proto == 17) {
             if (f->dport == 443 && f->op >= (cfg->learn_strict ? 8UL : 6UL) && f->rp == 0)
                 promote_test(ctx, f, now, "FAST", "QUIC");
+        }
+        /* Снятие stall-наблюдения по здоровой передаче: объём ответа — та же
+         * планка, что у judge (confirm_min_bytes). Пока таблица наблюдений
+         * пуста, проверка ничего не трогает: pair_key на каждом потоке
+         * горячего пути был бы платой за механизм без события. */
+        if (f->l4proto == 6 && sc_live && f->rb >= cmin_bytes(cfg)) {
+            char ws[64];
+            pair_key(ws, sizeof(ws), cfg, f);
+            stall_release(ctx, ws);
         }
     }
 }

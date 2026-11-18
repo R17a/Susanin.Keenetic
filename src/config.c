@@ -172,8 +172,13 @@ void config_set_defaults(susanin_config *c)
     c->cooldown_ttl = 5 * 60;
     c->ipset_batch = 1;
     c->cooldown_ok_ttl = 30;
-    c->watch_ttl = 8;
+    c->watch_ttl = CFG_DEF_WATCH_TTL;
     c->watch_retry_below = 4;
+    /* Тишина после рукопожатия — не только признак блокировки: медленный
+     * первый байт нормален для антиботов и тяжёлых страниц, поэтому
+     * DPI-STALL/TCP-CLOSE-EMPTY решают только после серии окон (см.
+     * stall_confirm в config.h). */
+    c->stall_confirm = 2;
     c->health_miss_debounce = 4;
     snprintf(c->health_mode, sizeof(c->health_mode), "%s", "icmp");
     c->health_tcp_port = 443;
@@ -731,6 +736,8 @@ int config_load(const char *path, susanin_config *c)
             c->watch_ttl = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "watch_retry_below"))
             c->watch_retry_below = cfg_dur(c, key, val, U_SEC);
+        else if (!strcmp(key, "stall_confirm"))
+            c->stall_confirm = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "health_miss_debounce"))
             c->health_miss_debounce = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "health_mode"))
@@ -1123,6 +1130,12 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "watch_ttl=%d\n", out_dur(c->watch_ttl, U_SEC));
     fprintf(fp, "# Мин. время до повторной пробы «наблюдения», сек.\n");
     fprintf(fp, "watch_retry_below=%d\n", out_dur(c->watch_retry_below, U_SEC));
+    fprintf(fp, "# Сколько ОКЕН ПОДРЯД признак тишины после рукопожатия\n");
+    fprintf(fp, "# (DPI-STALL/TCP-CLOSE-EMPTY) должен держаться на паре, прежде\n");
+    fprintf(fp, "# чем адрес уйдёт в VPN: медленный первый байт — нормальная форма\n");
+    fprintf(fp, "# антиботов и тяжёлых страниц, по одному окну их ломает чужой выход.\n");
+    fprintf(fp, "# 1 = прежний мгновенный режим; 0 трактуется как 1.\n");
+    fprintf(fp, "stall_confirm=%d\n", c->stall_confirm);
     fprintf(fp, "# Порог «туннель упал»: подряд неудачных health-проб.\n");
     fprintf(fp, "health_miss_debounce=%d\n", c->health_miss_debounce);
     fprintf(fp, "# Тип health-пробы: icmp | tcp (tcp — если egress не несёт ICMP: XRay/TUN).\n");
@@ -1825,6 +1838,17 @@ int config_validate(const susanin_config *c, char *out, size_t n)
     if (c->synfail_quorum > CFG_SYNFAIL_QUORUM_MAX)
         CFGV("synfail_quorum=%d недостижим как «разных соединений»: клампим до %d",
              c->synfail_quorum, CFG_SYNFAIL_QUORUM_MAX);
+    /* Подтверждение stall-сигналов. Ноль — не «выключено» и не «взять
+     * дефолт 2», а мгновенный прежний режим (как 1): среди значений,
+     * отвергнутых разбором, 0 встречается как опечатка — молча превращать
+     * её в самое строгое подтверждение нельзя, о трактовке говорим прямо.
+     * Верх не клампим: длинная серия законна, но при настоящей блокировке
+     * защита придёт только через stall_confirm окон — то есть опоздает. */
+    if (c->stall_confirm == 0)
+        CFGV("stall_confirm=0: трактуем как 1 — тишина после рукопожатия решает мгновенно (прежнее поведение)");
+    else if (c->stall_confirm > 6)
+        CFGV("stall_confirm=%d: адрес уедет в VPN лишь после %d окон подряд — при блокировке защита опоздает",
+             c->stall_confirm, c->stall_confirm);
     /* Порты. Разбор по способу подстановки, а не «нуль везде плох»:
      *   - tproxy_port и udp_relay_port уходят в сравнение и bind как есть,
      *     поэтому 0 там = сломанный порт (у релеев ещё и ephemeral-bind);
@@ -1913,6 +1937,7 @@ void config_print(const susanin_config *c)
     printf("cooldown_ok_ttl=%d\n", out_dur(c->cooldown_ok_ttl, U_SEC));
     printf("watch_ttl=%d\n", out_dur(c->watch_ttl, U_SEC));
     printf("watch_retry_below=%d\n", out_dur(c->watch_retry_below, U_SEC));
+    printf("stall_confirm=%d\n", c->stall_confirm);
     printf("health_miss_debounce=%d\n", c->health_miss_debounce);
     printf("health_mode=%s\n", c->health_mode);
     printf("health_tcp_port=%d\n", c->health_tcp_port);

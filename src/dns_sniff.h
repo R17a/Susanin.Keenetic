@@ -40,9 +40,25 @@ void dns_sniff_set_state(susanin_state *st);
 void dns_sniff_reset_pins(void);
 
 int  dns_sniff_count(void);
-/* Сводка счётчиков пути «кадр -> запись» (см. dns_sniff.c): без неё четыре
- * разных способа «не видеть домены» неразличимы. */
+/* Сводка счётчиков пути «кадр -> запись» (см. dns_sniff.c): строка описывает
+ * каждый шаг разбора (frames/udp53/queries/answers/parse_fail/stored/capped
+ * + SNI), чтобы по ней было видно, ГДЕ именно всё умирает, а не только то,
+ * что «до таблицы не доходит». */
 int  dns_sniff_stats(char *out, size_t n);
+
+#define DNS_SNIFF_MAX_IFACES 8    /* столько же сокетов захвата, сколько в движке */
+
+/* Структурный срез тех же счётчиков — для решений (WARN-диагностика в
+ * движке). Сводку выше разбирать по подстрокам нельзя: она для чтения
+ * человеком, и формат — не контракт. */
+typedef struct {
+    unsigned long frames, udp53, queries, answers, parse_fail, stored, capped;
+    int niface;                            /* сколько сокетов захвата открыто */
+    char name[DNS_SNIFF_MAX_IFACES][16];   /* имя интерфейса слота ('' — нет) */
+    unsigned long iface_queries[DNS_SNIFF_MAX_IFACES];
+    unsigned long iface_answers[DNS_SNIFF_MAX_IFACES];
+} dns_sniff_counters;
+void dns_sniff_get_counters(dns_sniff_counters *c);
 /* 1 = нашли домен для IP; domain_out заполняется (может быть ""). */
 int  dns_sniff_domain_of(const char *ip, char *domain_out, unsigned n);
 
@@ -50,10 +66,12 @@ int  dns_sniff_domain_of(const char *ip, char *domain_out, unsigned n);
 
 /* Файл-снимок счётчиков снифинга: движок пишет, панель и CLI читают. Нужен
  * именно файл, потому что счётчики живут в памяти движка, а `status`/`why` —
- * отдельные процессы. */
+ * отдельные процессы. Пишется и при disk_mode=soft: журнала там нет, и
+ * снимок — единственный способ увидеть сводку со стороны; запись редкая
+ * (движок вызывает раз в 5 минут), маленькая и только при изменении. */
 #define DNS_SNIFF_STATS_FILE "/opt/susanin/var/dnssniff.state"
 
-/* Записать снимок (см. dns_sniff.c): при disk_mode=soft не пишется. */
+/* Записать снимок (см. dns_sniff.c). */
 void dns_sniff_stats_write(const susanin_config *cfg);
 
 /* r5.2: домен оканчивается на русский TLD из cfg->ru_guard_tlds

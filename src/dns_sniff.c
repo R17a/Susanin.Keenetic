@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
 #include <net/if.h>
@@ -59,7 +60,7 @@ int dns_sniff_is_ru_domain(const susanin_config *cfg, const char *dom);
 /* T4: слушаем ВСЕ LAN-интерфейсы (br0, br1, oc+ клиенты и т.п.), а не только
  * первый: DNS клиента OpenConnect (oc0) иначе не виден, и его адреса не
  * пинятся в vpn_always. Один сокет AF_PACKET на интерфейс. */
-#define DNS_MAX_IFACES 8
+#define DNS_MAX_IFACES DNS_SNIFF_MAX_IFACES   /* лимит объявлен в заголовке */
 static int g_fds[DNS_MAX_IFACES];
 static char g_open[DNS_MAX_IFACES][64];   /* имена интерфейсов, к которым привязаны */
 static int g_nfd = 0;
@@ -92,14 +93,21 @@ static unsigned long dns_hash(const char *s)
     return h;
 }
 
-/* Счётчики пути «кадр -> запись в таблице». Без них вопрос «снифер не ловит
- * или ловит и не разбирает» неизмерим в принципе: ровно на этом участке и
- * обрывалась вся диагностика. SNI-составляющая считается отдельно: общая
- * «stored» ломала смысл notudp (кадры TCP с ClientHello проходили дальше,
- * чем отбор UDP/53), и сводка начинала врать. */
-static unsigned long g_c_recv, g_c_notudp, g_c_notdns, g_c_malformed, g_c_stored;
-static unsigned long g_c_capped;
+/* Счётчики пути «кадр -> запись в таблице» — по одному на шаг, чтобы сводка
+ * показывала, ГДЕ именно всё умирает. Прежний одиночный «recv» рос до
+ * проверок протокола, и «принято N пакетов, сохранено 0» нельзя было
+ * прочитать как «ответов нет»: тот же результат давали и не-DNS-трафик, и
+ * падающий разбор. Цепочка: frames -> udp53 (UDP с портом 53 с любой
+ * стороны) -> queries/answers (по биту QR) -> parse_fail (обрезаны/битые) ->
+ * stored; capped — отсев лимитом прохода. SNI считается отдельно: TCP-кадры
+ * с ClientHello уходят из приёма раньше отбора UDP/53 и в DNS-шаги не
+ * входят. Запросы/ответы дополнительно пишутся по интерфейсам захвата
+ * (индексы параллельны g_fds, без аллокаций в пути): «кто видит ответы»
+ * должен закрываться одной строкой сводки. */
+static unsigned long g_c_frames, g_c_udp53, g_c_queries, g_c_answers;
+static unsigned long g_c_parse_fail, g_c_stored, g_c_capped;
 static unsigned long g_c_sni_seen, g_c_sni_named, g_c_sni_stored;
+static unsigned long g_c_if_q[DNS_MAX_IFACES], g_c_if_a[DNS_MAX_IFACES];
 
 /* 1 = пара домен+IP записана или обновлена, 0 = не записана. */
 static int dns_store(const char *domain, const char *ip, int ttl, int src)
@@ -245,28 +253,29 @@ static int dns_name(const uint8_t *p, int len, int off, char *out, unsigned outn
     return 0;
 }
 
-/* 1 = из ответа сохранена хотя бы одна пара. Возврат нужен только для
- * счётчика: без него «ответов много, записей ноль» неотличимо от «ответов
- * нет». */
+/* Разбор DNS-ОТВЕТА. Бит QR проверяет вызывающий — он же ведёт счётчики
+ * queries/answers: раньше «не ответ» возвращался молча и был неотличим ни от
+ * «это не DNS», ни от битого сообщения. Возврат: -1 = сообщение
+ * битое/обрезанное, ни одна пара не извлечена; 0 = валидный ответ без
+ * сохранённых пар (NXDOMAIN, только AAAA) — это не поломка разбора;
+ * >0 = число сохранённых пар. */
 static int dns_parse(const uint8_t *p, int len)
 {
     int qd, an, off, i, ttlcap, stored = 0;
     char qname[DNS_DOMAIN_MAX];
-    uint16_t flags;
 
     if (len < 12)
-        return 0;
-    flags = (uint16_t)((p[2] << 8) | p[3]);
-    if (!(flags & 0x8000))
-        return 0;                     /* только ответы */
+        return -1;                    /* заголовок не читается целиком */
     qd = (p[4] << 8) | p[5];
     an = (p[6] << 8) | p[7];
-    if (qd < 1 || an < 1)
-        return 0;
+    if (qd < 1)
+        return -1;                    /* вопроса нет — имя взять неоткуда */
+    if (an < 1)
+        return 0;                     /* честный ответ без записей */
     if (dns_name(p, len, 12, qname, sizeof(qname), &off) != 0)
-        return 0;
+        return -1;
     if (off + 4 > len)
-        return 0;
+        return -1;
     off += 4;                       /* qtype + qclass */
 
     ttlcap = (g_cfg && g_cfg->dns_sniff_ttl > 0) ? g_cfg->dns_sniff_ttl : CFG_DEF_DNS_SNIFF_TTL;
@@ -275,10 +284,10 @@ static int dns_parse(const uint8_t *p, int len)
         char aname[DNS_DOMAIN_MAX];
         int noff;
         if (dns_name(p, len, off, aname, sizeof(aname), &noff) != 0)
-            return stored;
+            return stored ? stored : -1;
         off = noff;
         if (off + 10 > len)
-            return stored;
+            return stored ? stored : -1;
         type = (p[off] << 8) | p[off + 1];
         cls = (p[off + 2] << 8) | p[off + 3];
         {
@@ -294,7 +303,7 @@ static int dns_parse(const uint8_t *p, int len)
         rdlen = (p[off + 8] << 8) | p[off + 9];
         off += 10;
         if (off + rdlen > len)
-            return stored;
+            return stored ? stored : -1;
         if (type == 1 && cls == 1 && rdlen == 4) {
             char ip[16];
             if (ttl <= 0 || ttl > ttlcap)
@@ -348,6 +357,7 @@ static int sniff_bind(const char *name)
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
     g_fds[g_nfd] = fd;
     snprintf(g_open[g_nfd], sizeof(g_open[0]), "%s", name);
+    g_c_if_q[g_nfd] = g_c_if_a[g_nfd] = 0;   /* слот новый — счётчики с нуля */
     g_nfd++;
     slogf(SL_INFO, "dns_sniff: слушаю DNS на %s", name);
     return 0;
@@ -433,8 +443,11 @@ int dns_sniff_start(const susanin_config *cfg)
         return 0;
     /* Счётчики — с нуля: сводка должна описывать текущий запуск, а не
      * сумму с предыдущего (после stop/start смешивать их было бы нельзя). */
-    g_c_recv = g_c_notudp = g_c_notdns = g_c_malformed = g_c_capped = g_c_stored = 0;
+    g_c_frames = g_c_udp53 = g_c_queries = g_c_answers = 0;
+    g_c_parse_fail = g_c_stored = g_c_capped = 0;
     g_c_sni_seen = g_c_sni_named = g_c_sni_stored = 0;
+    memset(g_c_if_q, 0, sizeof(g_c_if_q));
+    memset(g_c_if_a, 0, sizeof(g_c_if_a));
     g_cfg = cfg;
     g_nfd = 0;
     sniff_sync(cfg);
@@ -472,11 +485,14 @@ static void sniff_drop(int f)
     for (i = f; i < g_nfd - 1; i++) {
         g_fds[i] = g_fds[i + 1];
         memcpy(g_open[i], g_open[i + 1], sizeof(g_open[0]));
+        g_c_if_q[i] = g_c_if_q[i + 1];
+        g_c_if_a[i] = g_c_if_a[i + 1];
     }
     g_nfd--;
     if (g_nfd >= 0 && g_nfd < DNS_MAX_IFACES) {
         g_fds[g_nfd] = -1;
         g_open[g_nfd][0] = '\0';
+        g_c_if_q[g_nfd] = g_c_if_a[g_nfd] = 0;
     }
 }
 
@@ -574,41 +590,56 @@ void dns_sniff_poll(void)
                 }
                 break;
             }
-            g_c_recv++;
-            if (r < 20) {
-                g_c_malformed++;
-                continue;
-            }
+            g_c_frames++;
+            if (r < 20)
+                continue;     /* ниже любого заголовка: разница frames-udp53 покажет */
             ihl = (unsigned)(buf[0] & 0x0f) * 4;
             if (ihl >= 20 && (ssize_t)ihl + 8 <= r && buf[9] == 6) {
-                /* TCP: здесь только SNI. Кадр вычитывается и уходит: счётчик
-                 * notudp должен честно означать «не UDP/53» для DNS-ветки,
-                 * а не молча глотать каждый TLS-сегмент. */
+                /* TCP: здесь только SNI. Кадр уходит из приёма до DNS-шагов:
+                 * sni_* счётчики независимы, и frames-udp53 не выдаёт TLS
+                 * за «не DNS-трафик» — SNI-составляющая видна по своим именам. */
                 if (g_cfg && g_cfg->sni_sniff)
                     sni_take_packet(buf, (size_t)r);   /* имя из TLS ClientHello */
                 continue;
             }
-            if (ihl < 20 || (ssize_t)ihl + 8 > r || buf[9] != 17) {
-                /* Здесь же теряется и случай «кадр пришёл не с IP-заголовка»:
-                 * тогда buf[9] — байт MAC-адреса, и отсекается практически
-                 * всё. Без счётчика это неотличимо от «DNS-трафика нет». */
-                g_c_notudp++;
-                continue;
-            }
+            if (ihl < 20 || (ssize_t)ihl + 8 > r || buf[9] != 17)
+                continue;     /* не UDP/53: случай виден как разница
+                               * frames без прироста udp53 (сюда же попадает
+                               * редкое «кадр не с IP-заголовка», когда buf[9]
+                               * — байт MAC) */
             {
                 const uint8_t *udp = buf + ihl;
+                const uint8_t *dns;
                 uint16_t sp = (uint16_t)((udp[0] << 8) | udp[1]);
                 uint16_t dp = (uint16_t)((udp[2] << 8) | udp[3]);
-                if (sp != 53 && dp != 53) {
-                    g_c_notdns++;
-                    continue;
-                }
+                int dlen, rv;
+                if (sp != 53 && dp != 53)
+                    continue;         /* UDP, но не DNS-порт (DoT/QUIC-шум) */
+                g_c_udp53++;
                 ulen = (unsigned)((udp[4] << 8) | udp[5]);
                 if (ulen < 8 || ihl + ulen > (unsigned)r) {
-                    g_c_malformed++;
+                    g_c_parse_fail++;
                     continue;
                 }
-                dns_parse(udp + 8, (int)(ulen - 8));
+                dns = udp + 8;
+                dlen = (int)(ulen - 8);
+                if (dlen < 12) {
+                    g_c_parse_fail++; /* заголовок DNS не читается целиком */
+                    continue;
+                }
+                if (!(dns[2] & 0x80)) {
+                    /* Запрос: пинить по нему нечего — адрес придёт с ответом.
+                     * Но считать надо: «запросы видим, ответов нет» — отдельный
+                     * диагноз, раньше он был неотличим от мусора. */
+                    g_c_queries++;
+                    g_c_if_q[f]++;
+                    continue;
+                }
+                g_c_answers++;
+                g_c_if_a[f]++;
+                rv = dns_parse(dns, dlen);
+                if (rv < 0)
+                    g_c_parse_fail++;
             }
         }
         if (guard > 128)
@@ -970,27 +1001,108 @@ int dns_sniff_count(void)
     return n;
 }
 
-/* Сводка по пути «кадр -> запись». Смысл один: различить «DNS-трафика на
- * интерфейсе нет» (recv=0), «кадр приходит не с IP-заголовка» (recv>0,
- * notudp≈recv), «трафик есть, но не 53-порт» (notdns — DoT/DoH/QUIC) и
- * «разбираем, но не сохраняем» (stored=0 при parse-хлебе). До этого ни один
- * из четырёх случаев не проверялся вовсе.
- * notudp/stored — только DNS-ветка (UDP/53): TCP-кадр с SNI уходит из
- * приёма до этого счётчика, иначе «notudp≈recv ⇒ кадры не с IP» врёт.
- * SNI идёт своими счётчиками: seen = разобран ClientHello, named = имя
- * признано доменом, stored = пара легла в таблицу (между named и stored
- * стоит ещё и фильтр приватных адресов). */
+/* Сводка по пути «кадр -> запись»: имена счётчиков читаются без исходников,
+ * а порядок = порядок шагов разбора. Как читать одну строку:
+ *   frames=0                      — на захвате тишина (или дом молчит);
+ *   frames растёт, udp53=0        — трафик есть, но не DNS/53: DoT/DoH/QUIC,
+ *                                   TLS (см. sni_*), чужие порты или редкое
+ *                                   «кадр не с IP-заголовка»;
+ *   queries>0, answers=0          — запросы видим, ответов не видим
+ *                                   (на тех же интерфейсах или вообще);
+ *   answers>0, parse_fail>0       — ответы есть, но сообщения битые/обрезаны;
+ *   answers>0, parse_fail=0,
+ *   stored=0                      — ответы честные, но A-записей в них нет
+ *                                   (AAAA/NXDOMAIN/DoH) — разбору ломаться
+ *                                   не на чем;
+ *   capped>0                      — приёмников больше, чем забираем за
+ *                                   проход, сводка отстаёт от реальности.
+ * Разбивка «(br0:140,br1:2)» при queries/answers — кто из интерфейсов видел;
+ * ifs= — что вообще слушается в этот момент (появляются oc+ после подъёма
+ * VPN). SNI-шаги свои: seen = разобран ClientHello, named = имя признано
+ * доменом, stored = пара легла в таблицу (между named и stored стоит ещё
+ * фильтр приватных адресов). */
+static void stat_cat(char *out, size_t n, int *used, const char *fmt, ...)
+{
+    va_list ap;
+    int w;
+
+    if (*used < 0 || (size_t)*used >= n)
+        return;               /* месту не хватило: строка остаётся обрезанной */
+    va_start(ap, fmt);
+    w = vsnprintf(out + *used, n - (size_t)*used, fmt, ap);
+    va_end(ap);
+    if (w < 0) {
+        *used = -1;
+        return;
+    }
+    *used += w;               /* может превысить n — это знак «обрезано» */
+}
+
+/* Разбивка счётчика по интерфейсам захвата: "(br0:140,br1:2)". Нулевые и
+ * безымянные слоты не печатаются — пустая разбивка означает «никто не видел». */
+static void stat_ifaces(char *out, size_t n, int *used, const unsigned long *cnt)
+{
+    int i, any = 0;
+    for (i = 0; i < g_nfd && i < DNS_MAX_IFACES; i++) {
+        if (!cnt[i] || !g_open[i][0])
+            continue;
+        stat_cat(out, n, used, any ? ",%s:%lu" : "(%s:%lu", g_open[i], cnt[i]);
+        any = 1;
+    }
+    if (any)
+        stat_cat(out, n, used, ")");
+}
+
 int dns_sniff_stats(char *out, size_t n)
 {
+    int i, used;
+
     if (!out || n == 0)
         return 0;
-    snprintf(out, n,
-             "recv=%lu notudp=%lu notdns=%lu bad=%lu capped=%lu stored=%lu "
-             "table=%d sni=%lu sni_named=%lu sni_stored=%lu",
-             g_c_recv, g_c_notudp, g_c_notdns, g_c_malformed, g_c_capped,
-             g_c_stored, dns_sniff_count(),
+    out[0] = '\0';
+    used = snprintf(out, n, "frames=%lu udp53=%lu queries=%lu",
+                    g_c_frames, g_c_udp53, g_c_queries);
+    if (used < 0) {
+        out[0] = '\0';
+        return 0;
+    }
+    stat_ifaces(out, n, &used, g_c_if_q);
+    stat_cat(out, n, &used, " answers=%lu", g_c_answers);
+    stat_ifaces(out, n, &used, g_c_if_a);
+    stat_cat(out, n, &used,
+             " parse_fail=%lu stored=%lu capped=%lu table=%d"
+             " sni_seen=%lu sni_named=%lu sni_stored=%lu ifs=",
+             g_c_parse_fail, g_c_stored, g_c_capped, dns_sniff_count(),
              g_c_sni_seen, g_c_sni_named, g_c_sni_stored);
-    return (int)(g_c_recv + g_c_stored + g_c_sni_stored);
+    for (i = 0; i < g_nfd && i < DNS_MAX_IFACES; i++)
+        stat_cat(out, n, &used, i ? ",%s" : "%s", g_open[i]);
+    if (!g_nfd)
+        stat_cat(out, n, &used, "-");
+    return (int)(g_c_frames + g_c_stored + g_c_sni_stored);
+}
+
+/* Структурный срез для WARN-диагностики движка: разбирать сводку по
+ * подстрокам нельзя — она форматируется для чтения человеком. */
+void dns_sniff_get_counters(dns_sniff_counters *c)
+{
+    int i;
+
+    if (!c)
+        return;
+    memset(c, 0, sizeof(*c));
+    c->frames = g_c_frames;
+    c->udp53 = g_c_udp53;
+    c->queries = g_c_queries;
+    c->answers = g_c_answers;
+    c->parse_fail = g_c_parse_fail;
+    c->stored = g_c_stored;
+    c->capped = g_c_capped;
+    c->niface = g_nfd;
+    for (i = 0; i < g_nfd && i < DNS_SNIFF_MAX_IFACES; i++) {
+        snprintf(c->name[i], sizeof(c->name[i]), "%.15s", g_open[i]);
+        c->iface_queries[i] = g_c_if_q[i];
+        c->iface_answers[i] = g_c_if_a[i];
+    }
 }
 
 int dns_sniff_domain_of(const char *ip, char *domain_out, unsigned n)
@@ -1120,18 +1232,22 @@ void dns_sniff_ru_audit(const susanin_config *cfg)
     }
 }
 
-/* Снимок счётчиков для ДРУГИХ процессов (панель, `susanin-agent why`):
- * сводка живёт в памяти движка, и CLI-процесс, прочитавший dns_sniff_stats(),
- * увидел бы нули — ровно та ошибка, которую нельзя повторять. Пишется так же,
- * как ru-in-vpn: только при изменении и атомарно; при disk_mode=soft не
- * пишется вовсе (носитель может быть только для чтения). */
+/* Снимок счётчиков для ДРУГИХ процессов (панель, `susanin-agent status`,
+ * `susanin-agent why`): сводка живёт в памяти движка, и CLI-процесс,
+ * прочитавший dns_sniff_stats(), увидел бы нули — ровно та ошибка, которую
+ * нельзя повторять. Пишется так же, как ru-in-vpn: только при изменении и
+ * атомарно. В disk_mode=soft журнал не ведётся, и снимок остаётся единственным
+ * каналом наблюдаемости снифера — поэтому в soft он пишется, но не чаще
+ * одного вызова движка (раз в 5 минут) и только при изменении строк:
+ * килобайты вместо журнала. На носителях только для чтения fopen просто не
+ * получится — status честно скажет «снимка нет». */
 void dns_sniff_stats_write(const susanin_config *cfg)
 {
-    static char last[384];
-    char line[384], wp[544];
+    static char last[512];
+    char line[512], wp[544];
     FILE *f;
 
-    if (!cfg || !strcmp(cfg->disk_mode, "soft"))
+    if (!cfg)
         return;
     /* Снимок нужен любому активному источнику имени: счётчики SNI иначе
      * не наблюдались бы вовсе. */

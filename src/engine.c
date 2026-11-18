@@ -1744,37 +1744,74 @@ int engine_run(susanin_config *cfg, const char *conf_path)
 
         if (cfg->dns_sniff || cfg->sni_sniff) {
             static time_t sn_at;
-            char sn[256];
+            char sn[512];
 
             /* Один poll за проход: раньше dns_sniff_poll() вызывался дважды
              * при dns_sniff=1 (второй — пережиток, когда SNI жил отдельным
              * вызовом), и каждый кадр вычитывался из сокетов в два захода. */
             dns_sniff_poll();   /* DNS-ответы и SNI из TLS ClientHello */
-            /* Раз в 5 минут — сводка на DEBUG (дешёвая и не спамит при
-             * штатном log_level=info), и WARN только на доказанную потерю:
-             * пакеты приходят, а записей нет. Случай «пакетов не приходит
-             * вовсе» предупреждением не отмечаем: это может быть тишина в
-             * доме, а различить его помогает статус и `why`.
-             * Контур обслуживания — общий для DNS- и SNI-снифинга:
-             * снимок счётчиков и предупреждение нужны и при dns_sniff=0. */
+            /* Раз в 5 минут: сводка на DEBUG, снимок для status/why и не более
+             * одного WARN. Прежнее одно условие «пакеты идут, сохранено 0»
+             * сливало три разные поломки в одну и допускало вывод про
+             * «направление захвата», который счётчики не доказывали: тот же
+             * «0 сохранено» дают не-DNS-трафик и битый разбор ответов.
+             * Случай «кадров нет вовсе» предупреждением не отмечаем: это
+             * может быть тишина в доме, а различить его помогают status/why.
+             * Контур обслуживания — общий для DNS- и SNI-снифинга. */
             if (!sn_at) {
                 sn_at = now;
+                /* Снимок и на первом проходе: счётчики обнулены после
+                 * рестарта, а иначе status/why до пяти минут показывали бы
+                 * прошлый запуск. */
+                dns_sniff_stats_write(cfg);
             } else if (now - sn_at >= 300) {
                 sn_at = now;
                 dns_sniff_stats(sn, sizeof(sn));
                 slogf(SL_DEBUG, "dns_sniff: %s", sn);
                 dns_sniff_stats_write(cfg);   /* снимок для панели и why */
-                {
-                    unsigned long rv = 0, st = 0;
-                    const char *q = strstr(sn, "recv=");
-                    const char *s2 = strstr(sn, "stored=");
-                    if (q && s2) {
-                        rv = strtoul(q + 5, NULL, 10);
-                        st = strtoul(s2 + 7, NULL, 10);
+                /* WARN — только по DNS-контуру: при dns_sniff=0 ответов и
+                 * записей из них ждать нечего, предупреждение было бы ложью. */
+                if (cfg->dns_sniff) {
+                    dns_sniff_counters cn;
+                    char ifs[128], qs[128];
+                    int i, nu = 0, qu = 0;
+
+                    dns_sniff_get_counters(&cn);
+                    ifs[0] = qs[0] = '\0';
+                    for (i = 0; i < cn.niface; i++) {
+                        if (!cn.name[i][0])
+                            continue;
+                        if (nu < (int)sizeof(ifs) - 32)
+                            nu += snprintf(ifs + nu, sizeof(ifs) - nu,
+                                           nu ? ",%s" : "%s", cn.name[i]);
+                        if (cn.iface_queries[i] && qu < (int)sizeof(qs) - 32)
+                            qu += snprintf(qs + qu, sizeof(qs) - qu,
+                                           qu ? ",%s" : "%s", cn.name[i]);
                     }
-                    if (rv > 0 && st == 0)
-                        slogf(SL_WARN, "dns_sniff: принято %lu пакетов, сохранено 0 — "
-                              "разбор не доходит до таблицы (%s)", rv, sn);
+                    if (!nu)
+                        snprintf(ifs, sizeof(ifs), "-");
+                    if (cn.answers > 0 && cn.stored == 0)
+                        /* Ответы вытаскиваем из сокета, а в таблицу не
+                         * попадает ни одной пары: настоящая поломка разбора. */
+                        slogf(SL_WARN, "dns_sniff: ответы приходят (%lu), в таблицу "
+                              "не лёг ни один (parse_fail=%lu) — разбор не доходит "
+                              "до таблицы: %s", cn.answers, cn.parse_fail, sn);
+                    else if (cn.queries > 0 && cn.answers == 0)
+                        /* Вот здесь предположение про интерфейс/направление
+                         * уместно: запросы на перечисленных видим, ответы на
+                         * них — нет. */
+                        slogf(SL_WARN, "dns_sniff: запросы видим (%lu, с %s), "
+                              "ответов нет; слушаем %s — проверить, проходят ли "
+                              "ответы через эти интерфейсы: %s",
+                              cn.queries, qs[0] ? qs : "-", ifs, sn);
+                    else if (cn.frames > 0 && cn.queries == 0 && cn.answers == 0)
+                        /* Формулировка без упрёка в «не то направление»:
+                         * направление по этим числам не доказать. */
+                        slogf(SL_WARN, "dns_sniff: на захвате ни запросов, ни "
+                              "ответов DNS (frames=%lu, udp53=%lu): слушаем %s — "
+                              "там нет трафика UDP/53 (DoT/DoH/QUIC) либо "
+                              "выбраны не те интерфейсы: %s",
+                              cn.frames, cn.udp53, ifs, sn);
                 }
             }
         }

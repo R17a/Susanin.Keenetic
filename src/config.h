@@ -35,6 +35,10 @@
 #define CFG_DEF_DNS_SNIFF_TTL       300  /* dns_sniff_ttl=0 */
 #define CFG_DEF_VPN_LIST_INTERVAL   300  /* vpn_always_interval/vpn_never_interval=0 */
 #define CFG_DEF_DP_CHECK_INTERVAL    15  /* dp_check_interval=0 */
+/* watch_ttl=0 окно серии подтверждения stall-сигналов; иные потребители
+ * watch_ttl (late-stall/starvation) трактуют ноль как раньше — запись с
+ * нулевым TTL под наблюдением не держится. */
+#define CFG_DEF_WATCH_TTL             8  /* watch_ttl=0 в stall-подтверждении */
 #define CFG_DEF_HEALTH_TCP_PORT     443  /* health_tcp_port=0 */
 #define CFG_DEF_SOCKS_PORT         1080  /* socks_port=0 */
 #define CFG_DEF_WEB_PORT           8087  /* web_port=0 */
@@ -97,6 +101,12 @@ typedef struct {
     int cooldown_ok_ttl;
     int watch_ttl;
     int watch_retry_below;
+    /* Сколько РАЗНЫХ окон наблюдения stall-сигнал (DPI-STALL/TCP-CLOSE-EMPTY)
+     * должен продержаться на одной паре, прежде чем адрес уйдёт в VPN.
+     * 1 = прежнее поведение (промот по первому наблюдению); 0 трактуется
+     * как 1. Счёт идёт по проходам детектора (разные окна), а не по пакетам
+     * одного потока, как SYN-кворум в sf_note. */
+    int stall_confirm;
     int health_miss_debounce;
     /* Health-проба туннеля: icmp (по умолчанию) | tcp. TCP нужен для egress,
      * которые не переносят ICMP (VLESS/XRay-туннель через TUN). */
