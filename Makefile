@@ -13,7 +13,7 @@ SRCS = src/main.c src/config.c src/discover.c src/conntrack.c src/state.c \
 OBJS = $(SRCS:.c=.o)
 
 TARGET = susanin-agent
-TESTS = tests/test_conntrack tests/test_config tests/test_ops tests/test_web_list tests/test_web_choices tests/test_state tests/test_backend_value tests/test_backend_lock tests/test_classifier_key tests/test_classifier_media tests/test_classifier_synfail tests/test_config_sync tests/test_dns_sniff_stats tests/test_socks_timeout tests/test_web_token tests/test_release tests/test_vpin tests/test_entryparse tests/test_snisniff tests/test_va_soft
+TESTS = tests/test_conntrack tests/test_config tests/test_ops tests/test_web_list tests/test_web_choices tests/test_state tests/test_backend_value tests/test_backend_lock tests/test_classifier_key tests/test_classifier_media tests/test_classifier_synfail tests/test_config_sync tests/test_dns_sniff_stats tests/test_socks_timeout tests/test_web_token tests/test_release tests/test_vpin tests/test_entryparse tests/test_snisniff tests/test_va_soft tests/test_log_level
 SAMPLES = testdata/nf_conntrack.samples
 # Объекты для тестов, которые включают .c-файл в свой TU (тогда его .o линковать нельзя).
 TEST_OBJS = $(filter-out src/main.o,$(OBJS))
@@ -67,6 +67,7 @@ test: all $(TESTS)
 	./tests/test_entryparse
 	./tests/test_snisniff
 	./tests/test_va_soft
+	./tests/test_log_level
 	sh tests/test-egress-failover.sh
 	sh tests/test-installer-sync.sh
 	sh tests/test-cfg-spaces.sh
@@ -81,6 +82,11 @@ tests/test_vpin: tests/test_vpin.c src/vpin.c src/vpin.h
 # Разбор строк списков (префикс ? и зоны *.domain) — чистый модуль.
 tests/test_entryparse: tests/test_entryparse.c src/entryparse.c src/entryparse.h
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_entryparse.c src/entryparse.c
+
+# Уровни записи журнала: имя из конфига -> порог отсечения. log.c не требует
+# ни сети, ни конфига, поэтому линкуем только его.
+tests/test_log_level: tests/test_log_level.c src/log.c src/log.h
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_log_level.c src/log.c
 
 # SNI-парсер ClientHello: чистый разбор полезной нагрузки, без сокетов.
 tests/test_snisniff: tests/test_snisniff.c src/snisniff.c src/snisniff.h

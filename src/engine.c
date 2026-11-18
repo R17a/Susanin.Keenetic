@@ -1785,8 +1785,21 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             susanin_config nc;
             g_reload = 0;
             if (conf_path && config_load(conf_path, &nc) == 0) {
+                char old_level[24];
+                int old_sl;
+                snprintf(old_level, sizeof(old_level), "%s", cfg->log_level);
+                old_sl = slog_level();
                 *cfg = nc;
                 backend_batch_enable(cfg->ipset_batch);
+                /* Уровень применялся только при старте процесса: правка
+                 * log_level в конфиге и Reload оставляли прежний поток —
+                 * «сделал тише, а оно пишет». slog_init дешёвый и побочных
+                 * эффектов не имеет. */
+                slog_init(cfg->log_level);
+                if (slog_level() != old_sl)
+                    slogf(SL_WARN, "log_level: %s -> %s (применено без перезапуска)",
+                          old_level[0] ? old_level : "(пусто)",
+                          cfg->log_level[0] ? cfg->log_level : "(пусто)");
                 slogf(SL_INFO, "config reloaded: %s", conf_path);
                 cfg_check(cfg, "reload");
                 vpin_interval_fix(cfg);

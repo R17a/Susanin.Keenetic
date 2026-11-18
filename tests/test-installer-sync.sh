@@ -148,6 +148,38 @@ else
     echo "FAIL: mktemp недоступен"; fail=$((fail + 1))
 fi
 
+echo "=== миграция уровня записи: прежний дефолт -> минимум ==="
+# Блоки берутся из настоящих install.sh, update.sh и postinst: проверяется код,
+# который выполнится при обновлении, а не его пересказ. Переменная цикла не
+# совпадает с внутренними переменными run_block — иначе он их затирает, и тест
+# начинает дергаться на несуществующем пути.
+_rd() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p" \
+            "$P/etc/susanin.conf" 2>/dev/null | tail -n1; }
+for _mig in install.sh tools/update.sh opkg/postinst; do
+    _mf="$ROOT/$_mig"
+    [ -f "$_mf" ] || { echo "FAIL: нет $_mf"; fail=$((fail + 1)); continue; }
+    # (a) прежние значения по умолчанию заменяются новыми
+    printf 'log_level=info\nxray_loglevel=warning\n' > "$P/etc/susanin.conf"
+    if run_block "$_mf" > /dev/null 2>&1; then
+        check '[ "$(_rd log_level)" = "warn" ]'     "$_mig: log_level info -> warn"
+        check '[ "$(_rd xray_loglevel)" = "error" ]' "$_mig: xray_loglevel warning -> error"
+    else
+        echo "FAIL $_mig: блок миграции не выполнился"; fail=$((fail + 1))
+    fi
+    # (b) осознанный выбор оператора не трогается, форма с пробелами читается
+    printf 'log_level = debug\nxray_loglevel = none\n' > "$P/etc/susanin.conf"
+    run_block "$_mf" > /dev/null 2>&1
+    check '[ "$(_rd log_level)" = "debug" ]'     "$_mig: log_level=debug оставлен как есть"
+    check '[ "$(_rd xray_loglevel)" = "none" ]'  "$_mig: xray_loglevel=none оставлен как есть"
+    # (c) хвостовые пробелы не мешают опознать прежний дефолт
+    printf 'log_level=info   \n' > "$P/etc/susanin.conf"
+    run_block "$_mf" > /dev/null 2>&1
+    check '[ "$(_rd log_level)" = "warn" ]' "$_mig: «log_level=info   » тоже мигрирован"
+    # (d) миграция не плодит дублей: ключ остаётся один
+    check '[ "$(grep -c "log_level" "$P/etc/susanin.conf")" = 1 ]' \
+          "$_mig: после миграции строка log_level одна"
+done
+
 echo "=== merge списков: тест вынесен в tests/test-list-merge.sh ==="
 # Он не требует ни бинарника, ни сети, ни ipset, но прогоняется отсюда, чтобы
 # `make test` гарантированно его запускал (файлы merge_list общие: install.sh,

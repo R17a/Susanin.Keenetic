@@ -328,6 +328,22 @@ static int precision_known(const char *p)
            !strcmp(p, "aggressive");
 }
 
+/* Наборы имён уровней: у агента их задаёт log.c (slog_init), у Xray — его
+ * собственный разбор loglevel. Расходятся: у агента нет warning/none, у Xray
+ * нет warn/quiet/trace. Проверка поэтому отдельная для каждого ключа. */
+static int log_level_known(const char *s)
+{
+    return !s[0] || !strcmp(s, "quiet") || !strcmp(s, "error") ||
+           !strcmp(s, "warn") || !strcmp(s, "info") ||
+           !strcmp(s, "debug") || !strcmp(s, "trace");
+}
+
+static int xray_log_level_known(const char *s)
+{
+    return !s[0] || !strcmp(s, "none") || !strcmp(s, "error") ||
+           !strcmp(s, "warning") || !strcmp(s, "info") || !strcmp(s, "debug");
+}
+
 static void apply_precision(susanin_config *c, unsigned seen)
 {
     const char *p = c->precision;
@@ -1725,6 +1741,18 @@ int config_validate(const susanin_config *c, char *out, size_t n)
     if (c->precision[0] && !precision_known(c->precision))
         CFGV("precision=%s: пресета с таким именем нет (strict|normal|aggressive), "
              "ни один порог не применён", c->precision);
+
+    /* Уровни логов. Значение читается как строка и неизвестное имя молча
+     * превращается в INFO (а для Xray уходит в его конфиг как есть), поэтому
+     * опечатка в «warn» означала бы «пишем подробно» — и ни одной подсказки об
+     * этом. Проверяем оба ключа: агентский и Xray — у них разные наборы имён. */
+    if (c->log_level[0] && !log_level_known(c->log_level))
+        CFGV("log_level=%s: такого уровня нет (quiet|error|warn|info|debug|trace), "
+             "агент пишет как при info", c->log_level);
+    if (c->xray_loglevel[0] && !xray_log_level_known(c->xray_loglevel))
+        CFGV("xray_loglevel=%s: Xray не знает такого уровня "
+             "(error|warning|info|debug|none), лог Xray может вестись подробно",
+             c->xray_loglevel);
 
     /* Периоды, где 0 НЕ является сенсором: они подставляются в сравнение как
      * есть, и `now - last >= 0` истинно всегда — то есть 0 означает «каждый

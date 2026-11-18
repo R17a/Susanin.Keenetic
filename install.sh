@@ -976,6 +976,28 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     fi
 fi
 
+# --- миграция уровня записи ---------------------------------------------------
+# Новый дефолт — минимум записей: log_level=warn, xray_loglevel=error. Прежние
+# значения по умолчанию (info, warning) подменяются только если стоят как были:
+# оператор, который сам выбрал debug, quiet или none, не трогается. Без этого
+# обновление оставляло подробный журнал у каждой установки, сделанной раньше.
+if [ -f "$PREFIX/etc/susanin.conf" ]; then
+    _ll=$(sed -n 's/^[[:space:]]*log_level[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' \
+              "$PREFIX/etc/susanin.conf" 2>/dev/null | tail -n1)
+    if [ "$_ll" = "info" ]; then
+        sed -i 's|^[[:space:]]*log_level[[:space:]]*=.*|log_level=warn|' \
+            "$PREFIX/etc/susanin.conf" 2>/dev/null \
+            && say "log_level: info -> warn (новый дефолт: минимум записей)"
+    fi
+    _xl=$(sed -n 's/^[[:space:]]*xray_loglevel[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' \
+              "$PREFIX/etc/susanin.conf" 2>/dev/null | tail -n1)
+    if [ "$_xl" = "warning" ]; then
+        sed -i 's|^[[:space:]]*xray_loglevel[[:space:]]*=.*|xray_loglevel=error|' \
+            "$PREFIX/etc/susanin.conf" 2>/dev/null \
+            && say "xray_loglevel: warning -> error (новый дефолт)"
+    fi
+fi
+
 # --- MIGRATION-END -------------------------------------------------------------
 
 # Каталоги профилей маршрутизации: profiles (списки) и profiles.d (секции).

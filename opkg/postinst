@@ -76,6 +76,7 @@ merge_list "$PREFIX/etc/vpn_never.txt" "$PREFIX/share/vpn_never.txt" vpn_never
 rm -f "$PREFIX/etc/vpn_always.txt".merge.* "$PREFIX/etc/vpn_never.txt".merge.* \
       "$PREFIX/etc/vpn_always.txt".keys.* "$PREFIX/etc/vpn_never.txt".keys.* 2>/dev/null || true
 
+# --- MIGRATION-BEGIN ---------------------------------------------------------
 # --- миграция значений по умолчанию ----------------------------------------
 # promo_per_min: в 0.4.0 дефолт поднят 30 -> 120 (обучение быстрее).
 # Меняем ТОЛЬКО если стоит прежний дефолт — своё значение пользователя не трогаем.
@@ -86,6 +87,25 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
             && echo "[susanin] promo_per_min: 30 -> 120 (новый дефолт; применится после restart)"
     fi
 fi
+
+# --- миграция уровня записи ---------------------------------------------------
+# Новый дефолт — минимум записей (log_level=warn, xray_loglevel=error). Прежние
+# значения по умолчанию меняются только если стоят как были; debug/quiet/none,
+# выбранные оператором, остаются как есть. Xray читает свой уровень при старте —
+# отсюда пометка про restart в сообщении.
+if [ -f "$PREFIX/etc/susanin.conf" ]; then
+    _ll=$(sed -n 's/^[[:space:]]*log_level[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$PREFIX/etc/susanin.conf" 2>/dev/null | tail -n1)
+    if [ "$_ll" = "info" ]; then
+        sed -i 's|^[[:space:]]*log_level[[:space:]]*=.*|log_level=warn|' "$PREFIX/etc/susanin.conf" 2>/dev/null \
+            && echo "[susanin] log_level: info -> warn (минимум записей; применится после restart)"
+    fi
+    _xl=$(sed -n 's/^[[:space:]]*xray_loglevel[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$PREFIX/etc/susanin.conf" 2>/dev/null | tail -n1)
+    if [ "$_xl" = "warning" ]; then
+        sed -i 's|^[[:space:]]*xray_loglevel[[:space:]]*=.*|xray_loglevel=error|' "$PREFIX/etc/susanin.conf" 2>/dev/null \
+            && echo "[susanin] xray_loglevel: warning -> error (применится после restart Xray)"
+    fi
+fi
+# --- MIGRATION-END -----------------------------------------------------------
 
 # Короткий вызов `susanin …` (чужой файл с этим именем не перезаписываем).
 if [ -d /opt/bin ] && [ ! -e /opt/bin/susanin ]; then

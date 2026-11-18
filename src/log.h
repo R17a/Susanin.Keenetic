@@ -5,6 +5,7 @@ enum { SL_QUIET = 0, SL_ERROR = 1, SL_WARN = 2, SL_INFO = 3, SL_DEBUG = 4, SL_TR
 
 void slog_init(const char *level);
 int  slog_enabled(int lvl);
+int  slog_level(void);          /* текущий уровень (для сообщения о смене) */
 void slogf(int lvl, const char *fmt, ...);
 
 /* Ротация лога по размеру в рантайме: >max_kb — оставить хвост keep_kb. */

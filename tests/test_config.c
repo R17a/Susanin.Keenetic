@@ -105,6 +105,24 @@ int main(void)
               strstr(prob, "routing_table") != NULL,
               "routing_table=255 помечен (зарезервирован ядром)");
 
+        /* Уровни логов: имя читается как строка, неизвестное молча означает
+         * INFO (агент) или уходит в конфиг Xray как есть. Без замечания
+         * опечатка в «warn» выглядела бы настроенной. */
+        config_load(write_cfg("log_level=warrn\n"), &cfg);
+        CHECK(config_validate(&cfg, prob, sizeof(prob)) > 0 &&
+              strstr(prob, "log_level") != NULL,
+              "неизвестный log_level помечен");
+        config_load(write_cfg("log_level=warn\n"), &cfg);
+        CHECK(config_validate(&cfg, prob, sizeof(prob)) == 0,
+              "log_level=warn — корректное значение");
+        config_load(write_cfg("xray_loglevel=quiet\n"), &cfg);
+        CHECK(config_validate(&cfg, prob, sizeof(prob)) > 0 &&
+              strstr(prob, "xray_loglevel") != NULL,
+              "агентский уровень не подходит Xray — помечено");
+        config_load(write_cfg("xray_loglevel=none\n"), &cfg);
+        CHECK(config_validate(&cfg, prob, sizeof(prob)) == 0,
+              "xray_loglevel=none — корректное значение");
+
         config_load(write_cfg("synfail_quorum=16\n"), &cfg);
         CHECK(config_validate(&cfg, prob, sizeof(prob)) > 0 &&
               strstr(prob, "клампим") != NULL,
