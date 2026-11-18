@@ -273,7 +273,8 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "dnsprobe")) {
         const char *nm = argc > 2 ? argv[2] : "";
         const char *srv = argc > 3 ? argv[3] : "127.0.0.1";
-        int port = argc > 4 ? atoi(argv[4]) : 5399;
+        /* без сервера — наш форвардер (5399), с сервером — обычный 53. */
+        int port = argc > 4 ? atoi(argv[4]) : (argc > 3 ? 53 : 5399);
         return ops_dnsprobe(&cfg, nm, srv, port, 0);
     }
 

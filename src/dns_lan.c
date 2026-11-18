@@ -80,6 +80,21 @@ static int dl_send_tcp(int fd, const void *buf, size_t n)
     return (int)send(fd, buf, n, MSG_NOSIGNAL);
 }
 
+/* Прочитать ровно n байт: reply SOCKS приходит коротким, а recv с
+ * MSG_WAITALL ждал бы весь буфер и упирался в таймаут. */
+static int dl_recv_n(int fd, void *buf, size_t n)
+{
+    size_t got = 0;
+
+    while (got < n) {
+        int r = (int)recv(fd, (char *)buf + got, n - got, 0);
+        if (r <= 0)
+            return -1;
+        got += (size_t)r;
+    }
+    return 0;
+}
+
 /* Таймаут на блокирующих операциях с SOCKS, чтобы главный цикл не вставал. */
 static void dl_set_timeout(int fd, int ms)
 {
@@ -266,8 +281,7 @@ static int dl_assoc_open(void)
         dl_assoc_close();
         return -1;
     }
-    n = (int)recv(g_ctl, buf, 2, MSG_WAITALL);
-    if (n != 2 || buf[0] != 0x05 || buf[1] != 0x00) {
+    if (dl_recv_n(g_ctl, buf, 2) != 0 || buf[0] != 0x05 || buf[1] != 0x00) {
         dl_assoc_close();
         return -1;
     }
@@ -278,15 +292,42 @@ static int dl_assoc_open(void)
         dl_assoc_close();
         return -1;
     }
-    n = (int)recv(g_ctl, buf, sizeof(buf), MSG_WAITALL);
-    if (n < 10 || buf[0] != 0x05 || buf[1] != 0x00 || buf[3] != 0x01) {
-        dl_assoc_close();
-        return -1;
+    {
+        unsigned char hdr[4];
+        unsigned char addr[18];
+        int alen;
+        if (dl_recv_n(g_ctl, hdr, 4) != 0 || hdr[0] != 0x05 || hdr[1] != 0x00) {
+            dl_assoc_close();
+            return -1;
+        }
+        if (hdr[3] == 0x01)            /* IPv4 */
+            alen = 4;
+        else if (hdr[3] == 0x04)       /* IPv6 */
+            alen = 16;
+        else if (hdr[3] == 0x03) {     /* домен */
+            unsigned char l;
+            if (dl_recv_n(g_ctl, &l, 1) != 0) {
+                dl_assoc_close();
+                return -1;
+            }
+            alen = 1 + l;
+        } else {
+            dl_assoc_close();
+            return -1;
+        }
+        if (alen > (int)sizeof(addr) - 2 || dl_recv_n(g_ctl, addr, (size_t)alen + 2) != 0) {
+            dl_assoc_close();
+            return -1;
+        }
+        memset(&g_relay, 0, sizeof(g_relay));
+        g_relay.sin_family = AF_INET;
+        if (hdr[3] == 0x01)
+            memcpy(&g_relay.sin_addr, addr, 4);
+        else
+            g_relay.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        memcpy(&g_relay.sin_port, addr + alen, 2);
     }
-    memset(&g_relay, 0, sizeof(g_relay));
-    g_relay.sin_family = AF_INET;
-    memcpy(&g_relay.sin_addr, buf + 4, 4);
-    memcpy(&g_relay.sin_port, buf + 8, 2);
+    (void)n;
     if (g_relay.sin_addr.s_addr == 0)
         g_relay.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     g_assoc_at = time(NULL);
