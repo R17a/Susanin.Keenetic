@@ -87,6 +87,9 @@ static int run_argv(char *const argv[])
 
 #define BT_PATH "/tmp/susanin-ipset.batch"
 #define BT_MAX (1024 * 1024)
+/* Пауза после зависания restore и потолок её удвоения: 30 с … 10 мин. */
+#define BT_HANG_PAUSE_MS     30000
+#define BT_HANG_PAUSE_MAX_MS 600000
 /* ipset принимает timeout не больше 2147483 с (INT_MAX/1000). Больше —
  * «Syntax error: ... is out of range» и падает ВСЯ пачка ipset restore;
  * так терялась запись с expire=0x7fffffff («никогда не истекает»).
@@ -106,18 +109,43 @@ static size_t g_bt_len, g_bt_cap;
 static int g_bt_depth;
 static int g_bt_disabled;      /* 1 = батч выключен (конфиг или авария с ipset) */
 
+/* Зависание `ipset restore` было одноразовым (ipset берёт глобальный lock, а
+ * его держит NDM при пересборке NAT), но прежняя реакция была необратимой:
+ * пачка выбрасывалась, а батч оставался выключенным до перезапуска агента.
+ * То есть адреса, которые надо было добавить, не применялись никогда, а
+ * оператор видел это только как «списки легли частично». Теперь: пачка
+ * сохраняется, батч ставится на паузу, и после паузы делается одна проверка
+ * живости ipset — ожил, значит недонесённое применяется и батч возвращается. */
+static char *g_bt_orphan;          /* команды из зависшей пачки */
+static size_t g_bt_orphan_len;
+static int g_bt_paused;
+static long long g_bt_retry_at;    /* мс, до которых не трогаем ipset */
+static long long g_bt_pause_ms = BT_HANG_PAUSE_MS;
+
 void backend_batch_enable(int on)
 {
     g_bt_disabled = on ? 0 : 1;
     if (g_bt_disabled) {
         g_bt_depth = 0;
         g_bt_len = 0;
+        g_bt_paused = 0;
+        g_bt_pause_ms = BT_HANG_PAUSE_MS;
+        free(g_bt_orphan);
+        g_bt_orphan = NULL;
+        g_bt_orphan_len = 0;
     }
 }
+
+/* Выход из паузы и возврат недонесённой пачки — реализация ниже, рядом с
+ * поштучным применением (ей нужны bt_now_ms, bt_wait_child и bt_apply_line). */
+static void bt_maybe_resume(void);
 
 void backend_batch_begin(void)
 {
     if (g_bt_disabled)
+        return;
+    bt_maybe_resume();
+    if (g_bt_paused)
         return;
     g_bt_depth++;
 }
@@ -356,6 +384,101 @@ static int bt_apply_line(char *line)
     return rc;
 }
 
+/* Жив ли ipset: один короткий `ipset list -n` с таймаутом. Пробуем редко и
+ * только когда батч на паузе, иначе проверка сама стала бы источником вилок. */
+static int bt_alive(void)
+{
+    pid_t pid = fork();
+    if (pid < 0)
+        return 0;
+    if (pid == 0) {
+        int dn = open("/dev/null", O_WRONLY);
+        char *av[4];
+        if (dn >= 0) {
+            if (dn != 1 && dn != 2) { dup2(dn, 1); dup2(dn, 2); }
+            if (dn > 2)
+                close(dn);
+        }
+        av[0] = (char *)tool_ipset();
+        av[1] = (char *)"list";
+        av[2] = (char *)"-n";
+        av[3] = NULL;
+        execvp(av[0], av);
+        _exit(127);
+    }
+    /* Выход 0 = ipset ответил; 1 = «набора нет» тоже нормальный ответ для
+     * `list -n`, поэтому любую завершившуюся без таймаута попытку считаем
+     * признаком живости, а вот -1/-2 (ошибка/завис) — нет. */
+    {
+        int rc = bt_wait_child(pid, BT_APPLY_TIMEOUT_MS);
+        return rc != -1 && rc != -2;
+    }
+}
+
+/* Применить буфер команд поштучно. Возвращает число применённых. Ограничения
+ * те же, что у fallback после `restore rc!=0`: не больше BT_FALLBACK_MAX
+ * команд и не дольше BT_FALLBACK_MS. */
+static int bt_apply_buffer(const char *buf, size_t len, const char *why)
+{
+    size_t off = 0;
+    long long t0 = bt_now_ms();
+    int ncmd = 0, bad = 0, skipped = 0;
+    while (off < len) {
+        char line[512];
+        const char *nl = memchr(buf + off, '\n', len - off);
+        size_t l = nl ? (size_t)(nl - (buf + off)) : (len - off);
+        if (l >= sizeof(line))
+            l = sizeof(line) - 1;
+        memcpy(line, buf + off, l);
+        line[l] = '\0';
+        if (l) {
+            if (ncmd + skipped >= BT_FALLBACK_MAX || bt_now_ms() - t0 > BT_FALLBACK_MS) {
+                skipped++;
+            } else {
+                ncmd++;
+                if (bt_apply_line(line) != 0)
+                    bad++;
+            }
+        }
+        off += (nl ? (size_t)(nl - (buf + off)) + 1 : len - off);
+    }
+    if (bad || skipped)
+        slogf(SL_WARN, "%s: применено поштучно %d, ошибок %d, пропущено %d (предел)",
+              why, ncmd - bad, bad, skipped);
+    return ncmd - bad;
+}
+
+/* Выход из паузы после зависания restore: не раньше срока, и только если ipset
+ * отвечает. Недонесённую пачку возвращаем в набор, иначе записи теряются. */
+static void bt_maybe_resume(void)
+{
+    long long now;
+    if (!g_bt_paused)
+        return;
+    now = bt_now_ms();
+    if (now < g_bt_retry_at)
+        return;
+    g_bt_retry_at = now + g_bt_pause_ms;
+    if (g_bt_pause_ms < BT_HANG_PAUSE_MAX_MS) {
+        g_bt_pause_ms *= 2;
+        if (g_bt_pause_ms > BT_HANG_PAUSE_MAX_MS)
+            g_bt_pause_ms = BT_HANG_PAUSE_MAX_MS;
+    }
+    if (!bt_alive())
+        return;
+    if (g_bt_orphan && g_bt_orphan_len) {
+        int applied = bt_apply_buffer(g_bt_orphan, g_bt_orphan_len,
+                                      "ipset ожил: возвращаю пачку после зависания");
+        (void)applied;
+    }
+    free(g_bt_orphan);
+    g_bt_orphan = NULL;
+    g_bt_orphan_len = 0;
+    g_bt_paused = 0;
+    g_bt_pause_ms = BT_HANG_PAUSE_MS;
+    slogf(SL_WARN, "батч ipset восстановлен без перезапуска агента");
+}
+
 static int bt_flush(void)
 {
     char err[256];
@@ -368,14 +491,24 @@ static int bt_flush(void)
     }
     rc = bt_run_restore(err, sizeof(err));
     if (rc == -2) {
-        /* ipset завис и держит свой lock: повторять поштучно нельзя — это
-         * только плодит зависшие процессы. Батч выключаем до рестарта. */
+        /* ipset завис и держит свой lock: повторять поштучно прямо сейчас
+         * нельзя — это только плодит зависшие процессы. Но и выбрасывать пачку
+         * нельзя: её записи не применились бы никогда. Забираем буфер себе
+         * (без копирования), ставим батч на паузу и пробуждаемся по сроку —
+         * ожил ipset, значит недонесённое доедет, а батч вернётся сам. */
         slogf(SL_ERROR, "ipset restore завис (больше %d мс) — процесс убит, "
-                        "батч ipset отключён до перезапуска агента",
-              BT_RESTORE_TIMEOUT_MS);
+                        "батч на паузе, пачка (%zu байт) сохранена для повторной "
+                        "попытки", BT_RESTORE_TIMEOUT_MS, g_bt_len);
         unlink(BT_PATH);
+        free(g_bt_orphan);
+        g_bt_orphan = g_bt;
+        g_bt_orphan_len = g_bt_len;
+        g_bt = NULL;
+        g_bt_cap = 0;
         g_bt_len = 0;
-        backend_batch_enable(0);
+        g_bt_paused = 1;
+        g_bt_pause_ms = BT_HANG_PAUSE_MS;
+        g_bt_retry_at = bt_now_ms() + g_bt_pause_ms;
         return 0;
     }
     if (rc != 0) {
