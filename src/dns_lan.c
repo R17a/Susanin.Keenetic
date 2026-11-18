@@ -52,6 +52,18 @@ static int g_ctl = -1;                 /* TCP-контроль SOCKS5 */
 static struct sockaddr_in g_relay;     /* куда слать датаграммы */
 static time_t g_assoc_at;
 
+/* Куда уводить запросы:
+ *   0 — через SOCKS5-UDP Xray (egress_type=tproxy);
+ *   1 — через интерфейс туннеля SO_BINDTODEVICE (egress_type=interface,
+ *       например WireGuard nwg0);
+ *   2 — туннеля нет: спрашиваем напрямую (режим dns_lan смысла не имеет). */
+#define DL_VIA_SOCKS  0
+#define DL_VIA_IFACE  1
+#define DL_VIA_DIRECT 2
+static int g_mode = DL_VIA_DIRECT;
+static int g_tun_fd = -1;
+static char g_tun_name[32];
+
 static void dl_stats_reset(void)
 {
     g_q_total = g_q_cache = g_q_tunnel = g_q_direct = g_q_fail = 0;
@@ -318,6 +330,62 @@ static int dl_tunnel(const unsigned char *q, int qlen, unsigned char *resp,
     return n;
 }
 
+/* Интерфейс туннеля из egress_interface: первый, на который удалось
+ * привязаться. В egress_interface бывает "tproxy" — его пропускаем. */
+static int dl_iface_open(const susanin_config *cfg)
+{
+    char list[sizeof(cfg->egress_interface)];
+    char *tok, *save = NULL;
+    int fd;
+
+    if (g_tun_fd >= 0) {
+        close(g_tun_fd);
+        g_tun_fd = -1;
+        g_tun_name[0] = '\0';
+    }
+    snprintf(list, sizeof(list), "%s", cfg->egress_interface);
+    for (tok = strtok_r(list, ", \t", &save); tok;
+         tok = strtok_r(NULL, ", \t", &save)) {
+        if (!strcmp(tok, "tproxy") || !strcmp(tok, "xray"))
+            continue;
+        fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd < 0)
+            continue;
+        if (setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, tok,
+                       (socklen_t)strlen(tok)) != 0) {
+            close(fd);
+            continue;
+        }
+        g_tun_fd = fd;
+        snprintf(g_tun_name, sizeof(g_tun_name), "%s", tok);
+        return 0;
+    }
+    return -1;
+}
+
+/* Запрос через интерфейс туннеля: обычный UDP, но пакет уходит в туннель. */
+static int dl_iface_query(const unsigned char *q, int qlen, unsigned char *resp,
+                          int rn, int timeout_ms)
+{
+    struct sockaddr_in from;
+    socklen_t fl = sizeof(from);
+    int i, n;
+
+    if (g_tun_fd < 0)
+        return -1;
+    for (i = 0; i < g_up_n && i < 2; i++) {
+        if (dl_send(g_tun_fd, q, (size_t)qlen, &g_up[i]) < 0)
+            continue;
+        if (!dl_wait(g_tun_fd, timeout_ms))
+            continue;
+        n = (int)recvfrom(g_tun_fd, resp, (size_t)rn, 0,
+                          (struct sockaddr *)&from, &fl);
+        if (n > 12)
+            return n;
+    }
+    return -1;
+}
+
 /* Прямой запрос (fail-open): обычный UDP к upstream. */
 static int dl_direct(const unsigned char *q, int qlen, unsigned char *resp,
                      int rn, int timeout_ms)
@@ -382,6 +450,18 @@ int dns_lan_start(const susanin_config *cfg)
         return 0;
     g_cfg = cfg;
     dl_parse_upstreams(cfg);
+    /* Режим выхода: tproxy -> SOCKS Xray; иначе интерфейс туннеля; иначе прямо. */
+    if (!strcmp(cfg->egress_type, "tproxy")) {
+        g_mode = DL_VIA_SOCKS;
+    } else if (cfg->egress_interface[0] && dl_iface_open(cfg) == 0) {
+        g_mode = DL_VIA_IFACE;
+    } else {
+        g_mode = DL_VIA_DIRECT;
+        slogf(SL_WARN, "dns_lan: туннеля нет (egress_type=%s, интерфейсы '%s') — "
+              "DNS клиентов пойдёт напрямую, как и раньше",
+              cfg->egress_type[0] ? cfg->egress_type : "(пусто)",
+              cfg->egress_interface);
+    }
     g_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (g_fd < 0) {
         slogf(SL_WARN, "dns_lan: сокет не создан (%s)", strerror(errno));
@@ -408,10 +488,9 @@ int dns_lan_start(const susanin_config *cfg)
     }
     dl_stats_reset();
     g_started = time(NULL);
-    slogf(SL_INFO, "dns_lan: слушаю DNS клиентов на порту %d, в туннель через "
-          "%s:%d, upstream", DNS_LAN_PORT,
-          cfg->socks_addr[0] ? cfg->socks_addr : "127.0.0.1",
-          cfg->socks_port > 0 ? cfg->socks_port : 1080);
+    slogf(SL_INFO, "dns_lan: слушаю DNS клиентов на порту %d, путь: %s", DNS_LAN_PORT,
+          g_mode == DL_VIA_SOCKS ? "SOCKS-Xray" :
+          g_mode == DL_VIA_IFACE ? g_tun_name : "напрямую (туннеля нет)");
     return 0;
 }
 
@@ -421,6 +500,10 @@ void dns_lan_stop(void)
     if (g_fd >= 0)
         close(g_fd);
     g_fd = -1;
+    if (g_tun_fd >= 0)
+        close(g_tun_fd);
+    g_tun_fd = -1;
+    g_tun_name[0] = '\0';
     dl_assoc_close();
     for (i = 0; i < DNS_LAN_CACHE; i++) {
         free(g_cache[i].resp);
@@ -436,8 +519,15 @@ void dns_lan_reload(const susanin_config *cfg)
     if (cfg->dns_lan) {
         g_cfg = cfg;
         dl_parse_upstreams(cfg);
-        if (g_fd < 0)
+        if (g_fd < 0) {
             dns_lan_start(cfg);
+        } else if (!strcmp(cfg->egress_type, "tproxy")) {
+            g_mode = DL_VIA_SOCKS;
+        } else if (dl_iface_open(cfg) == 0) {
+            g_mode = DL_VIA_IFACE;
+        } else {
+            g_mode = DL_VIA_DIRECT;
+        }
     } else if (g_fd >= 0) {
         dns_lan_stop();
         slogf(SL_INFO, "dns_lan: выключен reload-ом");
@@ -485,10 +575,14 @@ void dns_lan_poll(void)
             continue;
         }
         rn = -1;
-        {
+        if (g_mode == DL_VIA_SOCKS) {
             int u;
             for (u = 0; u < g_up_n && rn <= 12; u++)
                 rn = dl_tunnel(q, n, resp, sizeof(resp), DNS_LAN_WAIT_MS, u);
+        } else if (g_mode == DL_VIA_IFACE) {
+            rn = dl_iface_query(q, n, resp, sizeof(resp), DNS_LAN_WAIT_MS);
+            if (rn <= 12 && dl_iface_open(g_cfg) == 0)
+                rn = dl_iface_query(q, n, resp, sizeof(resp), DNS_LAN_WAIT_MS);
         }
         if (rn > 12) {
             g_q_tunnel++;
@@ -514,8 +608,10 @@ int dns_lan_stats(char *out, size_t n)
 {
     if (!out || n == 0)
         return 0;
-    snprintf(out, n, "listen=%d upstreams=%d queries=%lu cached=%lu tunnel=%lu "
+    snprintf(out, n, "listen=%d via=%s upstreams=%d queries=%lu cached=%lu tunnel=%lu "
              "direct=%lu fail=%lu", g_fd >= 0 ? DNS_LAN_PORT : 0,
+             g_mode == DL_VIA_SOCKS ? "socks" :
+             g_mode == DL_VIA_IFACE ? g_tun_name : "direct",
              g_up_n, g_q_total, g_q_cache, g_q_tunnel, g_q_direct, g_q_fail);
     return (int)g_q_total;
 }
