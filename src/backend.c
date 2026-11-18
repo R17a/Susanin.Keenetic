@@ -215,6 +215,11 @@ static int bt_write_file(void)
  * fork+exec замораживает главный цикл. */
 #define BT_FALLBACK_MAX 2000
 #define BT_FALLBACK_MS  10000
+/* Возврат сохранённой пачки после зависания: порция за проход. Остаток не
+ * теряется — он остаётся в буфере и применяется следующим проходом, поэтому
+ * порция сознательно небольшая: залп fork+exec замораживает главный цикл. */
+#define BT_RESUME_MAX 300
+#define BT_RESUME_MS  8000
 
 /* Монотонные миллисекунды — для предела поштучного применения. */
 static long long bt_now_ms(void)
@@ -415,37 +420,43 @@ static int bt_alive(void)
     }
 }
 
-/* Применить буфер команд поштучно. Возвращает число применённых. Ограничения
- * те же, что у fallback после `restore rc!=0`: не больше BT_FALLBACK_MAX
- * команд и не дольше BT_FALLBACK_MS. */
-static int bt_apply_buffer(const char *buf, size_t len, const char *why)
+/* Применить буфер команд поштучно, порциями: за проход не больше max_cmds
+ * команд и не дольше max_ms. Возврат — сколько БАЙТ разобрано; остаток
+ * вызывающий переносит в начало буфера и применит следующим проходом.
+ * Раньше остаток за пределом просто пропускался, и после зависания ipset в
+ * набор не доезжали сотни записей (на живом роутере — 2232 из пачки), а списки
+ * выглядели «применёнными частично». */
+static size_t bt_apply_buffer(const char *buf, size_t len, const char *why,
+                              int max_cmds, long long max_ms)
 {
     size_t off = 0;
     long long t0 = bt_now_ms();
-    int ncmd = 0, bad = 0, skipped = 0;
+    int ncmd = 0, bad = 0;
+
     while (off < len) {
         char line[512];
         const char *nl = memchr(buf + off, '\n', len - off);
         size_t l = nl ? (size_t)(nl - (buf + off)) : (len - off);
+        size_t step = nl ? ((size_t)(nl - (buf + off)) + 1) : (len - off);
         if (l >= sizeof(line))
             l = sizeof(line) - 1;
         memcpy(line, buf + off, l);
         line[l] = '\0';
         if (l) {
-            if (ncmd + skipped >= BT_FALLBACK_MAX || bt_now_ms() - t0 > BT_FALLBACK_MS) {
-                skipped++;
-            } else {
-                ncmd++;
-                if (bt_apply_line(line) != 0)
-                    bad++;
-            }
+            if (ncmd >= max_cmds || bt_now_ms() - t0 > max_ms)
+                break;              /* остаток разберём следующим проходом */
+            ncmd++;
+            if (bt_apply_line(line) != 0)
+                bad++;
         }
-        off += (nl ? (size_t)(nl - (buf + off)) + 1 : len - off);
+        off += step;
     }
-    if (bad || skipped)
-        slogf(SL_WARN, "%s: применено поштучно %d, ошибок %d, пропущено %d (предел)",
-              why, ncmd - bad, bad, skipped);
-    return ncmd - bad;
+    if (off < len)
+        slogf(SL_WARN, "%s: применено %d, ошибок %d, остаток (%zu байт) — "
+                        "следующим проходом", why, ncmd - bad, bad, len - off);
+    else if (bad || ncmd)
+        slogf(SL_INFO, "%s: применено %d, ошибок %d", why, ncmd - bad, bad);
+    return off;
 }
 
 /* Выход из паузы после зависания restore: не раньше срока, и только если ipset
@@ -467,9 +478,18 @@ static void bt_maybe_resume(void)
     if (!bt_alive())
         return;
     if (g_bt_orphan && g_bt_orphan_len) {
-        int applied = bt_apply_buffer(g_bt_orphan, g_bt_orphan_len,
-                                      "ipset ожил: возвращаю пачку после зависания");
-        (void)applied;
+        size_t used = bt_apply_buffer(g_bt_orphan, g_bt_orphan_len,
+                                      "ipset ожил: возвращаю пачку после зависания",
+                                      BT_RESUME_MAX, BT_RESUME_MS);
+        if (used < g_bt_orphan_len) {
+            /* Предел прохода: остаток оставляем себе и берём его скоро, не
+             * дожидаясь бэкоффа паузы — пачка и так уже задержалась. */
+            memmove(g_bt_orphan, g_bt_orphan + used,
+                    g_bt_orphan_len - used);
+            g_bt_orphan_len -= used;
+            g_bt_retry_at = bt_now_ms() + 5000;
+            return;                 /* остаёмся в паузе, батч ещё не вернулся */
+        }
     }
     free(g_bt_orphan);
     g_bt_orphan = NULL;

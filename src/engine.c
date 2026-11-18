@@ -1040,11 +1040,54 @@ static long mem_available_kb(void)
     return kb;
 }
 
+/* Маркер штатной остановки. «Чисто ли завершился прошлый запуск» раньше
+ * выяснялось по строке "engine stopped" в хвосте лога, но при log_level=warn
+ * (значение по умолчанию) эта строка уровня INFO не пишется — и каждый штатный
+ * перезапуск выглядел аварией («прошлый запуск не завершался штатно»).
+ * Маркер — файл со сроком жизни до следующего старта; в soft-режиме он лежит
+ * в tmpfs, чтобы не трогать носитель. */
+static char g_stop_mark[128];
+
+static void stop_mark_path(const susanin_config *cfg)
+{
+    snprintf(g_stop_mark, sizeof(g_stop_mark), "%s",
+             (cfg && !strcmp(cfg->disk_mode, "soft"))
+                 ? "/tmp/susanin-agent.stop"
+                 : "/opt/susanin/var/agent.stop");
+}
+
+static int stop_mark_take(void)
+{
+    FILE *f;
+
+    if (!g_stop_mark[0])
+        return 0;
+    f = fopen(g_stop_mark, "r");
+    if (!f)
+        return 0;
+    fclose(f);
+    unlink(g_stop_mark);
+    return 1;
+}
+
+static void stop_mark_set(void)
+{
+    FILE *f;
+
+    if (!g_stop_mark[0])
+        return;
+    f = fopen(g_stop_mark, "w");
+    if (!f)
+        return;
+    fputs("clean\n", f);
+    fclose(f);
+}
+
 /* Что было в конце прошлого запуска. Нужено потому, что после обрыва питания
  * или OOM-убийства первая строка нового лога — единственное, что оператор
  * видит, а последняя строка старого («почему всё встало») остаётся необработанной
  * где-то в середине файла. Читаем только то, что было в файле ДО нас. */
-static void log_prev_run(off_t upto)
+static void log_prev_run(off_t upto, int clean_hint)
 {
     char buf[4096];
     char l1[256], l2[256];
@@ -1071,7 +1114,7 @@ static void log_prev_run(off_t upto)
     if (!got)
         return;
     buf[got] = '\0';
-    if (strstr(buf, "engine stopped"))
+    if (strstr(buf, "engine stopped") || clean_hint)
         clean = 1;
 
     /* две последние непустые строки того запуска (идём с конца) */
@@ -1716,7 +1759,8 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         nv = vn_new();
     slogf(SL_INFO, "engine started (egress=%s table=%d)", cfg->egress_interface, cfg->routing_table);
     log_boot_age();
-    log_prev_run(log_prev_size);
+    stop_mark_path(cfg);
+    log_prev_run(log_prev_size, stop_mark_take());
     cfg_check(cfg, "старт");
     vpin_interval_fix(cfg);
     if (va && tunnel_up) {
@@ -2529,6 +2573,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     if (state_save(state_path, &st) != 0)
         slogf(SL_WARN, "state: сохранить %s при остановке не удалось", state_path);
     slogf(SL_INFO, "engine stopped");
+    stop_mark_set();             /* штатная остановка — для следующего старта */
     va_free(va);
     vn_free(nv);
     state_free(&st);
