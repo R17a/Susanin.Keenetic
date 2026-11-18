@@ -9,6 +9,7 @@
 #include <net/if.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -246,6 +247,25 @@ static dl_entry *dl_cache_get(const char *key, time_t now)
     return NULL;
 }
 
+/* Редкий WARN: причины отказа SOCKS, чтобы не гадать по «нет ответа». */
+static void dl_warn(const char *fmt, ...)
+{
+    static time_t last;
+    time_t now = time(NULL);
+    va_list ap;
+
+    if (now - last < 20)
+        return;
+    last = now;
+    va_start(ap, fmt);
+    {
+        char buf[256];
+        vsnprintf(buf, sizeof(buf), fmt, ap);
+        slogf(SL_WARN, "dns_lan: %s", buf);
+    }
+    va_end(ap);
+}
+
 /* --- SOCKS5 UDP ASSOCIATE ------------------------------------------------ */
 
 static void dl_assoc_close(void)
@@ -273,6 +293,7 @@ static int dl_assoc_open(void)
         return -1;
     dl_set_timeout(g_ctl, 2000);
     if (connect(g_ctl, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+        dl_warn("SOCKS connect %s:%d не удался: %s", host, port, strerror(errno));
         dl_assoc_close();
         return -1;
     }
@@ -282,6 +303,7 @@ static int dl_assoc_open(void)
         return -1;
     }
     if (dl_recv_n(g_ctl, buf, 2) != 0 || buf[0] != 0x05 || buf[1] != 0x00) {
+        dl_warn("SOCKS приветствие: ответ %02x %02x (ждём 05 00)", buf[0], buf[1]);
         dl_assoc_close();
         return -1;
     }
@@ -297,6 +319,8 @@ static int dl_assoc_open(void)
         unsigned char addr[18];
         int alen;
         if (dl_recv_n(g_ctl, hdr, 4) != 0 || hdr[0] != 0x05 || hdr[1] != 0x00) {
+            dl_warn("SOCKS UDP ASSOCIATE: ответ ver=%d rep=%d atyp=%d",
+                    hdr[0], hdr[1], hdr[3]);
             dl_assoc_close();
             return -1;
         }
@@ -331,6 +355,8 @@ static int dl_assoc_open(void)
     if (g_relay.sin_addr.s_addr == 0)
         g_relay.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     g_assoc_at = time(NULL);
+    dl_warn("SOCKS ассоциация открыта, релей %s:%d",
+            inet_ntoa(g_relay.sin_addr), ntohs(g_relay.sin_port));
     return 0;
 }
 
