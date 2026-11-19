@@ -55,7 +55,7 @@ typedef struct {
 typedef struct {
     int used;
     unsigned id;
-    unsigned char q[512];
+    unsigned char q[1500];   /* запрос клиента:EDNS0/DNSSEC бывают больше 512 */
     int qlen;
     struct sockaddr_in from;
     char key[264];
@@ -732,6 +732,8 @@ static void dl_drain_clients(void)
             g_q_cache++;
             continue;
         }
+        if (n < 12 || n > (int)sizeof(g_pend[0].q))
+            continue;               /* не помещается в буфер запроса */
         p = dl_pend_new();
         memcpy(p->q, q, (size_t)n);
         p->qlen = n;

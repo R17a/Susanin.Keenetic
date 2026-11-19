@@ -66,6 +66,30 @@ chain_present() {
     "$IPT" -w -t nat -S "$CHAIN" >/dev/null 2>&1
 }
 
+# Поднять агент, если он умер не по команде stop/down. Цепь DNAT на месте —
+# значит правила никто штатно не снимал, и без перезапуска LAN останется без
+# туннеля до ручного вмешательства (агент может упасть ночью). Ограничиваем
+# число попыток, чтобы падение на старте не превратилось в бесконечный цикл.
+RESTARTS=/opt/susanin/var/dnslan-guard.restarts
+maybe_restart() {
+    _now=$(date +%s 2>/dev/null || echo 0)
+    _n=0
+    if [ -f "$RESTARTS" ]; then
+        _n=$(awk -v t="$((_now - 3600))" '$1 + 0 > t' "$RESTARTS" 2>/dev/null | wc -l)
+    fi
+    if [ "$_n" -ge 3 ]; then
+        note "dns_lan: агент не поднимаю — 3 перезапуска за час; нужен susanin start вручную"
+        return 0
+    fi
+    printf '%s\n' "$_now" >>"$RESTARTS" 2>/dev/null || true
+    if [ -x "$TOOLS/susanin.sh" ] && sh "$TOOLS/susanin.sh" start >/dev/null 2>&1; then
+        note "dns_lan: агент перезапущен сторожем (правила датаплейна он поставит сам)"
+    else
+        note "dns_lan: перезапустить агент не удалось — нужен susanin start вручную"
+    fi
+    return 0
+}
+
 echo $$ >"$PIDFILE" 2>/dev/null || true
 # Убираем pid-файл только если он всё ещё наш: иначе сторож, вышедший после
 # restart, удалил бы pid-файл нового сторожа, и тот через тик решил бы, что его
@@ -93,5 +117,6 @@ while :; do
     else
         note "dns_lan: $_why, снять DNAT не удалось ($TOOLS/datapath.sh) — нужен susanin restart"
     fi
+    maybe_restart
     exit 0
 done
