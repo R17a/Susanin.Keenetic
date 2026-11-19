@@ -127,6 +127,7 @@ typedef struct {
     int dns_lan;             /* 1 = отдавать клиентам DNS через туннель */
     char dns_lan_upstream[128]; /* upstream-ы через запятую (IPv4) */
     int dns_lan_fallback;    /* 1 = если туннель не ответил, спросить напрямую */
+    int dns_lan_smart;       /* 1 = сначала локальный резолвер, туннель только для подмены */
     char xray_loglevel[16]; /* уровень логов Xray (читает xray-egress.sh, не сам агент) */
     char xray_gogc[16];      /* GOGC Xray (память; читает init/xray-egress.sh) */
     char xray_gomemlimit[16];/* GOMEMLIMIT Xray (память) */

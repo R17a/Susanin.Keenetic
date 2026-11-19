@@ -217,6 +217,7 @@ void config_set_defaults(susanin_config *c)
     snprintf(c->dns_lan_upstream, sizeof(c->dns_lan_upstream), "%s",
              "8.8.8.8,1.1.1.1");
     c->dns_lan_fallback = 1;         /* туннель молчит — спросить напрямую */
+    c->dns_lan_smart = 1;            /* локальный резолвер быстрее туннеля */
     c->soft_state_interval = 12 * 3600;   /* soft: сохранять состояние раз в 12 ч */
     /* Порты, которые не участвуют в автообучении (типовой скан-шум). */
     snprintf(c->learn_exclude_ports, sizeof(c->learn_exclude_ports), "%s",
@@ -788,6 +789,8 @@ int config_load(const char *path, susanin_config *c)
             set_str(c->dns_lan_upstream, sizeof(c->dns_lan_upstream), val);
         else if (!strcmp(key, "dns_lan_fallback"))
             c->dns_lan_fallback = val[0] ? (int)cfg_num(c, key, val) : 1;
+        else if (!strcmp(key, "dns_lan_smart"))
+            c->dns_lan_smart = val[0] ? (int)cfg_num(c, key, val) : 1;
         else if (!strcmp(key, "soft_state_interval"))
             c->soft_state_interval = cfg_dur(c, key, val, U_HOUR);
         else if (!strcmp(key, "learn_exclude_ports"))
@@ -1197,6 +1200,9 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "dns_lan_upstream=%s\n", c->dns_lan_upstream);
     fprintf(fp, "# 1 = если туннель не ответил, спросить напрямую (fail-open), 0 = отдать пусто.\n");
     fprintf(fp, "dns_lan_fallback=%d\n", c->dns_lan_fallback);
+    fprintf(fp, "# 1 = спрашивать локальный резолвер первым (быстро), в туннель —\n");
+    fprintf(fp, "# только если ответ подменён (127.0.0.1/0.0.0.0) или пуст.\n");
+    fprintf(fp, "dns_lan_smart=%d\n", c->dns_lan_smart);
     fprintf(fp, "# Период сохранения состояния в soft-режиме, ч; 0 = никогда.\n");
     out_dur_exact(c->soft_state_interval, U_HOUR, dv, sizeof(dv));
     fprintf(fp, "soft_state_interval=%s\n", dv);
@@ -1987,6 +1993,7 @@ void config_print(const susanin_config *c)
     printf("dns_lan=%d\n", c->dns_lan);
     printf("dns_lan_upstream=%s\n", c->dns_lan_upstream);
     printf("dns_lan_fallback=%d\n", c->dns_lan_fallback);
+    printf("dns_lan_smart=%d\n", c->dns_lan_smart);
     out_dur_exact(c->soft_state_interval, U_HOUR, dv, sizeof(dv));
     printf("soft_state_interval=%s\n", dv);
     printf("learn_exclude_ports=%s\n", c->learn_exclude_ports);
