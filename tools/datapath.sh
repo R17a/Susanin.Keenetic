@@ -739,9 +739,21 @@ dns_lan_clean() {
     "ipt" -t filter -X "$DNS_LAN_IN_CHAIN" >/dev/null 2>&1 || true
 }
 
+_dns_lan_listening() {
+    _hex=$(printf '%04X' "$DNS_LAN_PORT")
+    awk -v p=":$_hex" '$2 ~ p"$" && $4 == "07" { f=1 } END { exit(f?0:1) }' \
+        /proc/net/udp 2>/dev/null
+}
+
 dns_lan_rules() {
     dns_lan_clean
     [ "$DNS_LAN" = "1" ] || return 0
+    # DNAT на мёртвый форвардер = DNS у всех клиентов. Поэтому ставим правила
+    # только если агент уже слушает порт.
+    if ! _dns_lan_listening; then
+        say "dns_lan: форвардер не слушает порт $DNS_LAN_PORT — DNAT не ставлю"
+        return 0
+    fi
     _dst=$(_dns_lan_dest)
     _ifaces=$(_dns_lan_ifaces)
     if [ -z "$_dst" ] || [ -z "$_ifaces" ]; then
