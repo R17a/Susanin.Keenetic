@@ -30,8 +30,8 @@
 #define DNS_LAN_PORT 5399
 #define DNS_LAN_CACHE 128
 #define DNS_LAN_MAX_UP 4
-#define DNS_LAN_WAIT_MS 1500
-#define DNS_LAN_FALLBACK_MS 500
+#define DNS_LAN_WAIT_MS 800
+#define DNS_LAN_FALLBACK_MS 400
 #define DNS_LAN_REASSOC_SEC 60
 
 typedef struct {
@@ -659,7 +659,7 @@ void dns_lan_poll(void)
 
     if (g_fd < 0 || !g_cfg || !g_cfg->dns_lan)
         return;
-    for (budget = 0; budget < 2; budget++) {
+    for (budget = 0; budget < 4; budget++) {
         struct sockaddr_in from;
         socklen_t fl = sizeof(from);
         int n = (int)recvfrom(g_fd, q, sizeof(q), 0,
