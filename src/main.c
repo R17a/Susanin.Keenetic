@@ -35,7 +35,7 @@ static void usage(void)
         "                                            иначе, чем задумано)\n"
         "  susanin-agent discover\n"
         "  susanin-agent ct-scan\n"
-        "  susanin-agent datapath {up|down|p5|p5-down|status|flush|add|del}\n"
+        "  susanin-agent datapath {up|down|p5|p5-down|dns-lan-up|dns-lan-down|dns-lan-status|status|flush|add|del}\n"
         "  susanin-agent run\n"
         "  susanin-agent web\n"
         "  susanin-agent status\n"
@@ -45,6 +45,7 @@ static void usage(void)
         "  susanin-agent uninstall\n"
         "  susanin-agent reset <ip|domain>   (forget — синоним)\n"
         "  susanin-agent why <ip|domain>     (почему адрес идёт так: списки/наборы/кэш)\n"
+        "  susanin-agent dnsprobe <домен> [сервер] [порт]  (проверка форвардера dns_lan)\n"
         "  susanin-agent diag errors         (ERROR/WARN из лога агента)\n",
         SUSANIN_VERSION);
 }
@@ -114,7 +115,7 @@ static int cmd_datapath(int argc, char **argv)
     int n = 0, i;
 
     if (argc < 3) {
-        fprintf(stderr, "usage: susanin-agent datapath {up|down|p5|p5-down|status|flush|add <ip> <tcp|udp> <test|ok>|del <ip> <tcp|udp>}\n");
+        fprintf(stderr, "usage: susanin-agent datapath {up|down|p5|p5-down|dns-lan-up|dns-lan-down|dns-lan-status|status|flush|add <ip> <tcp|udp> <test|ok>|del <ip> <tcp|udp>}\n");
         return 2;
     }
     newargv[n++] = (char *)script;

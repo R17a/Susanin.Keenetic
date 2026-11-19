@@ -157,6 +157,13 @@ cmd_start() {
 }
 
 stop_daemon() {
+    # dns_lan: DNAT клиентов снимаем ДО остановки форвардера — иначе на всё
+    # время остановки (до 10 с ожидания) LAN остаётся без DNS: перенаправлять
+    # уже некуда, а слушателя на порту форвардера ещё/уже нет. Снимаем и в
+    # случае, когда агент уже мёртв: правила могли остаться от прошлого запуска.
+    if [ -f "$TOOLS/datapath.sh" ]; then
+        sh "$TOOLS/datapath.sh" dns-lan-down >/dev/null 2>&1 || true
+    fi
     if ! is_running; then
         echo "[susanin] not running"
         return 0

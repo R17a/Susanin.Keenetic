@@ -739,7 +739,7 @@ fi
 
 mkdir -p "$PREFIX/bin" "$PREFIX/tools" "$PREFIX/etc" "$PREFIX/etc/profiles" "$PREFIX/var" "$INITD"
 cp "$DIR/$BINFILE" "$PREFIX/bin/susanin-agent"
-for f in datapath.sh susanin.sh update.sh uninstall.sh install.sh report.sh diagnose.sh profiles.sh xray-egress.sh; do
+for f in datapath.sh susanin.sh update.sh uninstall.sh install.sh report.sh diagnose.sh profiles.sh xray-egress.sh dnslan-guard.sh; do
     _src=$(find_file "$f") || _src=""
     [ -n "$_src" ] && cp "$_src" "$PREFIX/tools/$f"
 done

@@ -124,7 +124,7 @@ LAN=$(printf '%s' "$LAN" | tr ',' ' ')
 [ -n "${SUSANIN_MSS_CLAMP_LAN:-}" ]  || MSS_CLAMP_LAN=$(cfg_val mss_clamp_lan "$MSS_CLAMP_LAN")
 [ -n "${SUSANIN_DNS_HIJACK:-}" ]     || DNS_HIJACK=$(cfg_val dns_hijack "$DNS_HIJACK")
 [ -n "${SUSANIN_DNS_HIJACK_TARGET:-}" ] || DNS_HIJACK_TARGET=$(cfg_val dns_hijack_target "$DNS_HIJACK_TARGET")
-[ -n "${SUSANIN_DNS_LAN:-}" ]        || DNS_LAN=$(cfg_val dns_lan 0)
+[ -n "${SUSANIN_DNS_LAN:-}" ]        && DNS_LAN="$SUSANIN_DNS_LAN" || DNS_LAN=$(cfg_val dns_lan 0)
 [ -n "${SUSANIN_PROXY_UID:-}" ]      || PROXY_UID=$(cfg_val proxy_uid "")
 [ -n "${SUSANIN_PROXY_EGRESS:-}" ]   || PROXY_EGRESS=$(cfg_val proxy_egress "")
 [ -n "${SUSANIN_PROXY_TABLE:-}" ]    || PROXY_TABLE=$(cfg_val proxy_table "$PROXY_TABLE")
@@ -705,6 +705,10 @@ DNS_LAN_PORT=5399
 DNS_LAN_CHAIN=SUSANIN_DNSLAN
 DNS_LAN_IN_CHAIN=SUSANIN_DNSLAN_IN
 DNS_LAN_PRIVATE="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.0/8"
+# Сторож правил: снимает DNAT, если форвардер агента перестал слушать порт.
+# Иначе смерть агента при живом роутере оставляет весь LAN без DNS.
+TOOLS=${SUSANIN_TOOLS:-/opt/susanin/tools}
+DNS_LAN_GUARD=/opt/susanin/var/dnslan-guard.pid
 
 _dns_lan_ifaces() {
     _out=""
@@ -731,12 +735,41 @@ _dns_lan_dest() {
 }
 
 dns_lan_clean() {
+    _dnslan_guard_stop
     while "ipt" -t nat -D PREROUTING -j "$DNS_LAN_CHAIN" >/dev/null 2>&1; do :; done
     "ipt" -t nat -F "$DNS_LAN_CHAIN" >/dev/null 2>&1 || true
     "ipt" -t nat -X "$DNS_LAN_CHAIN" >/dev/null 2>&1 || true
     while "ipt" -t filter -D INPUT -j "$DNS_LAN_IN_CHAIN" >/dev/null 2>&1; do :; done
     "ipt" -t filter -F "$DNS_LAN_IN_CHAIN" >/dev/null 2>&1 || true
     "ipt" -t filter -X "$DNS_LAN_IN_CHAIN" >/dev/null 2>&1 || true
+}
+
+_dnslan_guard_pid() {
+    cat "$DNS_LAN_GUARD" 2>/dev/null || true
+}
+
+_dns_lan_guard_alive() {
+    _gp=$(_dnslan_guard_pid)
+    [ -n "$_gp" ] && kill -0 "$_gp" 2>/dev/null
+}
+
+_dnslan_guard_stop() {
+    _gp=$(_dnslan_guard_pid)
+    [ -n "$_gp" ] || return 0
+    rm -f "$DNS_LAN_GUARD"
+    # Сторож сам вызывает dns-lan-down: себя не убиваем, он выйдет сам.
+    if [ "${SUSANIN_DNSLAN_GUARD_PID:-}" = "$_gp" ]; then return 0; fi
+    kill -TERM "$_gp" 2>/dev/null || true
+}
+
+_dnslan_guard_start() {
+    _dns_lan_guard_alive && return 0
+    rm -f "$DNS_LAN_GUARD"
+    [ -f "$TOOLS/dnslan-guard.sh" ] || return 0
+    # Отвязанный процесс: все fd — на /dev/null, иначе агент, читающий вывод
+    # datapath.sh через pipe, будет ждать EOF от сторожа.
+    SUSANIN_TOOLS="$TOOLS" SUSANIN_DNS_LAN_PORT="$DNS_LAN_PORT" \
+        sh "$TOOLS/dnslan-guard.sh" </dev/null >/dev/null 2>&1 &
 }
 
 _dns_lan_listening() {
@@ -804,6 +837,7 @@ dns_lan_rules() {
     fi
     if [ "$_n" -gt 0 ]; then
         say "dns_lan: DNS клиентов ($_ifaces) -> $_dst через туннель (правил: $_n)"
+        _dnslan_guard_start
     else
         say "dns_lan=1, но правила не добавлены: ${_err:-неизвестная ошибка}"
     fi
@@ -1025,6 +1059,11 @@ command_status() {
     _dl=$("ipt" -t nat -S "$DNS_LAN_CHAIN" 2>/dev/null | grep -c '^-A' || true)
     if [ "$DNS_LAN" = "1" ]; then
         echo "dns_lan: on (клиенты LAN -> $(_dns_lan_dest); правил=$_dl)"
+        if _dns_lan_guard_alive; then
+            echo "dns_lan guard: on (pid=$(_dnslan_guard_pid))"
+        else
+            echo "dns_lan guard: НЕ запущен (при смерти агента DNAT останется — DNS клиентов пропадёт)"
+        fi
     elif [ "${_dl:-0}" -gt 0 ] 2>/dev/null; then
         echo "dns_lan: 0 в конфиге, но правила остались ($_dl) — снимутся при следующем up/down"
     else
@@ -1159,12 +1198,21 @@ case "${1:-}" in
         ;;
     down) command_down ;;
     status) command_status ;;
+    # DNS клиентов отдельно от остального датаплейна: сторож снимает только эти
+    # две цепи, не трогая tproxy/ipset.
+    dns-lan-up) dns_lan_rules ;;
+    dns-lan-down) dns_lan_clean ;;
+    dns-lan-status)
+        _dl=$("ipt" -t nat -S "$DNS_LAN_CHAIN" 2>/dev/null | grep -c '^-A' || true)
+        echo "dns_lan: rules=${_dl:-0} guard=$(_dns_lan_guard_alive && echo on || echo off)"
+        [ "${_dl:-0}" -gt 0 ] 2>/dev/null
+        ;;
     flush) command_flush ;;
     egress) command_egress "${2:-}" ;;
     add) command_add "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
     del) command_del "${2:-}" "${3:-}" "${4:-}" ;;
     *)
-        echo "usage: $0 {up|down|p5|p5-down|status|flush|egress <iface>|add <ip> [<port>] <tcp|udp> <test|ok>|del <ip> [<port>] <tcp|udp>}" >&2
+        echo "usage: $0 {up|down|p5|p5-down|status|flush|egress <iface>|dns-lan-up|dns-lan-down|dns-lan-status|add <ip> [<port>] <tcp|udp> <test|ok>|del <ip> [<port>] <tcp|udp>}" >&2
         echo "  (порт обязателен при SUSANIN_PORT_AWARE=1; ok_net/never/direct всегда по адресу)" >&2
         exit 2 ;;
 esac
