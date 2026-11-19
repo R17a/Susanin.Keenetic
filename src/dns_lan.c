@@ -21,9 +21,9 @@
 #include <unistd.h>
 
 /* DNS-форвардер для LAN. Клиенты спрашивают 53 на роутере (правило DNAT ставит
- * datapath), форвардер уводит запрос в туннель: при egress_type=tproxy — через
- * SOCKS5-UDP Xray, при egress_type=interface — обычным UDP, привязанным к
- * интерфейсу туннеля.
+ * datapath), форвардер уводит запрос в туннель: при egress_type=tproxy — по
+ * DNS-over-TCP через SOCKS5 Xray (UDP в vless+vision не проходит), при
+ * egress_type=interface — обычным UDP, привязанным к интерфейсу туннеля.
  *
  * ВАЖНО: форвардер не блокирует главный цикл. Запросы живут в таблице
  * ожидающих (pending) и продвигаются по шагам: локальный резолвер (быстро и
@@ -36,11 +36,13 @@
 #define DNS_LAN_CACHE 128
 #define DNS_LAN_PEND 64
 #define DNS_LAN_MAX_UP 4
-#define DNS_LAN_REASSOC_SEC 60
 
 #define DL_T_LOCAL_MS   400
 #define DL_T_TUNNEL_MS  1200
 #define DL_T_DIRECT_MS  800
+#define DL_T_SOCKS_MS   15000   /* весь обмен DNS-over-TCP: connect+handshake+ответ */
+#define DL_T_QUEUE_MS   20000   /* сколько запрос может ждать очереди к туннелю */
+#define DL_MAX_TCP      16      /* одновременных обменов с SOCKS */
 
 typedef struct {
     char key[264];
@@ -58,14 +60,23 @@ typedef struct {
     struct sockaddr_in from;
     char key[264];
     char name[256];
-    int state;              /* 0 = спросили локальный, 1 = туннель, 2 = прямо */
+    int state;              /* 0 = локальный, 1 = туннель (UDP), 2 = прямо,
+                               3 = туннель (DNS-over-TCP через SOCKS) */
     long long at_ms;
+    /* SOCKS-TCP: своё неблокирующее соединение на каждый запрос */
+    int tfd;
+    int stage;              /* 0 connect, 1 приветствие, 2 CONNECT, 3 ответ */
+    int tlen;               /* сколько принято в tbuf */
+    int tsent;              /* сколько отправлено из tbuf */
+    int wait;               /* сколько байт ждём на текущей стадии */
+    int up_try;             /* какой upstream пробуем (0..g_up_n-1) */
+    int esc;                /* эскалация в туннель уже посчитана */
+    unsigned char tbuf[1600];
 } dl_pend;
 
 static const susanin_config *g_cfg;
 static int g_fd = -1;       /* 0.0.0.0:5399 — запросы клиентов */
 static int g_loc_fd = -1;   /* 127.0.0.1 — локальный ndns */
-static int g_udp_fd = -1;   /* 127.0.0.1 — SOCKS-UDP (источник как у контроля) */
 static int g_tun_fd = -1;   /* сокет на интерфейсе туннеля */
 static char g_tun_name[32];
 static struct sockaddr_in g_up[DNS_LAN_MAX_UP];
@@ -74,11 +85,6 @@ static dl_entry g_cache[DNS_LAN_CACHE];
 static dl_pend g_pend[DNS_LAN_PEND];
 static unsigned long g_q_total, g_q_cache, g_q_local, g_q_tunnel, g_q_direct;
 static unsigned long g_q_fail, g_q_escalate;
-
-static int g_ctl = -1;                 /* TCP-контроль SOCKS5 */
-static struct sockaddr_in g_relay;     /* куда слать датаграммы */
-static time_t g_assoc_at;
-static int g_socks_broken;             /* ассоциация не открылась — не долбим */
 
 #define DL_VIA_SOCKS  0
 #define DL_VIA_IFACE  1
@@ -120,28 +126,6 @@ static void dl_warn(const char *fmt, ...)
 static int dl_send(int fd, const void *buf, size_t n, const struct sockaddr_in *to)
 {
     return (int)sendto(fd, buf, n, 0, (const struct sockaddr *)to, sizeof(*to));
-}
-
-static int dl_recv_n(int fd, void *buf, size_t n)
-{
-    size_t got = 0;
-
-    while (got < n) {
-        int r = (int)recv(fd, (char *)buf + got, n - got, 0);
-        if (r <= 0)
-            return -1;
-        got += (size_t)r;
-    }
-    return 0;
-}
-
-static void dl_set_timeout(int fd, int ms)
-{
-    struct timeval tv;
-    tv.tv_sec = ms / 1000;
-    tv.tv_usec = (ms % 1000) * 1000;
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 }
 
 /* --- разбор DNS --------------------------------------------------------- */
@@ -314,128 +298,251 @@ static void dl_cloexec(int fd)
         fcntl(fd, F_SETFD, fcntl(fd, F_GETFD, 0) | FD_CLOEXEC);
 }
 
-/* --- SOCKS5 UDP ASSOCIATE ------------------------------------------------ */
+/* --- DNS-over-TCP через SOCKS5 (egress_type=tproxy) ---------------------- */
+/*
+ * Почему TCP, а не UDP: Xray в режиме vless+xtls-rprx-vision UDP не
+ * пропускает — SOCKS5 UDP ASSOCIATE открывается, но ответов нет. DNS-over-TCP
+ * идёт по тому же туннелю: SOCKS5 CONNECT на upstream:53, дальше сообщение
+ * DNS с двухбайтовой длиной (RFC 1035, 4.2.2). Блокирующих вызовов нет: у
+ * каждого ожидающего запроса своё неблокирующее соединение и своя стадия.
+ */
 
-static void dl_assoc_close(void)
+static void dl_pend_done(dl_pend *p, const unsigned char *resp, int rn);
+static void dl_pend_drop(dl_pend *p);
+static void dl_pend_send_direct(dl_pend *p);
+
+static int g_tcp_active;        /* сколько обменов с SOCKS идёт прямо сейчас */
+
+static void dl_tcp_reset(dl_pend *p)
 {
-    if (g_ctl >= 0)
-        close(g_ctl);
-    g_ctl = -1;
+    if (p->tfd >= 0) {
+        close(p->tfd);
+        if (g_tcp_active > 0)
+            g_tcp_active--;
+    }
+    p->tfd = -1;
+    p->stage = 0;
+    p->tlen = p->tsent = p->wait = 0;
 }
 
-static int dl_assoc_open(void)
+/* Дочитать в tbuf до p->wait байт. 1 — набрали, 0 — ждём, -1 — ошибка. */
+static int dl_tcp_read(dl_pend *p)
 {
-    unsigned char buf[64];
-    struct sockaddr_in sa;
+    while (p->tlen < p->wait) {
+        ssize_t n = recv(p->tfd, p->tbuf + p->tlen,
+                         sizeof(p->tbuf) - (size_t)p->tlen, 0);
+        if (n > 0) {
+            p->tlen += (int)n;
+            continue;
+        }
+        if (n == 0)
+            return -1;
+        if (errno == EINTR)
+            continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            return 0;
+        return -1;
+    }
+    return 1;
+}
+
+/* Отправить tbuf[tsent..tlen). 1 — всё ушло, 0 — места нет, -1 — ошибка. */
+static int dl_tcp_flush(dl_pend *p)
+{
+    while (p->tsent < p->tlen) {
+        ssize_t n = send(p->tfd, p->tbuf + p->tsent,
+                         (size_t)(p->tlen - p->tsent), MSG_NOSIGNAL);
+        if (n > 0) {
+            p->tsent += (int)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+            return 0;
+        return -1;
+    }
+    return 1;
+}
+
+/* 1 — connect завершён, 0 — ещё идёт, -1 — ошибка. */
+static int dl_tcp_connected(int fd)
+{
+    struct pollfd pf;
+    int err = 0;
+    socklen_t l = sizeof(err);
+
+    pf.fd = fd;
+    pf.events = POLLOUT;
+    pf.revents = 0;
+    if (poll(&pf, 1, 0) <= 0)
+        return 0;
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &l) != 0 || err != 0)
+        return -1;
+    return 1;
+}
+
+/* Начать обмен: неблокирующий connect к SOCKS-порту Xray. */
+static int dl_tcp_start(dl_pend *p)
+{
     const char *host = g_cfg->socks_addr[0] ? g_cfg->socks_addr : "127.0.0.1";
     int port = g_cfg->socks_port > 0 ? g_cfg->socks_port : 1080;
+    struct sockaddr_in sa;
+    int fd, fl;
 
+    if (g_tcp_active >= DL_MAX_TCP)
+        return -1;                  /* очередь: запрос останется ждать в state 0 */
+    if (p->up_try >= g_up_n)
+        p->up_try = 0;
+    dl_tcp_reset(p);
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
     sa.sin_port = htons((unsigned short)port);
     if (inet_pton(AF_INET, host, &sa.sin_addr) != 1)
         return -1;
-    g_ctl = socket(AF_INET, SOCK_STREAM, 0);
-    if (g_ctl < 0)
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0)
         return -1;
-    dl_cloexec(g_ctl);
-    dl_set_timeout(g_ctl, 1500);
-    if (connect(g_ctl, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
-        dl_warn("SOCKS connect %s:%d не удался: %s", host, port, strerror(errno));
-        dl_assoc_close();
-        return -1;
-    }
-    buf[0] = 0x05; buf[1] = 0x01; buf[2] = 0x00;
-    if (send(g_ctl, buf, 3, MSG_NOSIGNAL) < 0 ||
-        dl_recv_n(g_ctl, buf, 2) != 0 || buf[0] != 0x05 || buf[1] != 0x00) {
-        dl_warn("SOCKS приветствие не принято");
-        dl_assoc_close();
+    dl_cloexec(fd);
+    fl = fcntl(fd, F_GETFL, 0);
+    if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) != 0) {
+        close(fd);
         return -1;
     }
-    memset(buf, 0, 10);
-    buf[0] = 0x05; buf[1] = 0x03; buf[2] = 0x00; buf[3] = 0x01;
-    if (send(g_ctl, buf, 10, MSG_NOSIGNAL) < 0) {
-        dl_assoc_close();
+    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0 &&
+        errno != EINPROGRESS) {
+        close(fd);
         return -1;
     }
-    {
-        unsigned char hdr[4], addr[18];
-        int alen;
-        if (dl_recv_n(g_ctl, hdr, 4) != 0 || hdr[0] != 0x05 || hdr[1] != 0x00) {
-            dl_warn("SOCKS UDP ASSOCIATE: ver=%d rep=%d", hdr[0], hdr[1]);
-            dl_assoc_close();
-            return -1;
-        }
-        if (hdr[3] == 0x01)
-            alen = 4;
-        else if (hdr[3] == 0x04)
-            alen = 16;
-        else if (hdr[3] == 0x03) {
-            unsigned char l;
-            if (dl_recv_n(g_ctl, &l, 1) != 0) {
-                dl_assoc_close();
-                return -1;
-            }
-            alen = 1 + l;
-        } else {
-            dl_assoc_close();
-            return -1;
-        }
-        if (alen > (int)sizeof(addr) - 2 || dl_recv_n(g_ctl, addr, (size_t)alen + 2) != 0) {
-            dl_assoc_close();
-            return -1;
-        }
-        memset(&g_relay, 0, sizeof(g_relay));
-        g_relay.sin_family = AF_INET;
-        if (hdr[3] == 0x01)
-            memcpy(&g_relay.sin_addr, addr, 4);
-        else
-            g_relay.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        memcpy(&g_relay.sin_port, addr + alen, 2);
-    }
-    g_assoc_at = time(NULL);
+    g_tcp_active++;
+    p->tfd = fd;
+    p->stage = 0;
+    p->at_ms = dl_now_ms();
+    p->state = 3;
     return 0;
 }
 
-/* Отправить запрос в SOCKS-релей (не ждём ответа). */
-static int dl_socks_send(const unsigned char *q, int qlen)
+/* Обмен не удался: пробуем следующий upstream, иначе отдаём прямой запрос. */
+static void dl_tcp_give_up(dl_pend *p)
 {
-    unsigned char pkt[600];
-    struct sockaddr_in up;
-
-    if (g_ctl < 0 || time(NULL) - g_assoc_at > DNS_LAN_REASSOC_SEC) {
-        dl_assoc_close();
-        if (dl_assoc_open() != 0)
-            return -1;
+    dl_tcp_reset(p);
+    if (p->up_try + 1 < g_up_n) {
+        p->up_try++;
+        if (dl_tcp_start(p) == 0)
+            return;
     }
-    up = g_up[0];
-    pkt[0] = 0; pkt[1] = 0; pkt[2] = 0; pkt[3] = 0x01;
-    memcpy(pkt + 4, &up.sin_addr.s_addr, 4);
-    memcpy(pkt + 8, &up.sin_port, 2);
-    memcpy(pkt + 10, q, (size_t)qlen);
-    return dl_send(g_udp_fd >= 0 ? g_udp_fd : g_fd, pkt, (size_t)(10 + qlen), &g_relay);
+    dl_warn("DNS через туннель не прошёл (%s, SOCKS-TCP)", p->name);
+    if (g_cfg->dns_lan_fallback) {
+        dl_pend_send_direct(p);
+    } else {
+        g_q_fail++;
+        dl_pend_drop(p);
+    }
 }
 
-/* Смещение полезной нагрузки в ответе SOCKS-UDP или -1. */
-static int dl_socks_payload(const unsigned char *pkt, int n)
+/* Один шаг обмена: connect -> приветствие -> CONNECT -> запрос -> ответ.
+ * Возврат: 1 — шаг завершён и можно сразу пробовать следующий (данные уже
+ * пришли); 0 — ждём сокет или обмен закончен. */
+static int dl_tcp_step(dl_pend *p)
 {
-    int off = 3, a;
+    switch (p->stage) {
+    case 0:                             /* connect к SOCKS */
+        switch (dl_tcp_connected(p->tfd)) {
+        case 0:
+            return 0;
+        case -1:
+            goto fail;
+        }
+        p->tbuf[0] = 0x05; p->tbuf[1] = 0x01; p->tbuf[2] = 0x00;
+        p->tlen = 3;
+        p->tsent = 0;
+        if (dl_tcp_flush(p) < 0)
+            goto fail;
+        p->stage = 1;
+        p->tlen = p->tsent = 0;
+        p->wait = 2;
+        return 1;
 
-    if (n < 5)
-        return -1;
-    a = pkt[off];
-    if (a == 1)
-        off += 1 + 4;
-    else if (a == 4)
-        off += 1 + 16;
-    else if (a == 3)
-        off += 2 + pkt[off + 1];
-    else
-        return -1;
-    off += 2;
-    if (off + 12 > n)
-        return -1;
-    return off;
+    case 1:                             /* метод без авторизации принят */
+        switch (dl_tcp_read(p)) {
+        case 0:
+            return 0;
+        case -1:
+            goto fail;
+        }
+        if (p->tbuf[0] != 0x05 || p->tbuf[1] != 0x00)
+            goto fail;
+        /* CONNECT <upstream>:53 — IP-адресом, без DNS у самого прокси */
+        p->tbuf[0] = 0x05; p->tbuf[1] = 0x01; p->tbuf[2] = 0x00;
+        p->tbuf[3] = 0x01;
+        memcpy(p->tbuf + 4, &g_up[p->up_try].sin_addr.s_addr, 4);
+        memcpy(p->tbuf + 8, &g_up[p->up_try].sin_port, 2);
+        p->tlen = 10;
+        p->tsent = 0;
+        if (dl_tcp_flush(p) < 0)
+            goto fail;
+        p->stage = 2;
+        p->tlen = p->tsent = 0;
+        p->wait = 4;
+        return 1;
+
+    case 2:                             /* ответ на CONNECT */
+        switch (dl_tcp_read(p)) {
+        case 0:
+            return 0;
+        case -1:
+            goto fail;
+        }
+        if (p->tbuf[0] != 0x05 || p->tbuf[1] != 0x00)
+            goto fail;
+        if (p->tbuf[3] == 0x01) {          /* IPv4: 4 + 2 */
+            p->wait = 4 + 4 + 2;
+        } else if (p->tbuf[3] == 0x04) {   /* IPv6: 16 + 2 */
+            p->wait = 4 + 16 + 2;
+        } else if (p->tbuf[3] == 0x03) {   /* домен: длина + имя + 2 */
+            p->wait = 5;
+            if (dl_tcp_read(p) != 1)
+                return 0;
+            p->wait = 5 + (int)p->tbuf[4] + 2;
+        } else {
+            goto fail;
+        }
+        if (dl_tcp_read(p) != 1)
+            return 0;
+        if (p->qlen < 12 || p->qlen > 1500)
+            goto fail;
+        p->tbuf[0] = (unsigned char)(p->qlen >> 8);
+        p->tbuf[1] = (unsigned char)(p->qlen & 0xff);
+        memcpy(p->tbuf + 2, p->q, (size_t)p->qlen);
+        p->tlen = 2 + p->qlen;
+        p->tsent = 0;
+        if (dl_tcp_flush(p) < 0)
+            goto fail;
+        p->stage = 3;
+        p->tlen = p->tsent = 0;
+        p->wait = 2;
+        return 1;
+
+    case 3:                             /* ответ DNS */
+        if (dl_tcp_read(p) != 1)
+            return 0;
+        if (p->wait == 2) {
+            int n = (p->tbuf[0] << 8) | p->tbuf[1];
+            if (n < 12 || n > 1500)
+                goto fail;
+            p->wait = 2 + n;
+            if (dl_tcp_read(p) != 1)
+                return 0;
+        }
+        g_q_tunnel++;
+        dl_pend_done(p, p->tbuf + 2, p->wait - 2);
+        return 0;
+    }
+    return 0;
+
+fail:
+    dl_tcp_give_up(p);
+    return 0;
 }
 
 /* --- интерфейс туннеля (egress_type=interface) --------------------------- */
@@ -473,6 +580,9 @@ static int dl_iface_open(const susanin_config *cfg)
 
 /* --- ожидающие запросы --------------------------------------------------- */
 
+static void dl_pend_send_tunnel(dl_pend *p);
+static void dl_pend_send_direct(dl_pend *p);
+
 static dl_pend *dl_pend_new(void)
 {
     int i, oldest = 0;
@@ -481,19 +591,26 @@ static dl_pend *dl_pend_new(void)
         if (!g_pend[i].used) {
             memset(&g_pend[i], 0, sizeof(g_pend[i]));
             g_pend[i].used = 1;
+            g_pend[i].tfd = -1;
             return &g_pend[i];
         }
         if (g_pend[i].at_ms < g_pend[oldest].at_ms)
             oldest = i;
     }
+    if (g_pend[oldest].tfd >= 0)
+        dl_tcp_reset(&g_pend[oldest]);
     g_q_fail++;
     memset(&g_pend[oldest], 0, sizeof(g_pend[oldest]));
     g_pend[oldest].used = 1;
+    g_pend[oldest].tfd = -1;
     return &g_pend[oldest];
 }
 
 static void dl_pend_drop(dl_pend *p)
 {
+    if (p->tfd >= 0)
+        dl_tcp_reset(p);
+    p->tfd = -1;
     p->used = 0;
 }
 
@@ -510,21 +627,19 @@ static void dl_pend_send_local(dl_pend *p)
         p->at_ms = dl_now_ms();
         return;
     }
-    p->state = 1;                   /* локального нет — сразу туннель */
-    p->at_ms = dl_now_ms();
-    (void)dl_socks_send(p->q, p->qlen);
+    dl_pend_send_tunnel(p);         /* локального нет — сразу туннель */
 }
 
 static void dl_pend_send_tunnel(dl_pend *p)
 {
-    p->at_ms = dl_now_ms();
     if (g_mode == DL_VIA_SOCKS) {
-        if (dl_socks_send(p->q, p->qlen) == 0) {
-            p->state = 1;
-            return;
-        }
-        g_socks_broken = 1;
+        if (g_tcp_active >= DL_MAX_TCP)
+            return;                 /* очередь: ждём в state 0, at_ms не сбрасываем */
+        if (dl_tcp_start(p) == 0)
+            return;                 /* state = 3, дальше продвигает poll */
+        p->at_ms = dl_now_ms();
     } else if (g_mode == DL_VIA_IFACE) {
+        p->at_ms = dl_now_ms();
         if (g_tun_fd >= 0 && dl_send(g_tun_fd, p->q, (size_t)p->qlen, &g_up[0]) >= 0) {
             p->state = 1;
             return;
@@ -534,6 +649,8 @@ static void dl_pend_send_tunnel(dl_pend *p)
             p->state = 1;
             return;
         }
+    } else {
+        p->at_ms = dl_now_ms();
     }
     p->state = 2;                   /* в туннель не вышло — напрямую */
     (void)dl_send(g_fd, p->q, (size_t)p->qlen, &g_up[0]);
@@ -659,40 +776,44 @@ static void dl_drain_tunnel(void)
     int i;
     for (i = 0; i < 32; i++) {
         unsigned char r[1500];
-        int n, off;
+        int n;
         dl_pend *p;
 
-        if (g_mode == DL_VIA_SOCKS) {
-            if (g_udp_fd < 0)
-                return;
-            n = (int)recv(g_udp_fd, r, sizeof(r), 0);
-            if (n < 12)
-                return;
-            off = dl_socks_payload(r, n);
-            if (off < 0)
-                continue;
-            p = dl_pend_find(r + off, n - off);
-            if (!p || p->state != 1)
-                continue;
-            g_q_tunnel++;
-            dl_pend_done(p, r + off, n - off);
-        } else {
-            if (g_tun_fd < 0)
-                return;
-            {
-                struct sockaddr_in from;
-                socklen_t fl = sizeof(from);
-                n = (int)recvfrom(g_tun_fd, r, sizeof(r), 0,
-                                  (struct sockaddr *)&from, &fl);
-            }
-            if (n < 12)
-                return;
-            p = dl_pend_find(r, n);
-            if (!p || p->state != 1)
-                continue;
-            g_q_tunnel++;
-            dl_pend_done(p, r, n);
+        if (g_mode != DL_VIA_IFACE)
+            return;                 /* SOCKS-путь ведёт dl_tcp_tick */
+        if (g_tun_fd < 0)
+            return;
+        {
+            struct sockaddr_in from;
+            socklen_t fl = sizeof(from);
+            n = (int)recvfrom(g_tun_fd, r, sizeof(r), 0,
+                              (struct sockaddr *)&from, &fl);
         }
+        if (n < 12)
+            return;
+        p = dl_pend_find(r, n);
+        if (!p || p->state != 1)
+            continue;
+        g_q_tunnel++;
+        dl_pend_done(p, r, n);
+    }
+}
+
+/* Продвинуть обмены DNS-over-TCP: каждый шаг может идти сразу за предыдущим,
+ * пока данные уже пришли — иначе обмен растягивался на тики главного цикла. */
+static void dl_tcp_tick(void)
+{
+    int i;
+
+    for (i = 0; i < DNS_LAN_PEND; i++) {
+        dl_pend *p = &g_pend[i];
+        int guard = 0;
+
+        if (!p->used || p->state != 3 || p->tfd < 0)
+            continue;
+        while (guard++ < 8 && p->state == 3 && p->tfd >= 0 &&
+               dl_tcp_step(p))
+            ;
     }
 }
 
@@ -709,8 +830,15 @@ static void dl_expire(void)
         if (!p->used)
             continue;
         age = now - p->at_ms;
-        if (p->state == 0 && age > DL_T_LOCAL_MS) {
-            g_q_escalate++;
+        if (p->state == 0 && age > DL_T_QUEUE_MS) {
+            g_q_fail++;
+            dl_warn("очередь к туннелю переполнена (%s)", p->name);
+            dl_pend_drop(p);
+        } else if (p->state == 0 && age > DL_T_LOCAL_MS) {
+            if (!p->esc) {
+                p->esc = 1;
+                g_q_escalate++;
+            }
             dl_pend_send_tunnel(p);
         } else if (p->state == 1 && age > DL_T_TUNNEL_MS) {
             if (g_cfg->dns_lan_fallback)
@@ -722,9 +850,11 @@ static void dl_expire(void)
         } else if (p->state == 2 && age > DL_T_DIRECT_MS) {
             g_q_fail++;
             dl_warn("upstream не ответил (%s, %s)",
-                    g_mode == DL_VIA_SOCKS ? "socks" :
+                    g_mode == DL_VIA_SOCKS ? "socks-tcp" :
                     g_mode == DL_VIA_IFACE ? g_tun_name : "direct", p->name);
             dl_pend_drop(p);
+        } else if (p->state == 3 && age > DL_T_SOCKS_MS) {
+            dl_tcp_give_up(p);
         }
     }
 }
@@ -802,7 +932,7 @@ int dns_lan_start(const susanin_config *cfg)
     }
     fcntl(g_fd, F_SETFL, fcntl(g_fd, F_GETFL, 0) | O_NONBLOCK);
     dl_cloexec(g_fd);
-    /* сокет к локальному резолверу и SOCKS-UDP: источник 127.0.0.1 */
+    /* сокет к локальному резолверу: источник 127.0.0.1 */
     {
         struct sockaddr_in lo;
         g_loc_fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -816,32 +946,22 @@ int dns_lan_start(const susanin_config *cfg)
                 g_loc_fd = -1;
             }
         }
-        g_udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
-        if (g_udp_fd >= 0) {
-            if (bind(g_udp_fd, (struct sockaddr *)&lo, sizeof(lo)) != 0) {
-                close(g_udp_fd);
-                g_udp_fd = -1;
-            }
-        }
     }
     if (g_loc_fd >= 0)
         fcntl(g_loc_fd, F_SETFL, fcntl(g_loc_fd, F_GETFL, 0) | O_NONBLOCK);
-    if (g_udp_fd >= 0)
-        fcntl(g_udp_fd, F_SETFL, fcntl(g_udp_fd, F_GETFL, 0) | O_NONBLOCK);
-    if (g_ctl >= 0)
-        dl_cloexec(g_ctl);
     dl_cloexec(g_loc_fd);
-    dl_cloexec(g_udp_fd);
     dl_cloexec(g_tun_fd);
     for (i = 0; i < DNS_LAN_CACHE; i++) {
         free(g_cache[i].resp);
         memset(&g_cache[i], 0, sizeof(g_cache[i]));
     }
     memset(g_pend, 0, sizeof(g_pend));
+    for (i = 0; i < DNS_LAN_PEND; i++)
+        g_pend[i].tfd = -1;
     dl_stats_reset();
     slogf(SL_INFO, "dns_lan: слушаю DNS клиентов на порту %d, путь: %s%s",
           DNS_LAN_PORT,
-          g_mode == DL_VIA_SOCKS ? "SOCKS-Xray" :
+          g_mode == DL_VIA_SOCKS ? "SOCKS-Xray (DNS-over-TCP)" :
           g_mode == DL_VIA_IFACE ? g_tun_name : "напрямую (туннеля нет)",
           cfg->dns_lan_smart ? " (сначала локальный резолвер)" : "");
     return 0;
@@ -856,15 +976,19 @@ void dns_lan_stop(void)
     if (g_loc_fd >= 0)
         close(g_loc_fd);
     g_loc_fd = -1;
-    if (g_udp_fd >= 0)
-        close(g_udp_fd);
-    g_udp_fd = -1;
     if (g_tun_fd >= 0)
         close(g_tun_fd);
     g_tun_fd = -1;
     g_tun_name[0] = '\0';
-    dl_assoc_close();
+    for (i = 0; i < DNS_LAN_PEND; i++) {
+        if (g_pend[i].tfd >= 0)
+            close(g_pend[i].tfd);
+        g_pend[i].tfd = -1;
+    }
     memset(g_pend, 0, sizeof(g_pend));
+    for (i = 0; i < DNS_LAN_PEND; i++)
+        g_pend[i].tfd = -1;
+    g_tcp_active = 0;
     for (i = 0; i < DNS_LAN_CACHE; i++) {
         free(g_cache[i].resp);
         memset(&g_cache[i], 0, sizeof(g_cache[i]));
@@ -901,6 +1025,7 @@ void dns_lan_poll(void)
     dl_drain_clients();
     dl_drain_local();
     dl_drain_tunnel();
+    dl_tcp_tick();
     dl_expire();
 }
 
@@ -911,7 +1036,7 @@ int dns_lan_stats(char *out, size_t n)
     snprintf(out, n, "listen=%d via=%s upstreams=%d queries=%lu cached=%lu "
              "local=%lu escalate=%lu tunnel=%lu direct=%lu fail=%lu pend=%d",
              g_fd >= 0 ? DNS_LAN_PORT : 0,
-             g_mode == DL_VIA_SOCKS ? "socks" :
+             g_mode == DL_VIA_SOCKS ? "socks-tcp" :
              g_mode == DL_VIA_IFACE ? g_tun_name : "direct",
              g_up_n, g_q_total, g_q_cache, g_q_local, g_q_escalate,
              g_q_tunnel, g_q_direct, g_q_fail, DNS_LAN_PEND);
@@ -940,4 +1065,17 @@ void dns_lan_write_snapshot(const susanin_config *cfg)
 int dns_lan_active(void)
 {
     return g_fd >= 0;
+}
+
+/* Идёт обмен DNS-over-TCP? Главный цикл спит короче, чтобы ответ не ждал
+ * следующего тика: каждый шаг обмена — это RTT, и на 200 мс тиках ответ
+ * приходит за секунды. */
+int dns_lan_busy(void)
+{
+    int i;
+
+    for (i = 0; i < DNS_LAN_PEND; i++)
+        if (g_pend[i].used && g_pend[i].state == 3)
+            return 1;
+    return 0;
 }

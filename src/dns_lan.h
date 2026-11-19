@@ -12,6 +12,7 @@ void dns_lan_stop(void);
 void dns_lan_reload(const susanin_config *cfg);
 void dns_lan_poll(void);
 int  dns_lan_active(void);
+int  dns_lan_busy(void);   /* 1 = идёт обмен с туннелем, спать короче */
 int  dns_lan_stats(char *out, size_t n);
 
 /* Снимок для CLI: движок пишет строку в файл, `status`/`why` её читают. */
