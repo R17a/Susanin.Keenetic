@@ -710,9 +710,9 @@ static void dl_expire(void)
             }
         } else if (p->state == 2 && age > DL_T_DIRECT_MS) {
             g_q_fail++;
-            dl_warn("upstream не ответил (%s, %s)", p->name,
+            dl_warn("upstream не ответил (%s, %s)",
                     g_mode == DL_VIA_SOCKS ? "socks" :
-                    g_mode == DL_VIA_IFACE ? g_tun_name : "direct");
+                    g_mode == DL_VIA_IFACE ? g_tun_name : "direct", p->name);
             dl_pend_drop(p);
         }
     }
