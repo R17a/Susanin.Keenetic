@@ -772,10 +772,31 @@ _dnslan_guard_start() {
         sh "$TOOLS/dnslan-guard.sh" </dev/null >/dev/null 2>&1 &
 }
 
-_dns_lan_listening() {
+_dns_lan_socket_inode() {
     _hex=$(printf '%04X' "$DNS_LAN_PORT")
-    awk -v p=":$_hex" '$2 ~ p"$" && $4 == "07" { f=1 } END { exit(f?0:1) }' \
-        /proc/net/udp 2>/dev/null
+    awk -v p=":$_hex" '$2 ~ p"$" && $4 == "07" { print $10; exit }' /proc/net/udp 2>/dev/null
+}
+
+# Слушает именно агент? Порт мог остаться у процесса, унаследовавшего сокет
+# (Xray запускается агентом через exec): тогда новый агент не может забиндиться,
+# форвардер молчит, а DNAT слал бы DNS клиентов в мёртвый сокет — правила при
+# этом выглядят исправными, потому что порт «слушается».
+_dns_lan_owned_by_agent() {
+    _ino=$(_dns_lan_socket_inode)
+    [ -n "$_ino" ] || return 1
+    _ap=$(cat /opt/susanin/var/susanin-agent.pid 2>/dev/null || true)
+    [ -n "$_ap" ] || return 0        # pid-файла нет — судить не по чему
+    kill -0 "$_ap" 2>/dev/null || return 0
+    for _f in /proc/"$_ap"/fd/*; do
+        [ "$(readlink "$_f" 2>/dev/null)" = "socket:[$_ino]" ] || continue
+        return 0
+    done
+    return 1
+}
+
+_dns_lan_listening() {
+    [ -n "$(_dns_lan_socket_inode)" ] || return 1
+    _dns_lan_owned_by_agent
 }
 
 dns_lan_rules() {
@@ -784,7 +805,11 @@ dns_lan_rules() {
     # DNAT на мёртвый форвардер = DNS у всех клиентов. Поэтому ставим правила
     # только если агент уже слушает порт.
     if ! _dns_lan_listening; then
-        say "dns_lan: форвардер не слушает порт $DNS_LAN_PORT — DNAT не ставлю"
+        if [ -n "$(_dns_lan_socket_inode)" ]; then
+            say "dns_lan: порт $DNS_LAN_PORT слушает НЕ агент (унаследован Xray?) — DNAT не ставлю; нужен перезапуск Xray/агента"
+        else
+            say "dns_lan: форвардер не слушает порт $DNS_LAN_PORT — DNAT не ставлю"
+        fi
         return 0
     fi
     _dst=$(_dns_lan_dest)

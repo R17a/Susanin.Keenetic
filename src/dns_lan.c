@@ -305,6 +305,15 @@ static dl_entry *dl_cache_get(const char *key, time_t now)
     return NULL;
 }
 
+/* Сокеты форвардера не должны переживать exec: Xray и другие долгоживущие
+ * потомки унаследовали бы их и держали порт даже после перезапуска агента
+ * (новый агент не забиндится, а DNAT будет слать DNS в мёртвый сокет). */
+static void dl_cloexec(int fd)
+{
+    if (fd >= 0)
+        fcntl(fd, F_SETFD, fcntl(fd, F_GETFD, 0) | FD_CLOEXEC);
+}
+
 /* --- SOCKS5 UDP ASSOCIATE ------------------------------------------------ */
 
 static void dl_assoc_close(void)
@@ -329,6 +338,7 @@ static int dl_assoc_open(void)
     g_ctl = socket(AF_INET, SOCK_STREAM, 0);
     if (g_ctl < 0)
         return -1;
+    dl_cloexec(g_ctl);
     dl_set_timeout(g_ctl, 1500);
     if (connect(g_ctl, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
         dl_warn("SOCKS connect %s:%d не удался: %s", host, port, strerror(errno));
@@ -448,6 +458,7 @@ static int dl_iface_open(const susanin_config *cfg)
         fd = socket(AF_INET, SOCK_DGRAM, 0);
         if (fd < 0)
             continue;
+        dl_cloexec(fd);
         if (setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, tok,
                        (socklen_t)strlen(tok)) != 0) {
             close(fd);
@@ -790,6 +801,7 @@ int dns_lan_start(const susanin_config *cfg)
         return -1;
     }
     fcntl(g_fd, F_SETFL, fcntl(g_fd, F_GETFL, 0) | O_NONBLOCK);
+    dl_cloexec(g_fd);
     /* сокет к локальному резолверу и SOCKS-UDP: источник 127.0.0.1 */
     {
         struct sockaddr_in lo;
@@ -816,6 +828,11 @@ int dns_lan_start(const susanin_config *cfg)
         fcntl(g_loc_fd, F_SETFL, fcntl(g_loc_fd, F_GETFL, 0) | O_NONBLOCK);
     if (g_udp_fd >= 0)
         fcntl(g_udp_fd, F_SETFL, fcntl(g_udp_fd, F_GETFL, 0) | O_NONBLOCK);
+    if (g_ctl >= 0)
+        dl_cloexec(g_ctl);
+    dl_cloexec(g_loc_fd);
+    dl_cloexec(g_udp_fd);
+    dl_cloexec(g_tun_fd);
     for (i = 0; i < DNS_LAN_CACHE; i++) {
         free(g_cache[i].resp);
         memset(&g_cache[i], 0, sizeof(g_cache[i]));

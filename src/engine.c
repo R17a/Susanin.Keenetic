@@ -1260,6 +1260,26 @@ static void write_xray_pidfile(pid_t pid)
     }
 }
 
+/* Перед exec закрыть все fd, унаследованные от агента.
+ *
+ * Долгоживущий Xray (и шелл S93, из которого он стартует) иначе забирает наши
+ * сокеты: DNS-форвардер клиентов (порт 5399), UDP-релей, снифферы. Порт
+ * остаётся занятым даже после перезапуска агента — новый агент не может
+ * забиндиться, форвардер молчит, а DNAT продолжает слать клиентам DNS в мёртвый
+ * сокет. Правила при этом выглядят исправными: порт-то «слушается». Поэтому
+ * наследственные fd закрываем, а нужные (stdout/stderr на лог) уже
+ * перенаправлены через dup2 до вызова. */
+static void close_inherited_fds(void)
+{
+    long max = sysconf(_SC_OPEN_MAX);
+    int fd;
+
+    if (max < 0 || max > 4096)
+        max = 4096;
+    for (fd = 3; fd < (int)max; fd++)
+        close(fd);
+}
+
 /* Прямой запуск Xray без shell: fork/execl. Это FALLBACK: на роутере
  * S93xray-tproxy падал с "sh: -c requires an argument", и Xray не поднимался
  * вообще. Штатный путь — S93 (см. restart_xray_process).
@@ -1306,6 +1326,7 @@ static int spawn_xray_direct(const susanin_config *cfg)
          * запуске через S93: настройка из susanin.conf молча игнорировалась. */
         setenv("GOGC", cfg->xray_gogc[0] ? cfg->xray_gogc : "50", 1);
         setenv("GOMEMLIMIT", cfg->xray_gomemlimit[0] ? cfg->xray_gomemlimit : "64MiB", 1);
+        close_inherited_fds();
         execl("/opt/sbin/xray", "xray", "run", "-config",
               "/opt/susanin/etc/xray-tproxy.json", (char *)NULL);
         _exit(127);
@@ -1340,6 +1361,7 @@ static void spawn_xray_init(const char *action)
                 close(fd);
         }
     }
+    close_inherited_fds();
     execl("/bin/sh", "sh", "/opt/etc/init.d/S93xray-tproxy", action, (char *)NULL);
     _exit(127);
 }
