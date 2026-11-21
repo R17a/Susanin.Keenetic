@@ -50,12 +50,19 @@ static const char *tool_conntrack(void)
     return buf;
 }
 
-/* Предел ожидания ребёнка (iptables/ipset/conntrack). NDM держит общий
- * xtables-lock, и `iptables -w` может ждать его секундами: без предела главный
- * цикл вставал целиком, а вместе с ним и dns_lan (DNS всей LAN). */
-#define RUN_ARGV_TIMEOUT_MS 2000
+/* Пределы ожидания детей. Одиночная утилита (iptables/ipset/conntrack) должна
+ * укладываться в 2 с: NDM держит общий xtables-lock, и `iptables -w` может
+ * ждать его секундами — без предела главный цикл вставал целиком, а вместе с
+ * ним и dns_lan (DNS всей LAN).
+ *
+ * НО скрипт datapath.sh и провижн — это десятки вызовов: на mipsel `up`
+ * занимает 5–15 с. Лимит 2 с убивал его на середине (цепочка SUSANIN уже есть,
+ * а jump/ip rule/маршрут — нет), поэтому у скриптов и провижна свой бюджет. */
+#define RUN_ARGV_TIMEOUT_MS      2000
+#define RUN_SCRIPT_TIMEOUT_MS    30000
+#define RUN_PROVISION_TIMEOUT_MS 60000
 
-static int run_argv(char *const argv[])
+static int run_argv_to(char *const argv[], int timeout_ms)
 {
     pid_t pid = fork();
     int st = -1;
@@ -82,13 +89,13 @@ static int run_argv(char *const argv[])
             continue;
         if (r < 0)
             return -1;
-        if (waited >= RUN_ARGV_TIMEOUT_MS) {
+        if (waited >= timeout_ms) {
             /* Завис (обычно ждёт xtables-lock): убиваем и говорим об этом —
              * иначе одно зависание снова валит DNS всей LAN. */
             kill(pid, SIGKILL);
             (void)waitpid(pid, &st, 0);
             slogf(SL_WARN, "команда %s не уложилась в %d мс — прервана",
-                  argv && argv[0] ? argv[0] : "?", RUN_ARGV_TIMEOUT_MS);
+                  argv && argv[0] ? argv[0] : "?", timeout_ms);
             return -1;
         }
         usleep(10000);
@@ -97,6 +104,11 @@ static int run_argv(char *const argv[])
     if (WIFEXITED(st))
         return WEXITSTATUS(st);
     return -1;
+}
+
+static int run_argv(char *const argv[])
+{
+    return run_argv_to(argv, RUN_ARGV_TIMEOUT_MS);
 }
 
 /* ---- Батч ipset-операций ---------------------------------------------------
@@ -715,11 +727,11 @@ static int run_capture_argv(char *const argv[], char *out, size_t outsz)
                 if (rp < 0 && errno != EINTR)
                     break;
             }
-            if (waited >= RUN_ARGV_TIMEOUT_MS) {
+            if (waited >= RUN_PROVISION_TIMEOUT_MS) {
                 kill(pid, SIGKILL);
                 (void)waitpid(pid, &st, 0);
-                slogf(SL_WARN, "команда %s не уложилась в %d мс — прервана",
-                      argv && argv[0] ? argv[0] : "?", RUN_ARGV_TIMEOUT_MS);
+                slogf(SL_WARN, "провижн датаплейна не уложился в %d мс — прерван",
+                      RUN_PROVISION_TIMEOUT_MS);
                 close(p[0]);
                 if (out && outsz)
                     out[n] = '\0';
@@ -851,7 +863,7 @@ static int run_script(const susanin_config *c, const char *a1, const char *a2)
     argv[3] = (char *)a2;
     argv[4] = NULL;
     set_env(c);
-    return run_argv(argv);
+    return run_argv_to(argv, RUN_SCRIPT_TIMEOUT_MS);
 }
 
 /* Снять DNAT-перехват DNS клиентов. Нужен при выключении dns_lan на лету:
