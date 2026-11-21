@@ -95,13 +95,20 @@ maybe_restart() {
 echo $$ >"$PIDFILE" 2>/dev/null || true
 # Проверка ОТВЕТА, а не только сокета: агент может быть жив и держать порт,
 # но стоять в главном цикле (ждёт дочерний iptables). Тогда сокет есть, а
-# ответов нет — и DNAT шлёт DNS клиентов в мёртвый порт. Две неудачи подряд
-# (раз в PROBE_EVERY тиков) — считаем форвардер мёртвым.
+# ответов нет — и DNAT шлёт DNS клиентов в мёртвый порт. Три неудачи подряд
+# (раз в PROBE_EVERY тиков) — считаем форвардер мёртвым. Две не годятся:
+# один пропущенный тик агента давал ложное «мёртв» и снимал рабочий DNAT.
 PROBE_EVERY=${SUSANIN_DNSLAN_PROBE_EVERY:-12}
+PROBE_FAIL_MAX=${SUSANIN_DNSLAN_PROBE_FAIL_MAX:-3}
 AGENT_BIN=/opt/susanin/bin/susanin-agent
 probe_answers() {
     [ -x "$AGENT_BIN" ] || return 0
     "$AGENT_BIN" dnsprobe example.com 127.0.0.1 "$PORT" >/dev/null 2>&1
+}
+# Причина неудачи — в журнал: без неё «не отвечает» не отличить от таймаута,
+# отказа upstream-а и занятого цикла.
+probe_why() {
+    "$AGENT_BIN" dnsprobe example.com 127.0.0.1 "$PORT" 2>&1 | tail -n1
 }
 # Убираем pid-файл только если он всё ещё наш: иначе сторож, вышедший после
 # restart, удалил бы pid-файл нового сторожа, и тот через тик решил бы, что его
@@ -123,8 +130,8 @@ while :; do
     if agent_holds_socket; then
         if [ $((tick % PROBE_EVERY)) -eq 0 ] && ! probe_answers; then
             pfail=$((pfail + 1))
-            note "dns_lan: сокет udp/$PORT есть, но форвардер не отвечает (проба $pfail/2)"
-            [ "$pfail" -lt 2 ] && continue
+            note "dns_lan: сокет udp/$PORT есть, но форвардер не отвечает (проба $pfail/$PROBE_FAIL_MAX: $(probe_why))"
+            [ "$pfail" -lt "$PROBE_FAIL_MAX" ] && continue
         else
             pfail=0
             continue

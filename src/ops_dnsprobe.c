@@ -154,8 +154,8 @@ int ops_dnsprobe(const susanin_config *cfg, const char *name, const char *server
     }
     {
         struct pollfd p = { fd, POLLIN, 0 };
-        if (poll(&p, 1, 3000) != 1) {
-            printf("dnsprobe %s via %s:%d — НЕТ ОТВЕТА за 3 с\n", name, srv, port);
+        if (poll(&p, 1, 6000) != 1) {
+            printf("dnsprobe %s via %s:%d — НЕТ ОТВЕТА за 6 с\n", name, srv, port);
             close(fd);
             return 1;
         }
@@ -175,10 +175,12 @@ int ops_dnsprobe(const susanin_config *cfg, const char *name, const char *server
         printf("  A    : %s\n", ip4);
     if (aaaa > 0)
         printf("  AAAA : %s\n", ip6);
-    if (a <= 0 && aaaa <= 0) {
-        printf("  записей A/AAAA нет\n");
-        return 1;
-    }
+    /* Отсутствие записей — это НЕ «нет ответа». Сторож спрашивает пробой,
+     * жив ли форвардер, а не «есть ли у домена адрес»: NXDOMAIN, пустой ответ
+     * и даже SERVFAIL приходят от живого форвардера. Раньше любой такой ответ
+     * считался отказом, и сторож снимал DNAT, хотя DNS-путь был исправен. */
+    if (a <= 0 && aaaa <= 0)
+        printf("  записей A/AAAA нет (ответ получен — форвардер жив)\n");
     (void)verbose;
     return 0;
 }
