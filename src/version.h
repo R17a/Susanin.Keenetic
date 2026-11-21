@@ -1,6 +1,6 @@
 #ifndef SUSANIN_VERSION_H
 #define SUSANIN_VERSION_H
 
-#define SUSANIN_VERSION "0.5.1"
+#define SUSANIN_VERSION "0.5.2"
 
 #endif
