@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font: 13px/1.45 system-ui, sans-serif;
+    width: 300px; margin: 0; padding: 12px;
+    color: #1c1e21;
+  }
+  .cur {
+    color: #5f6368; margin-bottom: 8px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .cur b { color: #1c1e21; }
+  .row { display: flex; gap: 6px; margin-bottom: 6px; }
+  .row .grow { flex: 1; }
+  input {
+    font: inherit; padding: 5px 7px;
+    border: 1px solid #dadce0; border-radius: 6px;
+  }
+  input:focus-visible { outline: 2px solid #1a73e8; outline-offset: -1px; border-color: transparent; }
+  button {
+    font: inherit; padding: 5px 10px; border-radius: 6px;
+    border: 1px solid #dadce0; background: #fff; color: #1c1e21;
+    cursor: pointer;
+  }
+  button:hover { background: #f1f3f4; }
+  #lst { font-size: 12px; margin: -2px 0 6px; color: #188038; }
+  #lst.err { color: #d93025; }
+  details { margin-top: 10px; border-top: 1px solid #e8eaed; padding-top: 8px; }
+  summary { cursor: pointer; color: #5f6368; margin-bottom: 8px; }
+  .grid {
+    display: grid; gap: 6px;
+    grid-template-columns: 46px 1fr;
+    align-items: center;
+  }
+  .grid label { color: #5f6368; text-align: right; }
+  .grid input { width: 100%; }
+  .grid .actions { grid-column: 1 / -1; display: flex; gap: 6px; align-items: center; margin-top: 2px; }
+  #st { color: #188038; margin-left: auto; font-size: 12px; }
+  #st.err { color: #d93025; }
+</style>
+</head>
+<body>
+  <div class="cur">Текущий сайт: <b id="cur">…</b></div>
+  <div class="row">
+    <button id="alAdd" class="grow">В always</button>
+    <button id="alDel" class="grow">Из always</button>
+  </div>
+  <div class="row">
+    <button id="nvAdd" class="grow">В never</button>
+    <button id="nvDel" class="grow">Из never</button>
+  </div>
+  <div id="lst"></div>
+  <details>
+    <summary>Настройки панели</summary>
+    <div class="grid">
+      <label for="url">URL</label>
+      <input type="text" id="url" placeholder="http://192.168.0.1:8087">
+      <label for="tok">Токен</label>
+      <input type="text" id="tok">
+      <div class="actions">
+        <button id="save">Сохранить</button>
+        <button id="test">Проверить связь</button>
+        <span id="st"></span>
+      </div>
+    </div>
+  </details>
+  <script src="popup.js"></script>
+</body>
+</html>
