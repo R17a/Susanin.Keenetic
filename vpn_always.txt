@@ -1,14 +1,10 @@
-# vpn_always.txt — домены, которые ВСЕГДА идут через VPN (в обход автообучения).
-# Поставляется с дистрибутивом.
+# vpn_always.txt — список доменов, которые ВСЕГДА маршрутизируются
+# через VPN (в обход автообучения). Поставляется с дистрибутивом.
 #
-# Состав намеренно узкий: только сервисы, которые отказывают пользователям из РФ
-# (Anthropic/Claude, OpenAI/ChatGPT и их CDN). Остальное маршрутизируется
-# автообучением: каждая лишняя запись здесь — это лишний резолв, пин и запись в
-# ipset на каждом проходе, то есть работа главного цикла агента.
-#
-# Установка/обновление НЕ перезаписывают существующий
+# Установка/обновление НЕ перезаписывают уже существующий
 # /opt/susanin/etc/vpn_always.txt, но дополняют его новыми записями из сборки
 # (merge; существующие строки не удаляются) — правьте его свободно.
+#
 # Автодополнение из сборки отключается флагом запуска:
 #     sh update.sh --keep-lists
 # (или sh install.sh --keep-lists). Тогда install/update не трогают ни
@@ -25,21 +21,43 @@
 # прямой путь деградировал (ТСПУ/DPI), агент сам уведёт адрес в VPN, а когда
 # прямой оживёт — вернёт обратно. Отличие от жёсткой записи ровно в том, что
 # мягкая не ставит пин в VPN заранее и не резолвится этим списком.
+# RU-guard мягкие записи не запирает «навсегда» — в этом и смысл для .ru-доменов,
+# которым нужен VPN-фолбэк.
 # Пример: ?bitrix24.ru   (для зоны — ?*.example.com)
+# Префикс '?' имеет смысл только здесь: в vpn_never.txt такая строка движком не
+# разбирается и игнорируется.
 #
 # Демон резолвит A-записи жёстких доменов в susanin_ok_{tcp,udp}, CIDR — в
 # susanin_ok_net; изменения подхватываются на лету.
 
-# --- Anthropic / Claude ---
-# Сервис закрыт для пользователей из РФ; CDN-хост статики отдаётся с b-cdn.net,
-# поэтому он вынесен отдельной записью.
+# --- Fastly: медиа X/Twitter (pbs.twimg.com, video.twimg.com, abs.twimg.com) ---
+# X раздаёт картинки и видео с edge-адресов Fastly, которые меняются от запроса
+# к запросу: точечные домены покрывают только часть. CIDR пинятся в
+# susanin_ok_net и закрывают весь диапазон. Держим в начале файла.
+
+151.101.0.0/16
+
+4pda.to
+4pda.ws
+account-tiktok.com
+addlive.io
+akamai.net
+akamaized.net
 anthropic.com
-*.anthropic.com
+app.kilo.ai
+atomile.com
+auth.openai.com
+auth0.com
+byteimg.com
+byteoversea.com
+byteoversea.net
+bytetcdn.com
+cdninstagram.com
+chatgpt.com
+clau.de
 claude.ai
-*.claude.ai
-claude.com
-*.claude.com
 claude.app
+claude.com
 claude.new
 claude.site
 claudemcpclient.com
@@ -47,57 +65,348 @@ claudemcpcontent.com
 claudepages.dev
 claudestudio.com
 claudeusercontent.com
-*.claudeusercontent.com
-clau.de
-servd-anthropic-website.b-cdn.net
-# Собственный диапазон Anthropic (api и веб-фронт).
-160.79.104.0/21
-
-# --- OpenAI / ChatGPT ---
-openai.com
-*.openai.com
-chatgpt.com
-*.chatgpt.com
-chat.com
-*.chat.com
-oaistatic.com
-*.oaistatic.com
-oaiusercontent.com
-*.oaiusercontent.com
+datadoghq.com
+dis.gd
+disboard.org
+discord-activities.com
+discord.center
+discord.co
+discord.com
+discord.design
+discord.dev
+discord.gg
+discord.gift
+discord.gifts
+discord.me
+discord.media
+discord.new
+discord.st
+discord.store
+discord.tools
+discordinvites.net
+discordactivities.com
+discordapp.com
+discordapp.io
+discordapp.net
+discordbee.com
+discordbotlist.com
+discordcdn.com
+discordexpert.com
+discordhome.com
+discordhub.com
+discordlist.me
+discordlist.space
+discordmerch.com
+discordpartygames.com
+discords.com
+discordsays.com
+discordservers.com
+discordstatus.com
+discordtop.com
+disforge.com
+dyno.gg
+facebook.com
+facebook.net
+fbcdn.com
+fbcdn.net
+feelinsonice.com
+findadiscord.com
+ggpht.cn
+ggpht.com
+godaddy.com
+google.com
+google.ru
+googleapis.com
+googleusercontent.com
+googlevideo.com
 gpt3-openai.com
-openai.fund
-openai.org
-sora.com
-*.sora.com
-
-# Хранилища и фронты вне зоны *.openai.com: Azure Front Door / Blob / imgix,
-# Cloudflare-обёртка и LiveKit (голос в ChatGPT).
-openaiapi-site.azureedge.net
-production-openaicom-storage.azureedge.net
-openaiassets.blob.core.windows.net
-openaicomproductionae4b.blob.core.windows.net
-openaicom-api-bdcpf8c6d2e9atf6.z01.azurefd.net
-openaicom.imgix.net
-openai.com.cdn.cloudflare.net
-webpubsub.azure.com
-chatgpt.livekit.cloud
-host.livekit.cloud
-turn.livekit.cloud
-
-# Телеметрия/сбор обращений на стороне OpenAI: без этих хостов интерфейс
-# показывает ошибки загрузки.
-oaistatsig.com
-openai.qualtrics.com
-browser-intake-datadoghq.com
-o33249.ingest.sentry.io
-
-# --- Model Context Protocol (клиенты Claude Desktop) ---
-modelcontextprotocol.io
+grok.com
+gstatic.com
+gvt1.com
+# habr.com
+hetzner.com
+i.ytimg.com
+i9.ytimg.com
+ibytedtos.com
+ibyteimg.com
+ig.me
+instagram.com
+intercom.io
+intercomassets.com
+intercomcdn.com
+ipinfo.io
+ipstatp.com
+isnssdk.com
+jnn-pa.googleapis.com
+kilo.ai
+lh3.googleusercontent.com
+licdn.com
+linkedin.com
+live.net
+mee6.xyz
+microsoft.com
 modelcontextprotocol.com
+modelcontextprotocol.io
 modelcontextprotocol.net
 modelcontextprotocol.org
+muscdn.com
+musemuse.cn
+musical.ly
+oaistatic.com
+oaiusercontent.com
+openai.com
+openai.fund
+openai.org
+play.google.com
+pstatp.com
+returnyoutubedislikeapi.com
+rocket-cdn.com
+ru-board.com
+rutor.info
+rutor.is
+rutor.org
+rutracker.cc
+rutracker.net
+rutracker.org
+rutracker.ru
+rutracker.wiki
+rutrk.org
+snap.com
+snapads.com
+snapchat.com
+snapkit.com
+snapmap.com
+snapmap.org
+snapmaps.com
+stable.dl2.discordapp.net
+strpst.com
+t-ru.org
+t.co
+tiktok.com
+tiktokcdn-eu.com
+tiktokcdn-in.com
+tiktokcdn-us.com
+tiktokcdn.com
+tiktokd.org
+tiktokglobalshop.com
+tiktokv.com
+tiktokv.eu
+tiktokw.eu
+tlivecdn.com
+top.gg
+ttoversea.net
+ttoverseaus.net
+ttwstatic.com
+tweetdeck.com
+twimg.com
+twitter.com
+wide-youtube.l.google.com
+withyoutube.com
+x.ai
+x.com
+youtu.be
+youtube-nocookie.com
+youtube-ui.l.google.com
+youtube.com
+youtube.googleapis.com
+youtubeeducation.com
+youtubeembeddedplayer.googleapis.com
+youtubefanfest.com
+youtubegaming.com
+youtubei.googleapis.com
+youtubekids.com
+youtubemobilesupport.com
+yt-video-upload.l.google.com
+yt.be
+yt3.ggpht.com
+yt3.googleusercontent.com
+yt4.ggpht.com
+yt4.googleusercontent.com
+ytimg.com
+ytimg.l.google.com
+donationalerts.com
+albiononline.com
+albiononline.de
+live.albiononline.com
+cloudfront.net
+t.me
+arkmv.ru
+devart.com
 
+# --- дополнительные www-записи и CIDR-сети ---
+www.youtube.com
+www.instagram.com
+www.tiktok.com
+www.openai.com
+160.79.104.0/21
+8.47.69.0/24
+
+# (resolve_dom в src/vpn_always.c), а api./help. остаются на прямом пути.
+elevenlabs.io
+api.elevenlabs.io
+api.us.elevenlabs.io
+eleven-public-cdn.elevenlabs.io
+help.elevenlabs.io
+
+# Прямой путь к этим серверам у провайдера периодически режется/шейпится
+206.123.140.0/24
+45.156.223.0/24
+194.35.227.0/24
+195.211.191.0/24
+
+# --- OpenAI/ChatGPT и Anthropic/Claude: полный набор ---
+# Дополнение к алфавитному списку выше. Уже есть выше и повторять не нужно:
+# openai.com, chatgpt.com, oaistatic.com, oaiusercontent.com, anthropic.com,
+# claude.ai/.com, clau.de, claudemcpclient.com, claudemcpcontent.com,
 # IPv6 в v1 не поддерживается (резолвим только A-записи), поэтому сети
-# Anthropic 2607:6bc0::/48 и 2607:6bc0:11::/48 оставлены закомментированными.
+# 2607:6bc0::/48 и 2607:6bc0:11::/48 оставлены закомментированными.
+android.chat.openai.com
+betaprofiles.com
+browser-intake-datadoghq.com
+chat.com
+chatgpt.livekit.cloud
+chatgpt.site
+crixet.com
+host.livekit.cloud
+ios.chat.openai.com
+o33249.ingest.sentry.io
+oaistatsig.com
+openai.com.cdn.cloudflare.net
+openai.qualtrics.com
+openaiapi-site.azureedge.net
+openaiassets.blob.core.windows.net
+openaicom-api-bdcpf8c6d2e9atf6.z01.azurefd.net
+openaicom.imgix.net
+openaicomproductionae4b.blob.core.windows.net
+production-openaicom-storage.azureedge.net
+servd-anthropic-website.b-cdn.net
+sora.com
+turn.livekit.cloud
+webpubsub.azure.com
 # 2607:6bc0::/48
 # 2607:6bc0:11::/48
+
+# --- Telegram: серверы, веб-клиент, медиа/CDN (стикеры, картинки, видео) ---
+# Только явные хосты (без wildcard): Telegram-медиа идёт с отдельных CDN-хостов,
+# и без этих строк стикеры/картинки ждут, пока автообучение выучит каждый IP.
+telegram.org
+telegram.me
+telegra.ph
+telegram.dog
+cdn-telegram.org
+telegram-cdn.org
+tdesktop.com
+# --- локальные записи, перенесённые с роутера ---
+# Этих строк не было в поставляемом списке, но они были в живом файле на
+# устройстве (добавлены вручную). Сохранены и в поставке, чтобы обновление на
+# чистом роутере не потеряло их молча.
+aznude.com
+phncdn.com
+pornhub.com
+rdtcdn.com
+xhamster.com
+xhamsterlive.com
+xhcdn.com
+themoviedb.org
+api.themoviedb.org
+image.tmdb.org
+b-cdn.net
+api.ipify.org
+ifconfig.me
+
+# Facebook/Instagram CDN-диапазоны (Meta блокируется в РФ).
+31.13.24.0/21
+31.13.64.0/18
+57.144.0.0/14
+157.240.0.0/16
+179.60.192.0/22
+185.60.216.0/22
+8.47.69.0/21
+45.64.40.0/22
+
+1.1.1.1
+8.8.8.8
+149.154.160.0/20
+91.108.4.0/22
+91.108.56.0/22
+roblox.com
+*.roblox.com
+*.rbxcdn.com
+rbx.com
+robloxlabs.com
+104.18.32.0/20
+172.64.144.0/20
+*.oracle.com
+*.meshtastic.org
+client.meshtastic.org
+flasher.meshtastic.org
+api.meshtastic.org
+*.alibabacloud.com
+billing-cost.console.alibabacloud.com
+swas.console.alibabacloud.com
+console.alibabacloud.com
+76.76.21.0/24
+66.33.60.0/24
+47.91.64.0/24
+47.254.168.0/24
+47.74.138.0/24
+47.88.128.0/24
+47.88.198.0/24
+47.88.251.0/24
+47.241.205.0/24
+8.214.166.0/24
+*.qwen.ai
+
+# === Qwen Chat (chat.qwen.ai) - всё через VPN ===
+qwen.ai
+*.alicdn.com
+*.aliyuncs.com
+*.aliyun.com
+*.alipayobjects.com
+*.mmstat.com
+*.aliapp.org
+
+# qwen.com (сайт/биллинг-портал), alibabacloud.com (консоль/платежи)
+qwen.com
+*.qwen.com
+
+*.deepseek.com
+
+*.godaddy.com
+199.232.0.0/16
+# === 1С-Битрикс24: облако держится напрямую, VPN — как фолбэк ===
+# Прямые маршруты к хостам bitrix24.ru быстрее туннельных, поэтому зона
+# записана мягкой ('?'): в VPN адрес уходит только когда прямой путь деградировал,
+# и возвращается обратно, когда прямой оживёт.
+# video.bitrix24.com напрямую не отвечает вовсе — он оставлен жёсткой записью.
+?*.bitrix24.ru
+video.bitrix24.com
+# === Taobao-медиас стек Qwen (cloud.video и пр.) ===
+*.taobao.com
+# === Lampa (ТВ-плеер): хост за Cloudflare, прямой TLS с линии не проходит ===
+lampa.mx
+*.lampa.mx
+# === Twitch заблокирован ТСПУ целиком: usher/ttvnw RST, чат twitchsvc ===
+*.twitch.tv
+*.ttvnw.net
+*.jtvnw.net
+*.twitchcdn.net
+*.twitchsvc.net
+*.twitchext.net
+# PubNub: fallback-транспорт чата Twitch (тоже в реестре блокировок)
+*.pubnub.com
+*.pubnub.net
+# CloudTips: прямые соединения с линии к CF-хосту зависают (probe-ложка до r6)
+cloudtips.ru
+*.cloudtips.ru
+# === Почта России: собственные сети AS49002 и хостинг AdFact с линии SYN-теряются, ===
+# статика на CloudFront; прямые пробы при этом ложно «живые» (r6 лечит детект) ===
+91.215.36.0/22
+194.226.130.0/24
+13.32.22.0/24
+pochta.ru
+*.pochta.ru
+russianpost.ru
+*.russianpost.ru
+qwenlm.ai
+*.qwenlm.ai
