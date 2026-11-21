@@ -3,6 +3,7 @@
 #include "log.h"
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdint.h>
@@ -36,14 +37,14 @@ int cdn_load(const susanin_config *c)
 {
     FILE *fp;
     char line[128];
-    int n = 0;
+    int n = 0, truncated = 0;
     gn = 0;
     if (!c || !c->cdn_ranges_file[0])
         return 0;
     fp = fopen(c->cdn_ranges_file, "r");
     if (!fp)
         return 0;
-    while (fgets(line, sizeof(line), fp) && n < CDN_MAX_RANGES) {
+    while (fgets(line, sizeof(line), fp)) {
         char *h = strchr(line, '#');
         char *slash;
         struct in_addr a;
@@ -55,6 +56,10 @@ int cdn_load(const susanin_config *c)
             while (t > line && (t[-1] == '\n' || t[-1] == '\r' ||
                                 t[-1] == ' ' || t[-1] == '\t'))
                 *--t = '\0';
+        }
+        if (n >= CDN_MAX_RANGES) {
+            truncated = 1;          /* лимит: не молчим, скажем один раз ниже */
+            continue;
         }
         {
             char *p = line;
@@ -73,7 +78,7 @@ int cdn_load(const susanin_config *c)
                 if (!slash[1])
                     continue;
                 pre = (int)strtol(slash + 1, &ep, 10);
-                if (!ep || *ep || pre < 0 || pre > 32)
+                if (!ep || *ep || pre <= 0 || pre > 32)
                     continue;
             }
             if (inet_pton(AF_INET, p, &a) != 1)
@@ -84,6 +89,9 @@ int cdn_load(const susanin_config *c)
         }
     }
     fclose(fp);
+    if (truncated)
+        slogf(SL_WARN, "CDN: в файле больше %d сетей — лишние пропущены",
+              CDN_MAX_RANGES);
     gn = n;
     return n;
 }
@@ -147,8 +155,10 @@ static int run_to_file(char *const argv[], const char *path)
         execvp(argv[0], argv);
         _exit(127);
     }
-    if (waitpid(pid, &st, 0) < 0)
-        return -1;
+    while (waitpid(pid, &st, 0) < 0) {
+        if (errno != EINTR)
+            return -1;
+    }
     return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
 
@@ -211,6 +221,13 @@ int cdn_refresh(const susanin_config *c)
     return 0;
 }
 
+/* 1 = идёт фоновая загрузка диапазонов: движку нужно, чтобы не пожинать
+ * чужих детей общим waitpid. */
+int cdn_busy(void)
+{
+    return cdn_pid > 0;
+}
+
 int cdn_poll(const susanin_config *c)
 {
     int st = 0;
@@ -218,15 +235,17 @@ int cdn_poll(const susanin_config *c)
 
     if (cdn_pid <= 0)
         return 0;
-    w = waitpid(cdn_pid, &st, WNOHANG);
+    do {
+        w = waitpid(cdn_pid, &st, WNOHANG);
+    } while (w < 0 && errno == EINTR);
     if (w == 0) {
         if (time(NULL) - cdn_started > 120) {   /* завис — не ждём вечно */
             st = -1;
             kill(-cdn_pid, SIGKILL);    /* вся группа: и обёртка, и wget/curl-внук */
             /* Дожидаемся обязательно: брошенный ребёнок — это зомби, а если
              * waitpid не вернуть статус, ниже читалось бы чужое значение. */
-            if (waitpid(cdn_pid, &st, 0) < 0)
-                st = -1;
+            while (waitpid(cdn_pid, &st, 0) < 0 && errno == EINTR)
+                ;
             cdn_pid = 0;
             slogf(SL_WARN, "CDN: скачивание не завершилось за 2 минуты — процесс убит");
         }

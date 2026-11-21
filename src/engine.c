@@ -133,7 +133,7 @@ static void resync_sets(const susanin_config *cfg, susanin_state *st)
 static void clients_audit(const susanin_config *cfg, const ct_flow *flows, int n,
                           time_t now)
 {
-    static time_t last;
+    static long long last_mono;
     static char lastbody[2048];
     /* r7.9: приватные источники ВНЕ lan_subnets (гостевой SSID, mesh, второй
      * роутер) — Susanin их молча игнорирует, и пользователь думает, что
@@ -152,9 +152,19 @@ static void clients_audit(const susanin_config *cfg, const ct_flow *flows, int n
      * значением через strcmp, и без инициализации он читал мусор стека
      * (а при cnt == 0 цикл записи ни разу не выполнялся). */
     body[0] = '\0';
-    if (now - last < 15)
-        return;
-    last = now;
+    /* Периодичность — по монотонным часам: time(NULL) прыгает при NTP-синке,
+     * и аудит мог «замолчать» на час или задублироваться. Для TTL ниже
+     * по-прежнему используется wall clock (now). */
+    {
+        struct timespec ts;
+        long long mono;
+
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        mono = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+        if (last_mono && mono - last_mono < 15000)
+            return;
+        last_mono = mono;
+    }
     for (i = 0; i < n; i++) {
         const ct_flow *fl = &flows[i];
         int k = -1;
@@ -252,6 +262,58 @@ static void sweep_direct(const susanin_config *cfg, susanin_state *st,
             }
         }
     }
+}
+
+/* Потоки, помеченные «в VPN», но фактически идущие напрямую: REDIRECT не
+ * сработал, пока правила не было. sweep_direct() такие пропускает (ctmark != 0),
+ * а judge считает здоровыми — данные от сервера неотличимы от данных из
+ * туннеля. Признак берётся из conntrack (clf_marked_direct): reply-порт — порт
+ * сервера, а не порт Xray. Возвращает число сброшенных потоков (bounded). */
+static int flow_audit(const susanin_config *cfg, susanin_state *st,
+                      const ct_flow *v, int n, time_t now,
+                      unsigned long *marked, unsigned long *direct)
+{
+    int i, killed = 0;
+
+    *marked = *direct = 0;
+    for (i = 0; i < n; i++) {
+        const ct_flow *f = &v[i];
+        if (!clf_from_lan4(cfg, f->src4)) continue;
+        if (clf_is_private4(f->dst4)) continue;
+        if (clf_port_excluded(cfg, f->dport) || clf_port_excluded(cfg, f->sport)) continue;
+        if (!f->ctmark || (f->ctmark & cfg->mark_mask) == 0)
+            continue;               /* не наш поток — аудит не про него */
+        (*marked)++;
+        if (!clf_marked_direct(cfg, f))
+            continue;
+        /* never-адреса обязаны идти напрямую: их точечно рвёт
+         * never_sweep_marked(), в счётчик «сломанных» не берём. */
+        if (vn_has(f->dst) || state_has(&st->never, f->dst, now))
+            continue;
+        (*direct)++;
+        if (killed < 64) {
+            backend_ct_delete(f);
+            killed++;
+        }
+    }
+    return killed;
+}
+
+/* После восстановления правил: сессии, начатые в окне, остались на прямом пути
+ * (REDIRECT/TPROXY/ip rule видят только первый пакет потока). Рвём их
+ * conntrack, но не чаще раза в 10 минут — проверка может сработать повторно, а
+ * каждый сброс — это все VPN-соединения заново. */
+static void reprov_ct_purge(const susanin_config *cfg, const char *why,
+                            time_t now, time_t *last)
+{
+    if (!backend_why_is_redirect(why))
+        return;
+    if (*last && now - *last < 600)
+        return;
+    *last = now;
+    slogf(SL_WARN, "датаплейн: пропало «%s» — помеченные потоки могли уйти "
+                   "напрямую, сбрасываю их conntrack", why);
+    backend_ct_flush_vpn(cfg);
 }
 
 /* vpn_never: уже помеченные (VPN) потоки к «прямым» адресам. never_state_clean()
@@ -446,6 +508,11 @@ static int egress_is_tproxy(const char *name)
     return name && (!strcmp(name, "tproxy") || !strcmp(name, "xray"));
 }
 
+/* pid ребёнка проб. Записывается сразу после fork(); ребёнок, умерший до этой
+ * записи, всё равно остаётся зомби со своим pid (fork уже вернул его), и
+ * ближайший probe_job_poll() соберёт статус через waitpid(WNOHANG). «Потерять»
+ * ребёнка гонка не может — потерять можно только статус, если ждать не тот pid;
+ * здесь pid всегда тот, что вернул fork. */
 static pid_t pj_pid = 0;
 static int pj_fd = -1;
 static time_t pj_start = 0;
@@ -587,7 +654,13 @@ static void probe_job_start(const susanin_config *cfg, int n)
         _exit(0);
     }
     close(fd[1]);
-    (void)fcntl(fd[0], F_SETFL, O_NONBLOCK);
+    /* Если O_NONBLOCK не встанет, read() из pipe заблокирует цикл навсегда —
+     * лучше вообще не брать этот канал, чем повиснуть. */
+    if (fcntl(fd[0], F_SETFL, O_NONBLOCK) != 0) {
+        close(fd[0]);
+        (void)waitpid(pid, NULL, WNOHANG);
+        return;
+    }
     pj_fd = fd[0];
     pj_pid = pid;
     pj_start = time(NULL);
@@ -600,8 +673,13 @@ static void probe_job_poll(const susanin_config *cfg, int *up, int *miss,
 {
     if (pj_fd >= 0) {
         for (;;) {
-            ssize_t r = read(pj_fd, pj_buf + pj_len, sizeof(pj_buf) - pj_len - 1);
+            ssize_t r;
             char *p;
+            /* Guard ДО read(): иначе при pj_len == sizeof(pj_buf) беззнаковое
+             * sizeof - pj_len - 1 даёт огромное число и read пишет за буфер. */
+            if (pj_len + 1 >= sizeof(pj_buf))
+                break;
+            r = read(pj_fd, pj_buf + pj_len, sizeof(pj_buf) - pj_len - 1);
             if (r <= 0)
                 break;
             pj_len += (size_t)r;
@@ -785,8 +863,13 @@ static void vq_collect(susanin_state *stp, const susanin_config *cfg, time_t now
 {
     if (vq_fd >= 0) {
         for (;;) {
-            ssize_t r = read(vq_fd, vq_buf + vq_len, sizeof(vq_buf) - vq_len - 1);
+            ssize_t r;
             char *p;
+            /* Guard ДО read(): при vq_len == sizeof(vq_buf) беззнаковое
+             * sizeof - vq_len - 1 даёт огромный размер. */
+            if (vq_len + 1 >= sizeof(vq_buf))
+                break;
+            r = read(vq_fd, vq_buf + vq_len, sizeof(vq_buf) - vq_len - 1);
             if (r <= 0)
                 break;
             vq_len += (size_t)r;
@@ -828,28 +911,27 @@ static void vq_collect(susanin_state *stp, const susanin_config *cfg, time_t now
 
 /* Снимок очереди/счётчиков для `status` и `why`: это отдельные процессы,
  * память движка им недоступна (тот же путь, что и со счётчиками dns_sniff).
- * Пишем только при изменении; в disk_mode=soft не пишем вовсе — смысл режима
- * в отсутствии записей на носитель. */
+ * Пишем только при изменении; в disk_mode=soft — в tmpfs (как dnssniff/dnslan):
+ * журнала там нет, а снимок остаётся единственным каналом наблюдаемости. */
 static void vq_status_write(const susanin_config *cfg)
 {
     static char last[3584];
-    char buf[3584], wp[64];
+    char buf[3584], wp[80];
+    const char *path = vpin_stats_path(cfg);
     int m;
 
-    if (!strcmp(cfg->disk_mode, "soft"))
-        return;
     m = vpin_format(buf, sizeof(buf), cfg->vpin_check, cfg->vpin_interval);
     if (m <= 0 || !strcmp(buf, last))
         return;
     snprintf(last, sizeof(last), "%s", buf);
-    snprintf(wp, sizeof(wp), "%s.tmp", VPIN_STATS_FILE);
+    snprintf(wp, sizeof(wp), "%s.tmp", path);
     {
         FILE *f = fopen(wp, "w");
         if (!f)
             return;
         fprintf(f, "%s\n", buf);
         fclose(f);
-        rename(wp, VPIN_STATS_FILE);
+        rename(wp, path);
     }
 }
 
@@ -941,7 +1023,11 @@ static void vq_tick(susanin_state *stp, const susanin_config *cfg, time_t now)
         _exit(0);
     }
     close(fd[1]);
-    (void)fcntl(fd[0], F_SETFL, O_NONBLOCK);
+    if (fcntl(fd[0], F_SETFL, O_NONBLOCK) != 0) {
+        close(fd[0]);
+        (void)waitpid(pid, NULL, WNOHANG);
+        return;
+    }
     vq_fd = fd[0];
     vq_pid = pid;
     vq_start = now;
@@ -1367,8 +1453,10 @@ static void spawn_xray_init(const char *action)
 }
 
 /* Подождать, пока Xray займёт порт. Возврат: 0 — слушает, -1 — не дождались.
- * Проверяем порт, а не pid: процесс может существовать, но не забиндиться. */
-static int wait_xray_port(const susanin_config *cfg, int secs)
+ * Проверяем порт, а не pid: процесс может существовать, но не забиндиться.
+ * ВНИМАНИЕ: функция блокирующая (sleep по секунде); вызывать только на старте
+ * и только там, где цикл ещё не обслуживает dns_lan/обучение. */
+static int wait_xray_port_blocking(const susanin_config *cfg, int secs)
 {
     int w;
     for (w = 0; w <= secs; w++) {
@@ -1603,6 +1691,28 @@ static void vpin_interval_fix(susanin_config *cfg)
     }
 }
 
+static int xray_kids_pending(void)
+{
+    int i;
+    for (i = 0; i < 4; i++)
+        if (g_xray_kids[i] > 0)
+            return 1;
+    return 0;
+}
+
+/* Пожинать «бесхозных» детей (ребёнок, умерший между fork и записью pid, всё
+ * равно остаётся зомби; а ребёнок вне g_xray_kids — тем более). Общий
+ * waitpid(-1) допустим ТОЛЬКО когда ни один модуль не ждёт своего ребёнка:
+ * иначе мы украли бы статус у probe/vq/cdn/release/udp_relay. */
+static void reap_strays(void)
+{
+    if (pj_pid > 0 || vq_pid > 0 || xray_kids_pending() ||
+        udp_relay_busy() || cdn_busy() || release_busy())
+        return;
+    while (waitpid(-1, NULL, WNOHANG) > 0)
+        ;
+}
+
 int engine_run(susanin_config *cfg, const char *conf_path)
 {
     susanin_state st;
@@ -1631,6 +1741,9 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     time_t last_trim = 0;
     time_t last_sweep = 0;
     time_t last_nsweep = 0;
+    time_t last_ct_purge = 0;   /* когда последний раз рвали conntrack после ре-провижна */
+    time_t audit_warn_at = 0;   /* не чаще раза в минуту про «идут напрямую» */
+    unsigned long audit_swept = 0;  /* всего сброшено аудитом с начала работы */
     time_t all_down_since = 0;
     time_t last_allwarn = 0;
     time_t last_cdn = 0;
@@ -1648,9 +1761,22 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     int force_pending = 0;
     const char *state_path = "/opt/susanin/var/susanin.state";
 
-    signal(SIGINT, on_sig);
-    signal(SIGTERM, on_sig);
-    signal(SIGHUP, on_hup);     /* reload конфига */
+    {
+        /* sigaction вместо signal(): на части POSIX-систем signal() сбрасывает
+         * обработчик после первого сигнала (семантика System V), и второй
+         * SIGHUP убивал агент вместо reload. SA_RESTART — чтобы сигнал не рвал
+         * блокирующие вызовы посреди работы. */
+        struct sigaction sa;
+
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = on_sig;
+        sa.sa_flags = SA_RESTART;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGINT, &sa, NULL);
+        sigaction(SIGTERM, &sa, NULL);
+        sa.sa_handler = on_hup;
+        sigaction(SIGHUP, &sa, NULL);
+    }
     {
         const char *lf = getenv("SUSANIN_LOG");
         struct stat lst;
@@ -1688,7 +1814,8 @@ int engine_run(susanin_config *cfg, const char *conf_path)
          * Остаётся для случая, когда soft включён, а логи всё же пишутся
          * вручную (перенаправленный запуск без оболочки). */
         slogf(SL_INFO, "disk_mode=soft: лог не ведётся (вывод в /dev/null), "
-              "state не сохраняется (кроме soft_state_interval), бэкапов нет");
+              "state сохраняется при остановке и раз в soft_state_interval, "
+              "бэкапов нет");
     if (cfg->ok_ttl == 0)
         slogf(SL_WARN, "ok_ttl=0: выученные адреса не истекают (наборы будут расти); "
                        "рекомендуется конечный TTL, напр. ok_ttl=21600");
@@ -1738,7 +1865,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     if (strcmp(cfg->egress_type, "tproxy") == 0) {
         /* Xray мог запускаться параллельно — даём ему ~10 c забиндить порт,
          * иначе на старте уходим в fail-open из-за гонки. */
-        (void)wait_xray_port(cfg, 10);
+        (void)wait_xray_port_blocking(cfg, 10);
     }
     if (strcmp(cfg->egress_type, "tproxy") == 0 &&
         !backend_local_listen(cfg->tproxy_port) && cfg->xray_watchdog) {
@@ -1755,7 +1882,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             (void)restart_xray_process(cfg);
         }
         /* Порт может открыться не сразу: на mipsel старт занимает секунды. */
-        (void)wait_xray_port(cfg, 15);
+        (void)wait_xray_port_blocking(cfg, 15);
     }
     if (strcmp(cfg->egress_type, "tproxy") == 0 &&
         !backend_local_listen(cfg->tproxy_port)) {
@@ -1811,6 +1938,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         time_t now = time(NULL);
 
         kids_poll();     /* пожинать детей прямого запуска Xray/S93 (без зомби) */
+        reap_strays();   /* и бесхозных, если модули сейчас никого не ждут */
         udp_relay_tick();    /* работник жив? перезапуск убитого/упавшего (B1) */
 
         if (cfg->dns_sniff || cfg->sni_sniff) {
@@ -1912,6 +2040,11 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         if (g_reload) {
             susanin_config nc;
             g_reload = 0;
+            /* Массив pid'ов Xray-детей (4 слота) переживал reload: при
+             * переполнении новые дети не отслеживались и оставались зомби.
+             * Пожинаем и очищаем до возможного перезапуска Xray ниже. */
+            kids_poll();
+            memset(g_xray_kids, 0, sizeof(g_xray_kids));
             if (conf_path && config_load(conf_path, &nc) == 0) {
                 char old_level[24];
                 int old_sl;
@@ -2113,8 +2246,22 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         /* Периодически сбрасываем «залипшие» прямые потоки (mark=0) по адресам
          * из ok/vpn_always, чтобы они переустановились через туннель (bounded). */
         if (dp_ok && tunnel_up && now - last_sweep >= 60) {
+            unsigned long amk = 0, amd = 0;
+            int killed;
+
             last_sweep = now;
             sweep_direct(cfg, &st, L.v, L.n);
+            killed = flow_audit(cfg, &st, L.v, L.n, now, &amk, &amd);
+            audit_swept += (unsigned long)killed;
+            /* Снимок пишем каждый проход: status должен показывать и ноль
+             * (иначе «аудит не работает» и «всё хорошо» неотличимы). */
+            backend_write_flowaudit(cfg, amk, amd, audit_swept);
+            if (amd && (!audit_warn_at || now - audit_warn_at >= 60)) {
+                audit_warn_at = now;
+                slogf(SL_WARN, "tproxy: %lu помеченных потоков идут напрямую "
+                               "(REDIRECT не сработал) — сброшено %d",
+                      amd, killed);
+            }
         }
 
         /* И обратное: помеченные (VPN) потоки к адресам из vpn_never — точечно
@@ -2284,6 +2431,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             last_release = now;
             release_check_now(cfg);
         }
+        release_poll();         /* забрать готовую загрузку без ожидания */
 
         /* Обслуживание снифинга ( пины по спискам, дооткрытие появившихся
          * интерфейсов, аудит «RU в VPN») нужно обоим источникам имени: и DNS,
@@ -2335,13 +2483,18 @@ int engine_run(susanin_config *cfg, const char *conf_path)
          * с перепровижном каждые 5 c и падением dp_ok на 60 c. */
         if (dp_ok && tunnel_up && now - last_dpfast >= 5) {
             int unk = 0;
+            char why[64] = "";
 
             last_dpfast = now;
-            if (!backend_ready_ex(cfg, &unk)) {
+            if (!backend_ready_why(cfg, &unk, why, sizeof(why))) {
+                char rsn[128];
                 dp_unk_since = 0;
-                slogf(SL_WARN, "data plane missing (fast check), re-provisioning");
+                snprintf(rsn, sizeof(rsn), "rules missing: %s (fast re-provision)",
+                         why[0] ? why : "?");
+                slogf(SL_WARN, "data plane missing (fast check: %s), re-provisioning",
+                      why[0] ? why : "?");
                 if (backend_provision(cfg) == 0) {
-                    backend_mark_reprov("rules missing (fast re-provision)");
+                    backend_mark_reprov(rsn);
                     if (tunnel_up) {
                         /* Никакого resync_sets()/flush здесь: ре-провижн правил
                          * не теряет ipset'ы, а flush на каждом быстром проходе
@@ -2349,6 +2502,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                          * оставлял адреса vpn_always без пина — поток успевал
                          * уйти напрямую. Списки только помечаем «грязными». */
                         sweep_direct(cfg, &st, L.v, L.n);
+                        reprov_ct_purge(cfg, why, now, &last_ct_purge);
                         va_mark_dirty(va);
                         vn_mark_dirty(nv);
                         last_force = 0;
@@ -2382,6 +2536,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         if (now - last_recon >= (cfg->dp_check_interval > 0 ? cfg->dp_check_interval : CFG_DEF_DP_CHECK_INTERVAL)) {
             int tproxy = (strcmp(cfg->egress_type, "tproxy") == 0);
             int tp_ok = !tproxy || backend_local_listen(cfg->tproxy_port);
+            char why2[64] = "";
             last_recon = now;
             if (tproxy && tp_ok) {
                 xray_tries = 0;     /* Xray жив — сбрасываем счётчик watchdog */
@@ -2450,17 +2605,22 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                     slogf(SL_INFO, "tproxy: P5 (proxy_egress) оставлен активным при fail-open");
                 dp_ok = 0;
                 next_dp_try = now + 15;
-            } else if (dp_ok && tunnel_up && !backend_ready(cfg)) {
+            } else if (dp_ok && tunnel_up && !backend_ready_why(cfg, NULL, why2, sizeof(why2))) {
+                char rsn[128];
                 /* Was active and disappeared (e.g. NDM/firewall rebuild). */
-                slogf(SL_WARN, "data plane missing (NDM rebuild?), re-provisioning");
+                snprintf(rsn, sizeof(rsn), "rules missing: %s (NDM rebuild)",
+                         why2[0] ? why2 : "?");
+                slogf(SL_WARN, "data plane missing (NDM rebuild: %s), re-provisioning",
+                      why2[0] ? why2 : "?");
                 if (backend_provision(cfg) == 0) {
                     dp_fails = 0;
-                    backend_mark_reprov("rules missing (NDM rebuild)");
+                    backend_mark_reprov(rsn);
                     if (tunnel_up) {
                         /* Без resync_sets()/flush: при пересборке netfilter
                          * ipset'ы не теряются, а flush давал churn и окно без
                          * пинов vpn_always (см. fast re-provision выше). */
                         sweep_direct(cfg, &st, L.v, L.n);
+                        reprov_ct_purge(cfg, why2, now, &last_ct_purge);
                         last_force = 0;
                         va_mark_dirty(va);
                         vn_mark_dirty(nv);

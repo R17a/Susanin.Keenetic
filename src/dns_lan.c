@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "dns_lan.h"
+#include "backend.h"
 #include "config.h"
 #include "log.h"
 
@@ -34,7 +35,10 @@
 
 #define DNS_LAN_PORT 5399
 #define DNS_LAN_CACHE 128
-#define DNS_LAN_PEND 64
+/* Очередь ожидания: 128, а не 64 — всплеск с 5+ устройств больше не выбивает
+ * живые запросы. 256 не берём: запись ~3,7 КБ, это почти +1 МБ RSS, а на
+ * роутере свободно единицы мегабайт. */
+#define DNS_LAN_PEND 128
 #define DNS_LAN_MAX_UP 4
 
 #define DL_T_LOCAL_MS   400
@@ -42,6 +46,7 @@
 #define DL_T_DIRECT_MS  800
 #define DL_T_SOCKS_MS   15000   /* весь обмен DNS-over-TCP: connect+handshake+ответ */
 #define DL_T_QUEUE_MS   20000   /* сколько запрос может ждать очереди к туннелю */
+#define DL_T_HARD_MS    2000    /* жёсткий бюджет на запрос: клиент ждёт не дольше */
 #define DL_MAX_TCP      16      /* одновременных обменов с SOCKS */
 
 typedef struct {
@@ -61,8 +66,11 @@ typedef struct {
     char key[264];
     char name[256];
     int state;              /* 0 = локальный, 1 = туннель (UDP), 2 = прямо,
-                               3 = туннель (DNS-over-TCP через SOCKS) */
-    long long at_ms;
+                               3 = туннель (DNS-over-TCP через SOCKS),
+                               4 = ждёт свободного слота SOCKS (туннель уже
+                                   выбран: это НЕ «ждём локальный ответ») */
+    long long at_ms;        /* начало текущей стадии (для её таймаута) */
+    long long born_ms;      /* приход от клиента: жёсткий бюджет DL_T_HARD_MS */
     /* SOCKS-TCP: своё неблокирующее соединение на каждый запрос */
     int tfd;
     int stage;              /* 0 connect, 1 приветствие, 2 CONNECT, 3 ответ */
@@ -213,6 +221,25 @@ static int dl_answer_ok(const unsigned char *m, int len)
     return got > 0;
 }
 
+/* Ответ из туннеля: NXDOMAIN — валидный ответ, положительный — проверяем на
+ * подмену (127/0.0.0.0). SERVFAIL/REFUSED из туннеля считаем неудачей: раньше
+ * такой ответ уходил клиенту как есть, и «DNS не работает» выглядело как
+ * рабочий резолв. Для локального пути проверка мягче (dl_answer_ok): там
+ * NXDOMAIN означает «нужна эскалация». */
+static int dl_tunnel_answer_ok(const unsigned char *m, int n)
+{
+    int rcode;
+
+    if (n < 12)
+        return 0;
+    rcode = m[3] & 0x0f;
+    if (rcode == 3)              /* NXDOMAIN */
+        return 1;
+    if (rcode != 0)
+        return 0;
+    return dl_answer_ok(m, n);
+}
+
 /* Минимальный TTL из ответа (1..3600). */
 static int dl_ttl(const unsigned char *m, int len)
 {
@@ -309,9 +336,45 @@ static void dl_cloexec(int fd)
 
 static void dl_pend_done(dl_pend *p, const unsigned char *resp, int rn);
 static void dl_pend_drop(dl_pend *p);
+static void dl_pend_fail(dl_pend *p, int rcode);
 static void dl_pend_send_direct(dl_pend *p);
 
 static int g_tcp_active;        /* сколько обменов с SOCKS идёт прямо сейчас */
+/* Размыкатель туннеля: подряд идущие неудачи DNS через туннель. Пока открыт,
+ * новые запросы не идут в мёртвый туннель, а сразу отвечаются локально/прямо.
+ * Без этого отказ туннеля превращался в «тишину» для клиента. */
+static int g_tun_streak;
+static time_t g_tun_first;
+static time_t g_tun_until;
+
+static int dl_tunnel_down(void)
+{
+    return g_tun_until && time(NULL) < g_tun_until;
+}
+
+static void dl_tunnel_failed(void)
+{
+    time_t now = time(NULL);
+
+    if (!g_tun_first || now - g_tun_first > 120) {
+        g_tun_first = now;
+        g_tun_streak = 0;
+    }
+    g_tun_streak++;
+    if (g_tun_streak >= 3 && !dl_tunnel_down()) {
+        g_tun_until = now + 120;
+        g_tun_streak = 0;
+        dl_warn("туннель не отвечает на DNS — 2 мин без эскалации, "
+                "отвечаю локально/прямо");
+    }
+}
+
+static void dl_tunnel_ok(void)
+{
+    g_tun_streak = 0;
+    g_tun_first = 0;
+    g_tun_until = 0;
+}
 
 static void dl_tcp_reset(dl_pend *p)
 {
@@ -431,12 +494,13 @@ static void dl_tcp_give_up(dl_pend *p)
         if (dl_tcp_start(p) == 0)
             return;
     }
+    dl_tunnel_failed();
     dl_warn("DNS через туннель не прошёл (%s, SOCKS-TCP)", p->name);
     if (g_cfg->dns_lan_fallback) {
         dl_pend_send_direct(p);
     } else {
         g_q_fail++;
-        dl_pend_drop(p);
+        dl_pend_fail(p, 2);
     }
 }
 
@@ -534,7 +598,10 @@ static int dl_tcp_step(dl_pend *p)
             if (dl_tcp_read(p) != 1)
                 return 0;
         }
+        if (!dl_tunnel_answer_ok(p->tbuf + 2, p->wait - 2))
+            goto fail;
         g_q_tunnel++;
+        dl_tunnel_ok();
         dl_pend_done(p, p->tbuf + 2, p->wait - 2);
         return 0;
     }
@@ -600,6 +667,7 @@ static dl_pend *dl_pend_new(void)
     if (g_pend[oldest].tfd >= 0)
         dl_tcp_reset(&g_pend[oldest]);
     g_q_fail++;
+    dl_pend_fail(&g_pend[oldest], 2);   /* клиент должен получить отказ, а не тишину */
     memset(&g_pend[oldest], 0, sizeof(g_pend[oldest]));
     g_pend[oldest].used = 1;
     g_pend[oldest].tfd = -1;
@@ -612,6 +680,45 @@ static void dl_pend_drop(dl_pend *p)
         dl_tcp_reset(p);
     p->tfd = -1;
     p->used = 0;
+}
+
+/* Конец секции вопроса: до него ответ можно скопировать, обнулив счётчики.
+ * Копировать весь запрос нельзя — OPT/EDNS0 из ARCOUNT остался бы «висеть»
+ * без записи, и клиент получил бы битый пакет. */
+static int dl_qend(const unsigned char *m, int n)
+{
+    int off = 12;
+
+    while (off < n && m[off]) {
+        if ((m[off] & 0xc0) == 0xc0) { off += 2; break; }
+        off += 1 + m[off];
+    }
+    if (off >= n || m[off] != 0)
+        return 0;
+    off += 1 + 4;                 /* корень + qtype + qclass */
+    return off <= n ? off : 0;
+}
+
+/* Отказ клиенту: SERVFAIL вместо тишины. Раньше любой сбой (переполнение
+ * очереди, таймаут SOCKS, таймаут прямого запроса) просто выбрасывал запрос:
+ * ОС клиента висела до своего таймаута, и снаружи это выглядело как
+ * «DNS не работает» без единого намёка на причину. */
+static void dl_pend_fail(dl_pend *p, int rcode)
+{
+    unsigned char out[512];
+    int n;
+
+    n = p->qlen < 12 ? 0 : dl_qend(p->q, p->qlen);
+    if (n > 0 && n <= (int)sizeof(out)) {
+        memcpy(out, p->q, (size_t)n);
+        out[2] = (unsigned char)(0x80 | (out[2] & 0x79));  /* QR=1, opcode как был */
+        out[3] = (unsigned char)((out[3] & 0xf0) | (rcode & 0x0f));
+        out[6] = out[7] = 0;      /* ANCOUNT */
+        out[8] = out[9] = 0;      /* NSCOUNT */
+        out[10] = out[11] = 0;    /* ARCOUNT */
+        dl_send(g_fd, out, (size_t)n, &p->from);
+    }
+    dl_pend_drop(p);
 }
 
 static void dl_pend_send_local(dl_pend *p)
@@ -632,9 +739,21 @@ static void dl_pend_send_local(dl_pend *p)
 
 static void dl_pend_send_tunnel(dl_pend *p)
 {
+    if (dl_tunnel_down()) {
+        /* Размыкатель: не занимаем слоты SOCKS мёртвым туннелем — сразу прямо. */
+        dl_pend_send_direct(p);
+        return;
+    }
     if (g_mode == DL_VIA_SOCKS) {
-        if (g_tcp_active >= DL_MAX_TCP)
-            return;                 /* очередь: ждём в state 0, at_ms не сбрасываем */
+        if (g_tcp_active >= DL_MAX_TCP) {
+            /* Очередь к SOCKS — отдельное состояние: раньше это был state 0, и
+             * запрос через 400 мс «эскалировался» повторно, хотя локальный
+             * ответ уже был отвергнут. at_ms — вход в очередь, жёсткий бюджет
+             * (born_ms) всё равно решает. */
+            p->state = 4;
+            p->at_ms = dl_now_ms();
+            return;
+        }
         if (dl_tcp_start(p) == 0)
             return;                 /* state = 3, дальше продвигает poll */
         p->at_ms = dl_now_ms();
@@ -681,18 +800,40 @@ static void dl_pend_done(dl_pend *p, const unsigned char *resp, int rn)
     dl_pend_drop(p);
 }
 
-/* Найти ожидающий по id и вопросу. */
-static dl_pend *dl_pend_find(const unsigned char *msg, int n)
+/* Найти ожидающий по id, вопросу и (опционально) адресу клиента. Только по id
+ * нельзя: за вторым NAT (TP-Link) несколько клиентов одновременно используют
+ * одинаковые transaction id. Вопрос в ответе всегда тот же, что в запросе,
+ * поэтому memcmp секции вопроса различает имена; from (если задан) — клиента.
+ * Для ответов upstream from=NULL: там известен только id+вопрос, а одинаковый
+ * вопрос у двух клиентов даёт и одинаковый ответ — отдать его любому из них
+ * безопасно. */
+static dl_pend *dl_pend_find(const unsigned char *msg, int n,
+                             const struct sockaddr_in *from)
 {
-    int i;
-    unsigned id;
+    int i, qe;
 
     if (n < 12)
         return NULL;
-    id = (unsigned)((msg[0] << 8) | msg[1]);
-    for (i = 0; i < DNS_LAN_PEND; i++)
-        if (g_pend[i].used && g_pend[i].id == id)
-            return &g_pend[i];
+    qe = dl_qend(msg, n);
+    {
+        unsigned id = (unsigned)((msg[0] << 8) | msg[1]);
+        for (i = 0; i < DNS_LAN_PEND; i++) {
+            dl_pend *p = &g_pend[i];
+            int pq;
+
+            if (!p->used || p->id != id)
+                continue;
+            if (from &&
+                (p->from.sin_addr.s_addr != from->sin_addr.s_addr ||
+                 p->from.sin_port != from->sin_port))
+                continue;
+            if (qe <= 12 || p->qlen < 12)
+                return p;           /* вопрос не разобрать — по id */
+            pq = dl_qend(p->q, p->qlen);
+            if (pq == qe && memcmp(p->q + 12, msg + 12, (size_t)(qe - 12)) == 0)
+                return p;
+        }
+    }
     return NULL;
 }
 
@@ -714,7 +855,7 @@ static void dl_drain_clients(void)
             return;
         if (q[2] & 0x80) {
             /* ответ на прямой запрос — сопоставить и отдать клиенту */
-            p = dl_pend_find(q, n);
+            p = dl_pend_find(q, n, NULL);
             if (p && p->state == 2)
                 dl_pend_done(p, q, n);
             continue;
@@ -734,11 +875,20 @@ static void dl_drain_clients(void)
         }
         if (n < 12 || n > (int)sizeof(g_pend[0].q))
             continue;               /* не помещается в буфер запроса */
+        /* Повтор от того же клиента (тот же порт, id и вопрос): не плодим
+         * дубликат, а продлеваем ожидание. Именно здесь работает from — за
+         * вторым NAT у разных клиентов бывают одинаковые id и вопрос. */
+        p = dl_pend_find(q, n, &from);
+        if (p) {
+            p->at_ms = dl_now_ms();
+            continue;
+        }
         p = dl_pend_new();
         memcpy(p->q, q, (size_t)n);
         p->qlen = n;
         p->id = (unsigned)((q[0] << 8) | q[1]);
         p->from = from;
+        p->born_ms = dl_now_ms();
         snprintf(p->key, sizeof(p->key), "%s", key);
         snprintf(p->name, sizeof(p->name), "%s", name);
         if (g_cfg->dns_lan_smart && g_loc_fd >= 0) {
@@ -759,7 +909,7 @@ static void dl_drain_local(void)
 
         if (n < 12)
             return;
-        p = dl_pend_find(r, n);
+        p = dl_pend_find(r, n, NULL);
         if (!p || p->state != 0)
             continue;
         if (dl_answer_ok(r, n)) {
@@ -793,10 +943,17 @@ static void dl_drain_tunnel(void)
         }
         if (n < 12)
             return;
-        p = dl_pend_find(r, n);
+        p = dl_pend_find(r, n, NULL);
         if (!p || p->state != 1)
             continue;
+        if (!dl_tunnel_answer_ok(r, n)) {
+            dl_tunnel_failed();
+            g_q_fail++;
+            dl_pend_fail(p, 2);
+            continue;
+        }
         g_q_tunnel++;
+        dl_tunnel_ok();
         dl_pend_done(p, r, n);
     }
 }
@@ -832,29 +989,46 @@ static void dl_expire(void)
         if (!p->used)
             continue;
         age = now - p->at_ms;
+        /* Жёсткий бюджет: клиент не ждёт дольше DL_T_HARD_MS ни на одной
+         * стадии. Без него запрос в очереди SOCKS мог жить до 20 с, а при
+         * сбросе at_ms на неудаче — не истекать вовсе. */
+        if (p->born_ms && now - p->born_ms > DL_T_HARD_MS) {
+            g_q_fail++;
+            dl_warn("запрос дольше %d мс — SERVFAIL клиенту (%s)",
+                    DL_T_HARD_MS, p->name);
+            dl_pend_fail(p, 2);
+            continue;
+        }
         if (p->state == 0 && age > DL_T_QUEUE_MS) {
             g_q_fail++;
             dl_warn("очередь к туннелю переполнена (%s)", p->name);
-            dl_pend_drop(p);
+            dl_pend_fail(p, 2);
         } else if (p->state == 0 && age > DL_T_LOCAL_MS) {
             if (!p->esc) {
                 p->esc = 1;
                 g_q_escalate++;
             }
             dl_pend_send_tunnel(p);
+        } else if (p->state == 4) {
+            /* Ждём слот SOCKS: как только он освободился — начинаем обмен.
+             * Отдельный state не даёт повторной «эскалации» из локального
+             * ожидания (см. audit п.7). */
+            if (g_tcp_active < DL_MAX_TCP)
+                dl_pend_send_tunnel(p);
         } else if (p->state == 1 && age > DL_T_TUNNEL_MS) {
+            dl_tunnel_failed();
             if (g_cfg->dns_lan_fallback)
                 dl_pend_send_direct(p);
             else {
                 g_q_fail++;
-                dl_pend_drop(p);
+                dl_pend_fail(p, 2);
             }
         } else if (p->state == 2 && age > DL_T_DIRECT_MS) {
             g_q_fail++;
             dl_warn("upstream не ответил (%s, %s)",
                     g_mode == DL_VIA_SOCKS ? "socks-tcp" :
                     g_mode == DL_VIA_IFACE ? g_tun_name : "direct", p->name);
-            dl_pend_drop(p);
+            dl_pend_fail(p, 2);
         } else if (p->state == 3 && age > DL_T_SOCKS_MS) {
             dl_tcp_give_up(p);
         }
@@ -925,6 +1099,12 @@ int dns_lan_start(const susanin_config *cfg)
     sa.sin_family = AF_INET;
     sa.sin_addr.s_addr = htonl(INADDR_ANY);
     sa.sin_port = htons(DNS_LAN_PORT);
+    /* Быстрый restart/crash: без SO_REUSEADDR bind может отдать EADDRINUSE и
+     * форвардер не поднимется, пока ядро не отпустит старый сокет. */
+    {
+        int one = 1;
+        (void)setsockopt(g_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    }
     if (bind(g_fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
         slogf(SL_WARN, "dns_lan: порт %d не занят (%s)", DNS_LAN_PORT,
               strerror(errno));
@@ -932,7 +1112,16 @@ int dns_lan_start(const susanin_config *cfg)
         g_fd = -1;
         return -1;
     }
-    fcntl(g_fd, F_SETFL, fcntl(g_fd, F_GETFL, 0) | O_NONBLOCK);
+    {
+        int fl = fcntl(g_fd, F_GETFL, 0);
+        if (fl < 0 || fcntl(g_fd, F_SETFL, fl | O_NONBLOCK) != 0) {
+            slogf(SL_WARN, "dns_lan: O_NONBLOCK на порту %d не встал (%s)",
+                  DNS_LAN_PORT, strerror(errno));
+            close(g_fd);
+            g_fd = -1;
+            return -1;
+        }
+    }
     dl_cloexec(g_fd);
     /* сокет к локальному резолверу: источник 127.0.0.1 */
     {
@@ -949,8 +1138,15 @@ int dns_lan_start(const susanin_config *cfg)
             }
         }
     }
-    if (g_loc_fd >= 0)
-        fcntl(g_loc_fd, F_SETFL, fcntl(g_loc_fd, F_GETFL, 0) | O_NONBLOCK);
+    if (g_loc_fd >= 0) {
+        int fl = fcntl(g_loc_fd, F_GETFL, 0);
+        if (fl < 0 || fcntl(g_loc_fd, F_SETFL, fl | O_NONBLOCK) != 0) {
+            /* Без неблокирующего режима локальный путь опасен: закрываем и
+             * работаем сразу через туннель. */
+            close(g_loc_fd);
+            g_loc_fd = -1;
+        }
+    }
     dl_cloexec(g_loc_fd);
     dl_cloexec(g_tun_fd);
     for (i = 0; i < DNS_LAN_CACHE; i++) {
@@ -999,6 +1195,9 @@ void dns_lan_stop(void)
 
 void dns_lan_reload(const susanin_config *cfg)
 {
+    /* dns_lan_reload() и dns_lan_poll() вызываются из одного потока (главный
+     * цикл движка) — блокировок нет намеренно. Любой второй поток, трогающий
+     * g_fd/g_mode/g_cfg, должен сначала переписать этот контракт. */
     if (!cfg)
         return;
     if (cfg->dns_lan) {
@@ -1015,6 +1214,7 @@ void dns_lan_reload(const susanin_config *cfg)
         }
     } else if (g_fd >= 0) {
         dns_lan_stop();
+        backend_dns_lan_down(cfg);   /* иначе DNAT шлёт DNS в закрытый порт */
         slogf(SL_INFO, "dns_lan: выключен reload-ом");
     }
 }
@@ -1031,6 +1231,16 @@ void dns_lan_poll(void)
     dl_expire();
 }
 
+int dns_lan_pending(void)
+{
+    int i, n = 0;
+
+    for (i = 0; i < DNS_LAN_PEND; i++)
+        if (g_pend[i].used)
+            n++;
+    return n;
+}
+
 int dns_lan_stats(char *out, size_t n)
 {
     if (!out || n == 0)
@@ -1041,7 +1251,7 @@ int dns_lan_stats(char *out, size_t n)
              g_mode == DL_VIA_SOCKS ? "socks-tcp" :
              g_mode == DL_VIA_IFACE ? g_tun_name : "direct",
              g_up_n, g_q_total, g_q_cache, g_q_local, g_q_escalate,
-             g_q_tunnel, g_q_direct, g_q_fail, DNS_LAN_PEND);
+             g_q_tunnel, g_q_direct, g_q_fail, dns_lan_pending());
     return (int)g_q_total;
 }
 

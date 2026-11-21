@@ -3,6 +3,15 @@
 
 #include "vpin.h"
 
+/* Снимок очереди/счётчиков в soft уходит в tmpfs: журнала в этом режиме нет,
+ * и снимок остаётся единственным каналом наблюдаемости (status/why). */
+const char *vpin_stats_path(const susanin_config *cfg)
+{
+    if (cfg && !strcmp(cfg->disk_mode, "soft"))
+        return VPIN_SOFT_STATS_FILE;
+    return VPIN_STATS_FILE;
+}
+
 static struct {
     char ip[16];
     unsigned short port;   /* порт подтверждающего потока: проба идёт туда;

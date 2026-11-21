@@ -156,7 +156,7 @@ egress_address=10.8.1.1,10.8.1.2
 
 **Экономия носителя.** При установке во внутреннюю память включится
 `disk_mode=soft`: лог не ведётся, бэкапов нет, состояние сохраняется раз в
-`soft_state_interval` (12 часов).
+`soft_state_interval` (12 часов) и при штатной остановке агента.
 
 **XRay/VLESS-REALITY как egress (режим `tproxy`).** Susanin.Keenetic умеет выносить
 помеченный трафик в Xray: TCP — `REDIRECT` в `dokodemo-door`, UDP — релей в

@@ -26,6 +26,8 @@ int cdn_refresh(const susanin_config *c);
  * 1 = диапазоны перечитаны, 0 = нечего делать/ещё идёт, -1 = скачивание
  * не удалось (старый файл остаётся в силе). */
 int cdn_poll(const susanin_config *c);
+/* 1 = идёт фоновая загрузка (cdn_pid жив). */
+int cdn_busy(void);
 
 /* Сколько сетей загружено (для status/diagnose). */
 int cdn_count(void);

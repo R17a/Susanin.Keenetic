@@ -45,26 +45,31 @@ static uint16_t csum(const void *data, int len)
  * NAT-состоянию на промежуточном сервере каскада «узнавать» наши проверки и не
  * отвечать (отчёт тестера: PID 701 => Echo ID 701, ответов нет, помог только
  * рестарт). ID должен быть новым, не связанным с PID и не повторяться. */
+/* Echo id для ICMP-проб: seed один раз, дальше xorshift. Раньше /dev/urandom
+ * открывался на каждую пробу (~24 open/read/close в минуту) — лишняя нагрузка
+ * на роутере с flash/tmpfs. */
 static uint16_t probe_echo_id(void)
 {
-    unsigned char b[2];
-    uint16_t id;
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        ssize_t n = read(fd, b, sizeof(b));
-        close(fd);
-        if (n != (ssize_t)sizeof(b)) {
-            b[0] = 0;
-            b[1] = 0;
+    static uint32_t st;
+    static int seeded;
+
+    if (!seeded) {
+        int fd = open("/dev/urandom", O_RDONLY);
+        if (fd >= 0) {
+            if (read(fd, &st, sizeof(st)) != (ssize_t)sizeof(st))
+                st = (uint32_t)getpid() ^ (uint32_t)time(NULL);
+            close(fd);
+        } else {
+            st = (uint32_t)getpid() ^ (uint32_t)time(NULL);
         }
-    } else {
-        b[0] = 0;
-        b[1] = 0;
+        if (!st)
+            st = 0x9e3779b9u;
+        seeded = 1;
     }
-    id = (uint16_t)(((uint16_t)b[0] << 8) | b[1]);
-    if (id == 0)
-        id = (uint16_t)((getpid() ^ (unsigned)time(NULL)) & 0xffff);
-    return id;
+    st ^= st << 13;
+    st ^= st >> 17;
+    st ^= st << 5;
+    return (uint16_t)(st & 0xffff);
 }
 
 static int probe_one(const char *dst, const char *src, const char *dev,

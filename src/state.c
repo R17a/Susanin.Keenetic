@@ -220,7 +220,10 @@ int state_add(state_set *st, const char *addr, time_t now, int ttl, int refresh)
     state_entry *e;
     time_t expire;
     if (ttl <= 0)
-        expire = (time_t)0x7fffffff;   /* ttl 0 = never expire */
+        /* ttl 0 = «никогда»: на 32-битном time_t это 2038-01-19. Ограничение
+         * осознанное (флаг «бессрочно» в state был бы несовместим со старыми
+         * state-файлами); после 2038 такие записи начнут истекать. */
+        expire = (time_t)0x7fffffff;
     else
         expire = now + ttl;
     if (!refresh) {

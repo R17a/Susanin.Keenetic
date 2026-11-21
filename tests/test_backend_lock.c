@@ -30,6 +30,18 @@ int main(void)
     CHECK(backend_xt_locked(1, "No chain/target/match by that name.") == 0,
           "реальная ошибка (нет цепочки) замком не считается");
 
+    printf("=== признак «пропало redirect-правило» ===\n");
+    CHECK(backend_why_is_redirect("nat REDIRECT (TCP)") == 1,
+          "REDIRECT -> помеченные потоки ушли напрямую, conntrack рвать");
+    CHECK(backend_why_is_redirect("mangle TPROXY (UDP)") == 1, "TPROXY -> рвать");
+    CHECK(backend_why_is_redirect("ip rule tproxy") == 1, "ip rule -> рвать");
+    CHECK(backend_why_is_redirect("FORWARD ACCEPT (mark)") == 0,
+          "FORWARD ACCEPT -> поток до Xray доходит, рвать нечего");
+    CHECK(backend_why_is_redirect("route table") == 0, "маршрут -> не рвать");
+    CHECK(backend_why_is_redirect("chain SUSANIN") == 0, "цепочка -> не рвать");
+    CHECK(backend_why_is_redirect("") == 0, "пустая причина");
+    CHECK(backend_why_is_redirect(NULL) == 0, "NULL");
+
     printf("\n%s\n", failures ? "ЕСТЬ ОШИБКИ" : "все проверки пройдены");
     return failures ? 1 : 0;
 }

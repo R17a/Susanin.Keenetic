@@ -60,6 +60,7 @@ static int answer(const unsigned char *m, int len, int want_type, char *out, siz
     int qd = (m[4] << 8) | m[5];
     int an = (m[6] << 8) | m[7];
     int off = 12, i, got = 0;
+    size_t used = 0;
     char line[128];
 
     for (i = 0; i < qd; i++) {
@@ -86,9 +87,20 @@ static int answer(const unsigned char *m, int len, int want_type, char *out, siz
             else
                 inet_ntop(AF_INET6, m + off, ip, sizeof(ip));
             snprintf(line, sizeof(line), "%s", ip);
-            if (got)
-                strncat(out, " ", on - strlen(out) - 1);
-            strncat(out, line, on - strlen(out) - 1);
+            {
+                /* Смещение вместо strlen(out) на каждую запись: O(n²) на
+                 * ответах с десятком A/AAAA. */
+                size_t l = strlen(line);
+                if (got && used + 1 < on) {
+                    out[used++] = ' ';
+                    out[used] = '\0';
+                }
+                if (used + l > on - 1)
+                    l = on - 1 - used;
+                memcpy(out + used, line, l);
+                used += l;
+                out[used] = '\0';
+            }
             got++;
         }
         off += rdlen;

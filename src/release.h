@@ -24,8 +24,14 @@ void release_init(const susanin_config *c);
  * -1 — проверка выключена или не удалась. */
 int release_check_now(const susanin_config *c);
 
+/* Неблокирующий сбор результата загрузки: вызывать каждый проход главного
+ * цикла, иначе release_check_now() придётся ждать загрузчик. */
+void release_poll(void);
+
 /* Текущее состояние (всегда валидный указатель, поля могут быть пустыми). */
 const release_info *release_get(void);
+/* 1 = идёт фоновая загрузка (pid жив). */
+int release_busy(void);
 
 /* Сравнение версий: <0 — a старее b, 0 — равны, >0 — a новее b.
  * Суффиксы -devN/.RCN/alpha/beta считаются СТАРШЕ того же релиза. */

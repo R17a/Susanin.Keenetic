@@ -786,7 +786,9 @@ _dns_lan_owned_by_agent() {
     [ -n "$_ino" ] || return 1
     _ap=$(cat /opt/susanin/var/susanin-agent.pid 2>/dev/null || true)
     [ -n "$_ap" ] || return 0        # pid-файла нет — судить не по чему
-    kill -0 "$_ap" 2>/dev/null || return 0
+    # Мёртвый pid — агента нет, сокет мог остаться у наследника (fork без exec):
+    # DNAT на такой сокет ставить нельзя.
+    kill -0 "$_ap" 2>/dev/null || return 1
     for _f in /proc/"$_ap"/fd/*; do
         [ "$(readlink "$_f" 2>/dev/null)" = "socket:[$_ino]" ] || continue
         return 0
@@ -852,6 +854,11 @@ dns_lan_rules() {
     fi
     # Порт форвардера — только из LAN, снаружи закрыт.
     if "ipt" -t filter -N "$DNS_LAN_IN_CHAIN" >/dev/null 2>&1; then
+        # Локальные запросы (диагностика: `susanin-agent dnsprobe`) идут по lo.
+        # Без этого ACCEPT их рубит DROP ниже, и проба врёт «форвардер не
+        # отвечает», хотя клиенты обслуживаются.
+        "ipt" -t filter -A "$DNS_LAN_IN_CHAIN" -i lo -p udp \
+            --dport "$DNS_LAN_PORT" -j ACCEPT >/dev/null 2>&1 || true
         for _i in $_ifaces; do
             "ipt" -t filter -A "$DNS_LAN_IN_CHAIN" -i "$_i" -p udp \
                 --dport "$DNS_LAN_PORT" -j ACCEPT >/dev/null 2>&1 || true

@@ -14,6 +14,9 @@ void dns_lan_poll(void);
 int  dns_lan_active(void);
 int  dns_lan_busy(void);   /* 1 = идёт обмен с туннелем, спать короче */
 int  dns_lan_stats(char *out, size_t n);
+/* Сколько запросов сейчас ждут ответа (0..DNS_LAN_PEND). В status печатается
+ * реальное число: прежняя константа «pend=64» выглядела как полная очередь. */
+int  dns_lan_pending(void);
 
 /* Снимок для CLI: движок пишет строку в файл, `status`/`why` её читают. */
 #define DNS_LAN_STATE_FILE      "/opt/susanin/var/dnslan.state"

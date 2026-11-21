@@ -19,6 +19,9 @@ void clr_judge(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now);
 int clf_service_port(unsigned port);
 int clf_port_excluded(const susanin_config *cfg, unsigned port);
 int clf_is_private_dst(const char *dst);
+/* 1 = поток помечен нами, но reply-порт — порт сервера, а не порт Xray, то
+ * есть REDIRECT его не забрал и он идёт напрямую. См. clf_marked_direct(). */
+int clf_marked_direct(const susanin_config *cfg, const ct_flow *f);
 /* Бинарные варианты для горячего пути: берут готовый u32 из ct_flow
  * (src4/dst4; 0 = адрес не IPv4) и кэш lan_subnets — без строкового разбора
  * и inet_pton на каждый поток в каждом проходе. */

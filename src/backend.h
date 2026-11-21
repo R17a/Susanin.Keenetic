@@ -7,6 +7,7 @@
 #include <time.h>
 
 int backend_provision(const susanin_config *c);
+int backend_dns_lan_down(const susanin_config *c);
 int backend_teardown(const susanin_config *c);
 int backend_p5_up(const susanin_config *c);
 int backend_p5_down(const susanin_config *c);
@@ -18,6 +19,17 @@ int backend_ready(const susanin_config *c);
  * нельзя было увидеть вообще — окно fail-open становилось неограниченным. */
 int backend_ready_ex(const susanin_config *c, int *unknown);
 
+/* То же, но ещё и имя правила, которое не прошло проверку (why). Нужно, чтобы
+ * dp-reprov говорил, что именно пропало, и чтобы движок решал, рвать ли
+ * conntrack: пропажа REDIRECT/TPROXY/ip rule оставляет уже помеченные потоки
+ * идущими напрямую. */
+int backend_ready_why(const susanin_config *c, int *unknown,
+                      char *why, size_t whysz);
+
+/* 1, если причина «не готово» относится к классу redirect (REDIRECT/TPROXY/
+ * ip rule) — именно тогда помеченный поток уходит мимо туннеля. */
+int backend_why_is_redirect(const char *why);
+
 /* iptables не смог взять общий xtables-lock (код 4, «Another app is currently
  * holding the xtables lock»). Это НЕ признак пропавшего правила — проверку надо
  * повторить; вынесено наружу ради host-теста. */
@@ -28,6 +40,14 @@ int backend_xt_locked(int rc, const char *out);
  * Пишет /opt/susanin/var/dp-reprov ("epoch reason"); читается в status/diagnose. */
 void backend_mark_reprov(const char *reason);
 int backend_read_reprov(long *when, char *reason, size_t reasonsz);
+
+/* Аудит потоков «помечено в VPN, а REDIRECT не забрал»: путь снимка (в soft —
+ * tmpfs) и запись счётчиков для `status`. */
+#define FLOWAUDIT_FILE      "/opt/susanin/var/flowaudit.state"
+#define FLOWAUDIT_SOFT_FILE "/tmp/susanin-flowaudit.state"
+const char *backend_flowaudit_path(const susanin_config *c);
+void backend_write_flowaudit(const susanin_config *c, unsigned long marked,
+                             unsigned long direct, unsigned long swept);
 
 /* Слушает ли кто-нибудь TCP-порт на локальном адресе (для tproxy — Xray).
  * 1 = слушает (или проверить нельзя), 0 = нет. */

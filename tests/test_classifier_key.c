@@ -48,6 +48,37 @@ int main(void)
               "state_key/pair_key/state_key_split согласованы");
     }
 
+    printf("=== clf_marked_direct: помечен, но REDIRECT не забрал ===\n");
+    {
+        ct_flow m;
+
+        config_set_defaults(&cfg);
+        memset(&m, 0, sizeof(m));
+        m.l4proto = 6;
+        m.has_reply = 1;
+        m.ctmark = cfg.mark_ok;
+        m.dport = 443;
+        m.r_sport = 443;
+        CHECK(clf_marked_direct(&cfg, &m) == 1,
+              "reply-порт = dport -> шёл напрямую");
+        m.r_sport = (unsigned)cfg.tproxy_port;
+        CHECK(clf_marked_direct(&cfg, &m) == 0,
+              "reply-порт = порт Xray -> шёл через REDIRECT");
+        m.r_sport = 443;
+        m.ctmark = 0;
+        CHECK(clf_marked_direct(&cfg, &m) == 0, "без нашей метки -> не наш поток");
+        m.ctmark = cfg.mark_ok;
+        m.has_reply = 0;
+        CHECK(clf_marked_direct(&cfg, &m) == 0, "ответа ещё не было -> не доказать");
+        m.has_reply = 1;
+        m.l4proto = 17;
+        CHECK(clf_marked_direct(&cfg, &m) == 0, "UDP не проверяем: reply-порт не тот признак");
+        m.l4proto = 6;
+        m.dport = (unsigned)cfg.tproxy_port;
+        m.r_sport = (unsigned)cfg.tproxy_port;
+        CHECK(clf_marked_direct(&cfg, &m) == 0, "dport = порт Xray -> исключён");
+    }
+
     printf("\n%s\n", failures ? "ЕСТЬ ОШИБКИ" : "все проверки пройдены");
     return failures ? 1 : 0;
 }

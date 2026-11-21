@@ -303,6 +303,38 @@ static int sniff_snapshot(const susanin_config *cfg, char *out, size_t n)
     return 0;
 }
 
+/* Первая строка снимка: сначала путь текущего режима, затем «чужой» (файл мог
+ * остаться от запуска с другим disk_mode — иначе status показывал бы старые
+ * цифры как текущие). */
+static int snap_first(const char *path, const char *alt, char *out, size_t n)
+{
+    const char *p[2];
+    int i;
+
+    if (!out || !n)
+        return 0;
+    out[0] = '\0';
+    p[0] = path;
+    p[1] = alt;
+    for (i = 0; i < 2; i++) {
+        FILE *f;
+        if (!p[i] || !p[i][0])
+            continue;
+        f = fopen(p[i], "r");
+        if (!f)
+            continue;
+        if (fgets(out, (int)n, f)) {
+            size_t l = strlen(out);
+            while (l && (out[l - 1] == '\n' || out[l - 1] == '\r'))
+                out[--l] = '\0';
+        }
+        fclose(f);
+        if (out[0])
+            return 1;
+    }
+    return 0;
+}
+
 int ops_status(const susanin_config *cfg, const char *conf_path)
 {
     const char *ipt = tool("iptables");
@@ -348,22 +380,18 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
     {
         /* Очередь и счётчики решений живут в памяти движка, а `status` —
          * отдельный процесс: читаем снимок (тот же путь, что и со счётчиками
-         * dns_sniff). Первая строка снимка — готовая строка статуса. */
+         * dns_sniff). Первая строка снимка — готовая строка статуса. В soft
+         * снимок лежит в tmpfs, поэтому ищем по обоим путям. */
         char vp[512] = "";
-        FILE *vf = fopen(VPIN_STATS_FILE, "r");
-        if (vf) {
-            if (fgets(vp, sizeof(vp), vf)) {
-                size_t l = strlen(vp);
-                while (l && (vp[l - 1] == '\n' || vp[l - 1] == '\r'))
-                    vp[--l] = '\0';
-            }
-            fclose(vf);
-        }
-        if (vp[0])
+        const char *vp0 = vpin_stats_path(cfg);
+        const char *vp1 = !strcmp(vp0, VPIN_STATS_FILE)
+                              ? VPIN_SOFT_STATS_FILE : VPIN_STATS_FILE;
+
+        if (snap_first(vp0, vp1, vp, sizeof(vp)))
             printf("%s\n", vp);
         else
             printf("vpin: check=%d interval=%ds (снимка нет — цикл аудита "
-                   "не отработал или disk_mode=soft)\n",
+                   "не отработал)\n",
                    cfg->vpin_check, cfg->vpin_interval);
     }
     if (cfg->dns_sniff || cfg->sni_sniff) {
@@ -477,6 +505,20 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
         } else {
             printf("  tproxy re-provision: never\n");
         }
+    }
+    {
+        /* Потоки, помеченные «в VPN», а идущие напрямую: их не видит ни
+         * sweep_direct (ctmark != 0), ни judge (прямой успех неотличим от
+         * туннельного). Счётчик — единственный способ увидеть такой класс
+         * снаружи; снимок пишет движок. */
+        char fa[160] = "";
+        const char *f0 = backend_flowaudit_path(cfg);
+        const char *f1 = !strcmp(f0, FLOWAUDIT_FILE)
+                             ? FLOWAUDIT_SOFT_FILE : FLOWAUDIT_FILE;
+        if (snap_first(f0, f1, fa, sizeof(fa)))
+            printf("  flow audit: %s\n", fa);
+        else
+            printf("  flow audit: (снимка нет — цикл ещё не отработал)\n");
     }
 
     printf("ipset sizes:\n");
@@ -630,17 +672,21 @@ int ops_reset(const susanin_config *cfg, const char *arg)
 /* Стоит ли адрес в очереди аудита пинов — по снимку движка (строки
  * "q <ip> <vpn|direct> <port>"). Геттеры vpin_* в этом процессе вернули бы
  * пустую очередь: `why` — отдельный процесс, очередь живёт в движке. */
-static const char *vpin_queue_of(const char *ip)
+static const char *vpin_queue_of(const susanin_config *cfg, const char *ip)
 {
     static const char *res[3] = {
         "нет в очереди",
         "ЕСТЬ (проверяется путь через туннель)",
         "ЕСТЬ (проверяется возврат на прямой путь)"
     };
-    FILE *f = fopen(VPIN_STATS_FILE, "r");
+    const char *p0 = vpin_stats_path(cfg);
+    const char *p1 = !strcmp(p0, VPIN_STATS_FILE) ? VPIN_SOFT_STATS_FILE : VPIN_STATS_FILE;
+    FILE *f = NULL;
     char ln[128];
-    int found = 0;
+    int found = 0, k;
 
+    for (k = 0; k < 2 && !f; k++)
+        f = fopen(k ? p1 : p0, "r");
     while (f && fgets(ln, sizeof(ln), f)) {
         char qip[16], qs[16];
         unsigned qp;
@@ -731,7 +777,7 @@ int ops_why(const susanin_config *cfg, const char *arg)
     stv_never = state_has(&st.never, ip, now);
     state_free(&st);
     printf("  state ok/never: %s/%s\n", stv_ok ? "ЕСТЬ" : "нет", stv_never ? "ЕСТЬ" : "нет");
-    printf("  vpin-аудит: %s\n", vpin_queue_of(ip));
+    printf("  vpin-аудит: %s\n", vpin_queue_of(cfg, ip));
     if (cfg->dns_sniff || cfg->sni_sniff) {
         /* Сводка снифера рядом с выводом по адресу: в disk_mode=soft журнала
          * нет, и снимок движка — единственный способ увидеть, доходит ли

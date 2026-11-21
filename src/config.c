@@ -765,20 +765,20 @@ int config_load(const char *path, susanin_config *c)
             c->vpn_never_interval = cfg_dur(c, key, val, U_SEC);
         else if (!strcmp(key, "vpn_refresh_budget_ms"))
             c->vpn_refresh_budget_ms = (int)cfg_num(c, key, val);
-            else if (!strcmp(key, "log_level"))
-                set_str(c->log_level, sizeof(c->log_level), val);
-            else if (!strcmp(key, "xray_loglevel"))
-                set_str(c->xray_loglevel, sizeof(c->xray_loglevel), val);
-            else if (!strcmp(key, "xray_gogc"))
-                set_str(c->xray_gogc, sizeof(c->xray_gogc), val);
-            else if (!strcmp(key, "xray_gomemlimit"))
-                set_str(c->xray_gomemlimit, sizeof(c->xray_gomemlimit), val);
-            else if (!strcmp(key, "xray_watchdog"))
-                c->xray_watchdog = (int)cfg_num(c, key, val);
-            else if (!strcmp(key, "xray_min_mem_kb"))
-                c->xray_min_mem_kb = (int)cfg_num(c, key, val);
-            else if (!strcmp(key, "xray_log_max_kb"))
-                c->xray_log_max_kb = (int)cfg_num(c, key, val);
+        else if (!strcmp(key, "log_level"))
+            set_str(c->log_level, sizeof(c->log_level), val);
+        else if (!strcmp(key, "xray_loglevel"))
+            set_str(c->xray_loglevel, sizeof(c->xray_loglevel), val);
+        else if (!strcmp(key, "xray_gogc"))
+            set_str(c->xray_gogc, sizeof(c->xray_gogc), val);
+        else if (!strcmp(key, "xray_gomemlimit"))
+            set_str(c->xray_gomemlimit, sizeof(c->xray_gomemlimit), val);
+        else if (!strcmp(key, "xray_watchdog"))
+            c->xray_watchdog = (int)cfg_num(c, key, val);
+        else if (!strcmp(key, "xray_min_mem_kb"))
+            c->xray_min_mem_kb = (int)cfg_num(c, key, val);
+        else if (!strcmp(key, "xray_log_max_kb"))
+            c->xray_log_max_kb = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "disk_mode"))
             set_str(c->disk_mode, sizeof(c->disk_mode), val);
         else if (!strcmp(key, "lang"))

@@ -258,9 +258,27 @@ static void merge_lan_servers(const susanin_config *c, susanin_discovery *d)
  * подключённом клиенте существует ocN — это второй признак. */
 static int ocserv_alive(void)
 {
+    DIR *d;
+    struct dirent *de;
     int i;
     if (access("/var/run/ocserv/ocserv.conf", R_OK) == 0)
         return 1;
+    /* Один readdir вместо 64 access(): на каждый вызов discover_defaults
+     * раньше приходилось до DISC_MAXIF проверок iface_exists("ocN"). */
+    d = opendir("/sys/class/net");
+    if (d) {
+        int found = 0;
+        while ((de = readdir(d)) != NULL) {
+            const char *n = de->d_name;
+            if (n[0] == 'o' && n[1] == 'c' &&
+                n[2] >= '0' && n[2] <= '9') {
+                found = 1;
+                break;
+            }
+        }
+        closedir(d);
+        return found;
+    }
     for (i = 0; i < DISC_MAXIF; i++) {
         char name[32];
         snprintf(name, sizeof(name), "oc%d", i);

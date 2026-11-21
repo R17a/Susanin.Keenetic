@@ -132,7 +132,10 @@ static int dns_store(const char *domain, const char *ip, int ttl, int src)
         e = &g_tab[s];
         if (!e->domain[0]) {
             if (reuse < 0) reuse = s;
-            continue;
+            /* Пустой слот обрывает цепочку пробирования: дальше этого ключа
+             * быть не может. Раньше цикл доходил до конца таблицы (2048
+             * слотов) на каждый DNS-ответ. */
+            break;
         }
         if (!strcasecmp(e->domain, domain)) {
             if (strcmp(e->ip, ip) != 0) {

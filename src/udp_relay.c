@@ -345,9 +345,11 @@ static int socks_hdr_len(const unsigned char *b, ssize_t n)
 
 static void relay_loop(int main_fd)
 {
-    unsigned char in[65536], out[66000];
-    struct pollfd pfds[1 + MAX_FLOWS];
-    int idx[1 + MAX_FLOWS];
+    /* ~130 КБ на стеке ребёнка — на MIPS с 124 МБ RAM заметно; работник
+     * один, поэтому static безопасен. */
+    static unsigned char in[65536], out[66000];
+    static struct pollfd pfds[1 + MAX_FLOWS];
+    static int idx[1 + MAX_FLOWS];
 
     for (;;) {
         int nf = 1, i, r, j;
@@ -501,9 +503,16 @@ static pid_t relay_spawn(const susanin_config *cfg)
     }
     if (pid == 0) {
         /* дочерний процесс: свои обработчики сигналов — по умолчанию */
+        int fd;
         signal(SIGTERM, SIG_DFL);
         signal(SIGINT, SIG_DFL);
         signal(SIGHUP, SIG_DFL);
+        /* Ребёнок унаследовал fd родителя (логи, pipe, сокеты агента).
+         * Держать их нельзя: порт 5399 и сокеты снифера остались бы занятыми
+         * после перезапуска агента. Оставляем только stdio и main_fd. */
+        for (fd = 3; fd < 256; fd++)
+            if (fd != main_fd)
+                close(fd);
         slogf(SL_INFO, "udp-relay: started :%d -> socks %s:%d",
               cfg->udp_relay_port, g_socks_host, g_socks_port);
         relay_loop(main_fd);
@@ -520,6 +529,12 @@ static int g_active;            /* релей включён и должен р�
 static int g_stopping;          /* вызван stop() — автоперезапуск не делать */
 static time_t g_next_try;       /* backoff рестарта при ошибках запуска */
 static int g_spawn_fails;
+
+/* 1 = работник запущен: движку нужно, чтобы не пожинать чужих детей. */
+int udp_relay_busy(void)
+{
+    return g_pid > 0;
+}
 
 int udp_relay_start(const susanin_config *cfg)
 {
@@ -570,6 +585,25 @@ void udp_relay_tick(void)
     }
 }
 
+/* Погасить работника с пределом ожидания: раньше reload/stop звали
+ * waitpid(...,0) без таймаута, и зависший relay_loop держал агент навсегда. */
+static void relay_kill(pid_t pid)
+{
+    int i, st;
+
+    if (pid <= 0)
+        return;
+    kill(pid, SIGTERM);
+    for (i = 0; i < 200; i++) {          /* 2 с */
+        if (waitpid(pid, &st, WNOHANG) == pid)
+            return;
+        usleep(10000);
+    }
+    kill(pid, SIGKILL);
+    (void)waitpid(pid, &st, 0);
+    slogf(SL_WARN, "udp-relay: работник не завершился за 2 с — SIGKILL");
+}
+
 void udp_relay_reload(const susanin_config *cfg)
 {
     const char *nh;
@@ -592,8 +626,7 @@ void udp_relay_reload(const susanin_config *cfg)
     }
     slogf(SL_INFO, "udp-relay: параметры изменились — перезапуск работника");
     if (g_pid > 0) {
-        kill(g_pid, SIGTERM);
-        waitpid(g_pid, NULL, 0);
+        relay_kill(g_pid);
         g_pid = 0;
     }
     g_rcfg = *cfg;
@@ -609,8 +642,7 @@ void udp_relay_stop(void)
     g_stopping = 1;
     g_active = 0;
     if (g_pid > 0) {
-        kill(g_pid, SIGTERM);
-        waitpid(g_pid, NULL, 0);
+        relay_kill(g_pid);
         g_pid = 0;
         slogf(SL_INFO, "udp-relay: stopped");
     }

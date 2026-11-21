@@ -9,6 +9,14 @@
 
 #include "dns_lan.c"
 
+/* dns_lan.c при выключении на лету снимает DNAT через backend; в этом
+ * host-тесте ipset/iptables нет — заглушка, проверяем только разбор и TTL. */
+int backend_dns_lan_down(const susanin_config *c)
+{
+    (void)c;
+    return 0;
+}
+
 static int failures = 0;
 #define CHECK(c, m) do { if (c) printf("ok  %s\n", m); \
     else { printf("FAIL %s\n", m); failures++; } } while (0)

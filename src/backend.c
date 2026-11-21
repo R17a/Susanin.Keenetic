@@ -3,6 +3,7 @@
 #include "log.h"
 
 #include <fcntl.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -49,10 +50,17 @@ static const char *tool_conntrack(void)
     return buf;
 }
 
+/* Предел ожидания ребёнка (iptables/ipset/conntrack). NDM держит общий
+ * xtables-lock, и `iptables -w` может ждать его секундами: без предела главный
+ * цикл вставал целиком, а вместе с ним и dns_lan (DNS всей LAN). */
+#define RUN_ARGV_TIMEOUT_MS 2000
+
 static int run_argv(char *const argv[])
 {
     pid_t pid = fork();
     int st = -1;
+    int waited = 0;
+
     if (pid < 0)
         return -1;
     if (pid == 0) {
@@ -66,8 +74,26 @@ static int run_argv(char *const argv[])
         execvp(argv[0], argv);
         _exit(127);
     }
-    if (waitpid(pid, &st, 0) < 0)
-        return -1;
+    for (;;) {
+        pid_t r = waitpid(pid, &st, WNOHANG);
+        if (r == pid)
+            break;
+        if (r < 0 && errno == EINTR)
+            continue;
+        if (r < 0)
+            return -1;
+        if (waited >= RUN_ARGV_TIMEOUT_MS) {
+            /* Завис (обычно ждёт xtables-lock): убиваем и говорим об этом —
+             * иначе одно зависание снова валит DNS всей LAN. */
+            kill(pid, SIGKILL);
+            (void)waitpid(pid, &st, 0);
+            slogf(SL_WARN, "команда %s не уложилась в %d мс — прервана",
+                  argv && argv[0] ? argv[0] : "?", RUN_ARGV_TIMEOUT_MS);
+            return -1;
+        }
+        usleep(10000);
+        waited += 10;
+    }
     if (WIFEXITED(st))
         return WEXITSTATUS(st);
     return -1;
@@ -298,7 +324,17 @@ static int bt_run_restore(char *err, size_t errsz)
         close(p[0]);
         return -1;
     }
-    fcntl(p[0], F_SETFL, fcntl(p[0], F_GETFL, 0) | O_NONBLOCK);
+    /* Без O_NONBLOCK чтение из pipe ниже заблокирует главный цикл, если
+     * потомок завис. Не удалось — закрываем канал и убиваем ребёнка. */
+    {
+        int fl = fcntl(p[0], F_GETFL, 0);
+        if (fl < 0 || fcntl(p[0], F_SETFL, fl | O_NONBLOCK) != 0) {
+            close(p[0]);
+            kill(pid, SIGKILL);
+            (void)waitpid(pid, NULL, 0);
+            return -1;
+        }
+    }
     {
         int waited = 0, st = 0;
         int done = 0, timedout = 0;
@@ -632,19 +668,71 @@ static int run_capture_argv(char *const argv[], char *out, size_t outsz)
     {
         char tmp[512];
         ssize_t r;
-        while ((r = read(p[0], tmp, sizeof(tmp))) > 0) {
-            if (out && outsz > 1 && n < outsz - 1) {
-                size_t room = outsz - 1 - n;
-                size_t take = (size_t)r < room ? (size_t)r : room;
-                memcpy(out + n, tmp, take);
-                n += take;
+        int fl = fcntl(p[0], F_GETFL, 0);
+        int waited = 0;
+        int nb = 0;
+
+        /* Чтение с дедлайном: провижн зовётся из главного цикла, а `iptables -w`
+         * может ждать xtables-lock минутами. Без предела цикл вставал целиком
+         * (и dns_lan вместе с ним). */
+        if (fl >= 0 && fcntl(p[0], F_SETFL, fl | O_NONBLOCK) == 0)
+            nb = 1;
+        for (;;) {
+            r = read(p[0], tmp, sizeof(tmp));
+            if (r > 0) {
+                if (out && outsz > 1 && n < outsz - 1) {
+                    size_t room = outsz - 1 - n;
+                    size_t take = (size_t)r < room ? (size_t)r : room;
+                    memcpy(out + n, tmp, take);
+                    n += take;
+                }
+                continue;
             }
+            if (!nb) {
+                /* fcntl не удался: читаем до EOF как раньше */
+                if (r == 0)
+                    break;
+                continue;
+            }
+            if (r == 0)
+                break;              /* EOF: ребёнок закрыл pipe */
+            if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+                break;
+            {
+                pid_t rp = waitpid(pid, &st, WNOHANG);
+                if (rp == pid) {
+                    /* ребёнок вышел: дочитать остаток и выйти */
+                    while ((r = read(p[0], tmp, sizeof(tmp))) > 0) {
+                        if (out && outsz > 1 && n < outsz - 1) {
+                            size_t room = outsz - 1 - n;
+                            size_t take = (size_t)r < room ? (size_t)r : room;
+                            memcpy(out + n, tmp, take);
+                            n += take;
+                        }
+                    }
+                    break;
+                }
+                if (rp < 0 && errno != EINTR)
+                    break;
+            }
+            if (waited >= RUN_ARGV_TIMEOUT_MS) {
+                kill(pid, SIGKILL);
+                (void)waitpid(pid, &st, 0);
+                slogf(SL_WARN, "команда %s не уложилась в %d мс — прервана",
+                      argv && argv[0] ? argv[0] : "?", RUN_ARGV_TIMEOUT_MS);
+                close(p[0]);
+                if (out && outsz)
+                    out[n] = '\0';
+                return -1;
+            }
+            usleep(20000);
+            waited += 20;
         }
         if (out && outsz)
             out[n] = '\0';
     }
     close(p[0]);
-    if (waitpid(pid, &st, 0) < 0)
+    if (waitpid(pid, &st, 0) < 0 && errno != ECHILD)
         return -1;
     if (WIFEXITED(st))
         return WEXITSTATUS(st);
@@ -766,6 +854,15 @@ static int run_script(const susanin_config *c, const char *a1, const char *a2)
     return run_argv(argv);
 }
 
+/* Снять DNAT-перехват DNS клиентов. Нужен при выключении dns_lan на лету:
+ * правила остаются и шлют DNS в уже закрытый порт форвардера — клиенты
+ * получают тишину вместо ответа. Штатный stop снимает цепь сам (susanin.sh),
+ * но reload — нет. */
+int backend_dns_lan_down(const susanin_config *c)
+{
+    return run_script(c, "dns-lan-down", NULL);
+}
+
 int backend_provision(const susanin_config *c)
 {
     char *argv[4];
@@ -831,6 +928,33 @@ int backend_read_reprov(long *when, char *reason, size_t reasonsz)
     if (reason && reasonsz)
         snprintf(reason, reasonsz, "%s", r);
     return 0;
+}
+
+/* Снимок аудита потоков «помечено в VPN, а идёт напрямую»: пишет движок,
+ * читает `status` (отдельный процесс). В soft — tmpfs: журнала там нет, и это
+ * единственный канал наблюдаемости, а носитель не трогаем. Пути — в backend.h
+ * (их же читает status, которому нужен и «чужой» путь после смены режима). */
+const char *backend_flowaudit_path(const susanin_config *c)
+{
+    if (c && !strcmp(c->disk_mode, "soft"))
+        return FLOWAUDIT_SOFT_FILE;
+    return FLOWAUDIT_FILE;
+}
+
+void backend_write_flowaudit(const susanin_config *c, unsigned long marked,
+                             unsigned long direct, unsigned long swept)
+{
+    const char *path = backend_flowaudit_path(c);
+    char tmp[128];
+    FILE *fp;
+
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    fp = fopen(tmp, "w");
+    if (!fp)
+        return;
+    fprintf(fp, "marked=%lu marked_direct=%lu swept=%lu\n", marked, direct, swept);
+    fclose(fp);
+    rename(tmp, path);
 }
 
 static const char *tool_iptables(void)
@@ -941,7 +1065,16 @@ static int iface_prefix_in_list(const char *list, const char *pfx)
  * interface: цепочки SUSANIN МАЛО — NDM может снести ip rule, default в таблице
  * или разрешение в filter/FORWARD, и тогда метка ставится, а трафик идёт
  * напрямую (снаружи это «vpn_always не работает»). */
-static int be_ready_int(const susanin_config *c, int *unknown)
+/* Причина, по которой проверка не прошла: нужна не только для лога, но и для
+ * решения «рвать ли conntrack после ре-провижна» (см. backend_why_is_redirect). */
+static void why_set(char *why, size_t whysz, const char *s)
+{
+    if (why && whysz)
+        snprintf(why, whysz, "%s", s);
+}
+
+static int be_ready_int(const susanin_config *c, int *unknown,
+                        char *why, size_t whysz)
 {
     char *argv[6];
     char out[8192], needle[96];
@@ -949,6 +1082,8 @@ static int be_ready_int(const susanin_config *c, int *unknown)
 
     if (unknown)
         *unknown = 0;
+    if (why && whysz)
+        why[0] = '\0';
 
     argv[0] = (char *)tool_iptables();
     argv[1] = "-t";
@@ -965,13 +1100,17 @@ static int be_ready_int(const susanin_config *c, int *unknown)
             *unknown = 1;
         return 1;               /* проверить нельзя — не объявляем пропажу */
     }
-    if (rc != 0)
+    if (rc != 0) {
+        why_set(why, whysz, "chain SUSANIN");
         return 0;
+    }
     /* Цепочка существует — НЕ то же самое, что «датаплейн на месте»: NDM и
      * `iptables -F` снимают правила, оставляя пустую пользовательскую
      * цепочку, и прежняя проверка считала это готовностью навсегда. */
-    if (!strstr(out, "-A SUSANIN"))
+    if (!strstr(out, "-A SUSANIN")) {
+        why_set(why, whysz, "chain SUSANIN (empty)");
         return 0;
+    }
 
     /* T3: dns_hijack ставит DNAT 53 заранее (в т.ч. шаблоном oc+ без живого
      * клиента) и помечает правила comment-меткой susanin-dns. Если правила
@@ -990,8 +1129,10 @@ static int be_ready_int(const susanin_config *c, int *unknown)
                 *unknown = 1;
             return 1;
         }
-        if (rc != 0 || !strstr(out, "susanin-dns"))
+        if (rc != 0 || !strstr(out, "susanin-dns")) {
+            why_set(why, whysz, "dns hijack DNAT");
             return 0;
+        }
     }
 
     if (tproxy_active(c)) {
@@ -1005,8 +1146,10 @@ static int be_ready_int(const susanin_config *c, int *unknown)
                 *unknown = 1;
             return 1;
         }
-        if (rc != 0 || !strstr(out, needle))
+        if (rc != 0 || !strstr(out, needle)) {
+            why_set(why, whysz, "nat REDIRECT (TCP)");
             return 0;
+        }
 
         /* UDP TPROXY -> udp_relay_port (если релей включён) */
         if (c->udp_relay) {
@@ -1019,8 +1162,10 @@ static int be_ready_int(const susanin_config *c, int *unknown)
                     *unknown = 1;
                 return 1;
             }
-            if (rc != 0 || !strstr(out, needle))
+            if (rc != 0 || !strstr(out, needle)) {
+                why_set(why, whysz, "mangle TPROXY (UDP)");
                 return 0;
+            }
         }
 
         /* ip rule fwmark 0x1 -> table (доставка TPROXY) */
@@ -1035,8 +1180,10 @@ static int be_ready_int(const susanin_config *c, int *unknown)
                     *unknown = 1;
                 return 1;
             }
-            if (rc != 0 || !strstr(out, needle))
+            if (rc != 0 || !strstr(out, needle)) {
+                why_set(why, whysz, "ip rule tproxy");
                 return 0;
+            }
         }
         return 1;
     }
@@ -1059,8 +1206,10 @@ static int be_ready_int(const susanin_config *c, int *unknown)
                 *unknown = 1;
             return 1;
         }
-        if (rc != 0 || !strstr(out, needle))
+        if (rc != 0 || !strstr(out, needle)) {
+            why_set(why, whysz, "ip rule ok");
             return 0;
+        }
 
         /* Маршрут в таблице проверяем ТОЛЬКО пока жив хоть один кандидат.
          * Когда VPN отключают в Keenetic, интерфейс исчезает и ядро вместе с ним
@@ -1078,8 +1227,10 @@ static int be_ready_int(const susanin_config *c, int *unknown)
                     *unknown = 1;
                 return 1;
             }
-            if (rc != 0 || !strstr(out, "default"))
+            if (rc != 0 || !strstr(out, "default")) {
+                why_set(why, whysz, "route table");
                 return 0;
+            }
         }
 
         /* Политика Keenetic — FORWARD DROP; без ACCEPT по нашей метке клиенты
@@ -1100,8 +1251,10 @@ static int be_ready_int(const susanin_config *c, int *unknown)
                     *unknown = 1;
                 return 1;
             }
-            if (rc != 0)
+            if (rc != 0) {
+                why_set(why, whysz, "FORWARD ACCEPT (mark)");
                 return 0;
+            }
         }
     }
 
@@ -1125,13 +1278,17 @@ static int be_ready_int(const susanin_config *c, int *unknown)
         if (numeric) {
             char *endp = 0;
             unsigned long v = strtoul(c->proxy_uid, &endp, 10);
-            if (!endp || *endp != '\0')
+            if (!endp || *endp != '\0') {
+                why_set(why, whysz, "p5 uid");
                 return 0;
+            }
             proxy_uid_num = (unsigned)v;
         } else {
             struct passwd *pw = getpwnam(c->proxy_uid);
-            if (!pw)
-                return 0;       /* пользователя нет — правило не поставить */
+            if (!pw) {          /* пользователя нет — правило не поставить */
+                why_set(why, whysz, "p5 uid");
+                return 0;
+            }
             proxy_uid_num = (unsigned)pw->pw_uid;
         }
         snprintf(needle, sizeof(needle), "--uid-owner %u", proxy_uid_num);
@@ -1143,8 +1300,10 @@ static int be_ready_int(const susanin_config *c, int *unknown)
                 *unknown = 1;
             return 1;
         }
-        if (rc != 0 || !strstr(out, needle))
+        if (rc != 0 || !strstr(out, needle)) {
+            why_set(why, whysz, "p5 uid rule");
             return 0;
+        }
 
         snprintf(needle, sizeof(needle), "fwmark 0x%lx/0x%lx lookup %d",
                  c->proxy_mark, c->proxy_mark, c->proxy_table);
@@ -1156,8 +1315,10 @@ static int be_ready_int(const susanin_config *c, int *unknown)
                 *unknown = 1;
             return 1;
         }
-        if (rc != 0 || !strstr(out, needle))
+        if (rc != 0 || !strstr(out, needle)) {
+            why_set(why, whysz, "p5 ip rule");
             return 0;
+        }
         p5_ok_at = p5now;
         }
     }
@@ -1167,7 +1328,7 @@ p5_cached:
 
 int backend_ready(const susanin_config *c)
 {
-    return be_ready_int(c, NULL);
+    return be_ready_int(c, NULL, NULL, 0);
 }
 
 /* То же, но различает «проверено, на месте» и «проверить не удалось»:
@@ -1176,7 +1337,28 @@ int backend_ready(const susanin_config *c)
  * молчал, пока лок удерживали минуты. */
 int backend_ready_ex(const susanin_config *c, int *unknown)
 {
-    return be_ready_int(c, unknown);
+    return be_ready_int(c, unknown, NULL, 0);
+}
+
+/* Та же проверка + имя не прошедшего правила в why (для dp-reprov и решения
+ * о сбросе conntrack). */
+int backend_ready_why(const susanin_config *c, int *unknown,
+                      char *why, size_t whysz)
+{
+    return be_ready_int(c, unknown, why, whysz);
+}
+
+/* Пропало правило, из-за которого уже помеченный поток уходит напрямую:
+ * REDIRECT/TPROXY не применяются к установленным сессиям, а ip rule не
+ * доставляет помеченное в таблицу. Пропажа FORWARD ACCEPT или маршрута такого
+ * класса потоков не создаёт — там пакет до Xray доходит. */
+int backend_why_is_redirect(const char *why)
+{
+    if (!why || !why[0])
+        return 0;
+    if (strstr(why, "REDIRECT") || strstr(why, "TPROXY") || strstr(why, "ip rule"))
+        return 1;
+    return 0;
 }
 
 /* Check the environment the data plane needs: external tools and the egress
@@ -1616,7 +1798,7 @@ int backend_net_del(const susanin_config *c, const char *cidr)
 
 int backend_ct_delete(const ct_flow *f)
 {
-    static char *argv[13];
+    char *argv[13];
     char sport[16], dport[16];
     if (!f)
         return -1;

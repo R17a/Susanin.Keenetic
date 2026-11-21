@@ -989,7 +989,9 @@ static int copy_file(const char *src, const char *dst)
     FILE *s = fopen(src, "rb");
     FILE *d;
     struct stat st;
-    int c, rc = 0;
+    char buf[8192];
+    size_t n;
+    int rc = 0;
 
     if (!s)
         return -1;
@@ -998,12 +1000,16 @@ static int copy_file(const char *src, const char *dst)
         fclose(s);
         return -1;
     }
-    while ((c = fgetc(s)) != EOF) {
-        if (fputc(c, d) == EOF) {
+    /* Блочное копирование: fgetc/fputc на каждый байт — это два вызова
+     * stdio на байт, для списков в сотни КБ заметно даже на MIPS. */
+    while ((n = fread(buf, 1, sizeof(buf), s)) > 0) {
+        if (fwrite(buf, 1, n, d) != n) {
             rc = -1;
             break;
         }
     }
+    if (ferror(s))
+        rc = -1;
     fclose(s);
     if (fclose(d) != 0)
         rc = -1;
@@ -1097,6 +1103,8 @@ static int list_edit(const char *path, const char *val, int add,
         snprintf(err, errsz, "cannot write list file");
         return -1;
     }
+    /* Права не по umask: иначе до rename tmp-файл может быть доступен другим. */
+    (void)fchmod(fileno(out), 0644);
     if (in) {
         while (fgets(line, sizeof(line), in)) {
             char orig[sizeof(line)];
@@ -1135,7 +1143,14 @@ static int list_edit(const char *path, const char *val, int add,
     if (changed) {
         copy_file(path, bak);   /* один бэкап, поверх прежнего */
         list_bak_cleanup(path); /* и уборка копий старого формата */
-        rename(tmp, path);
+        if (rename(tmp, path) != 0) {
+            slogf(SL_WARN, "web: не удалось заменить %s (%s)", path,
+                  strerror(errno));
+            if (err && errsz)
+                snprintf(err, errsz, "cannot replace list file");
+            remove(tmp);
+            return -1;
+        }
     } else {
         remove(tmp);
     }
@@ -1193,6 +1208,7 @@ static int list_replace(const char *path, const char *text, int allow_soft,
         snprintf(err, errsz, "cannot write list file");
         return -1;
     }
+    (void)fchmod(fileno(out), 0644);
     while (p && *p) {
         const char *nl = strchr(p, '\n');
         size_t raw = nl ? (size_t)(nl - p) : strlen(p);
@@ -1474,14 +1490,26 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
     if (config_load(ops_default_conf_path(), &lcfg) == 0)
         cfg = &lcfg;
 
-    while (len < sizeof(req) - 1) {
-        ssize_t r = recv(fd, req + len, sizeof(req) - 1 - len, 0);
-        if (r <= 0)
-            break;
-        len += (size_t)r;
-        req[len] = '\0';
-        if (strstr(req, "\r\n\r\n"))
-            break;
+    /* Slowloris: SO_RCVTIMEO ограничивает одно чтение, а не всё чтение
+     * заголовков. Клиент, шлющий по байту раз в 9 с, держал бы обработчик
+     * бесконечно — поэтому абсолютный дедлайн на весь блок заголовков. */
+    {
+        time_t hdr_deadline = time(NULL) + 15;
+
+        while (len < sizeof(req) - 1) {
+            ssize_t r;
+            if (time(NULL) > hdr_deadline) {
+                reply_text(fd, 408, "request timeout", 0);
+                return;
+            }
+            r = recv(fd, req + len, sizeof(req) - 1 - len, 0);
+            if (r <= 0)
+                break;
+            len += (size_t)r;
+            req[len] = '\0';
+            if (strstr(req, "\r\n\r\n"))
+                break;
+        }
     }
     if (len == 0)
         return;
@@ -1523,6 +1551,22 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
     if (query) {
         *query = '\0';
         query++;
+    }
+
+    /* Авторизацию проверяем ДО чтения тела: иначе валидный по размеру POST без
+     * токена заставлял сервер принять до 64 КБ (list/save — до MAX_LIST_BODY). */
+    if (!token_ok(cfg, req, query,
+                  strcmp(method, "GET") && strcmp(method, "HEAD"), &qauth)) {
+        /* Для путей /api/ отдаём JSON: панель разбирает ответ как JSON, а на
+         * текстовом теле показывала «Unexpected token 'r', … is not valid JSON». */
+        if (!strncmp(target, "/api/", 5)) {
+            char jb[128];
+            snprintf(jb, sizeof(jb), "{\"ok\":false,\"error\":\"unauthorized\"}");
+            reply(fd, 401, "application/json; charset=utf-8", jb, strlen(jb), head_only);
+        } else {
+            reply_text(fd, 401, "unauthorized", head_only);
+        }
+        return;
     }
 
     {
@@ -1600,21 +1644,6 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
                 bodyp = big;
             }
         }
-    }
-
-    if (!token_ok(cfg, req, query,
-                  strcmp(method, "GET") && strcmp(method, "HEAD"), &qauth)) {
-        free(bodybig);
-        /* Для путей /api/ отдаём JSON: панель разбирает ответ как JSON, а на
-         * текстовом теле показывала «Unexpected token 'r', … is not valid JSON». */
-        if (!strncmp(target, "/api/", 5)) {
-            char jb[128];
-            snprintf(jb, sizeof(jb), "{\"ok\":false,\"error\":\"unauthorized\"}");
-            reply(fd, 401, "application/json; charset=utf-8", jb, strlen(jb), head_only);
-        } else {
-            reply_text(fd, 401, "unauthorized", head_only);
-        }
-        return;
     }
 
     if (!strcmp(method, "POST")) {
@@ -1720,6 +1749,37 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
                qauth ? cfg->web_token : NULL);
 }
 
+/* Число живых детей (обработчиков соединений). Родитель ставит SIGCHLD в
+ * SIG_IGN (дети пожинаются ядром), поэтому считать по waitpid нельзя — читаем
+ * /proc/self/task/<pid>/children (ядро 4.9 поддерживает). -1 = не узнать. */
+static int web_children(void)
+{
+    char path[64], buf[512];
+    char *p;
+    int n = 0;
+    FILE *f;
+
+    snprintf(path, sizeof(path), "/proc/self/task/%d/children", (int)getpid());
+    f = fopen(path, "r");
+    if (!f)
+        return -1;
+    if (!fgets(buf, sizeof(buf), f)) {
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+    for (p = buf; *p; ) {
+        if (*p >= '0' && *p <= '9') {
+            n++;
+            while (*p >= '0' && *p <= '9')
+                p++;
+        } else {
+            p++;
+        }
+    }
+    return n;
+}
+
 int web_run(const susanin_config *cfg)
 {
     struct sockaddr_in sa;
@@ -1778,7 +1838,21 @@ int web_run(const susanin_config *cfg)
     for (;;) {
         struct sockaddr_in ca;
         socklen_t cl = sizeof(ca);
-        int cfd = accept(sfd, (struct sockaddr *)&ca, &cl);
+        int cfd;
+        int ch = web_children();
+
+        /* Предел одновременных обработчиков: иначе злоумышленник в LAN
+         * открывает сотни соединений и исчерпывает PID/память роутера. */
+        if (ch >= 32) {
+            cfd = accept(sfd, (struct sockaddr *)&ca, &cl);
+            if (cfd >= 0) {
+                reply_text(cfd, 503, "too many connections", 0);
+                close(cfd);
+            }
+            usleep(50000);
+            continue;
+        }
+        cfd = accept(sfd, (struct sockaddr *)&ca, &cl);
         if (cfd < 0) {
             if (errno == EINTR)
                 continue;
@@ -1787,6 +1861,12 @@ int web_run(const susanin_config *cfg)
         }
         {
             pid_t pid = fork();
+            if (pid < 0) {
+                /* Явно и до continue: иначе cfd утекает до конца жизни web. */
+                close(cfd);
+                usleep(10000);
+                continue;
+            }
             if (pid == 0) {
                 struct timeval tv;
                 tv.tv_sec = 10;

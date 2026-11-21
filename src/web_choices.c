@@ -622,12 +622,29 @@ static void collect_subnets_ioctl(choice_set *cs, int fd, const char *netdir)
  * без неё всё уже собрано через ioctl; stderr глушим, наличие проверяем
  * через `command -v` (иначе несуществующая утилита в некоторых оболочках
  * оставляет читателя popen() ждать вечно). */
+/* Есть ли утилита ip. Проверяем ДО popen и кэшируем: раньше на каждый
+ * /api/choices запускался шелл через popen только ради `command -v`. */
+static int have_ip(void)
+{
+    static int cached = -1;
+
+    if (cached < 0) {
+        cached = (access("/opt/sbin/ip", X_OK) == 0 ||
+                  access("/opt/bin/ip", X_OK) == 0 ||
+                  access("/usr/sbin/ip", X_OK) == 0 ||
+                  access("/usr/bin/ip", X_OK) == 0);
+    }
+    return cached;
+}
+
 static void collect_subnets_ip(choice_set *cs)
 {
     FILE *p;
     char line[512];
 
-    p = popen("command -v ip >/dev/null 2>&1 && ip -4 -o addr show 2>/dev/null", "r");
+    if (!have_ip())
+        return;
+    p = popen("ip -4 -o addr show 2>/dev/null", "r");
     if (!p)
         return;
     while (fgets(line, sizeof(line), p)) {

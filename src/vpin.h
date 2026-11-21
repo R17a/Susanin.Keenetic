@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <time.h>
 
+#include "config.h"
+
 /* Очередь проверки пинов, поставленных автообучением.
  *
  * Зачем: адрес уходит в VPN по одной улике (FAST-детект), и дальше никто не
@@ -24,6 +26,10 @@
 /* Снимок очереди и счётчиков для `status`/`why`: это отдельные процессы,
  * память движка им недоступна (тот же путь, что и dnssniff.state). */
 #define VPIN_STATS_FILE "/opt/susanin/var/vpin.state"
+#define VPIN_SOFT_STATS_FILE "/tmp/susanin-vpin.state"
+
+/* Путь снимка: в disk_mode=soft — tmpfs (журнала нет, а снимок нужен status). */
+const char *vpin_stats_path(const susanin_config *cfg);
 
 enum {
     VPIN_FREE = 0,     /* слот свободен */

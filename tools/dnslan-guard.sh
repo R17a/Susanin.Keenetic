@@ -53,7 +53,9 @@ agent_holds_socket() {
     [ -n "$_ino" ] || return 1
     _ap=$(cat "$AGENT_PID" 2>/dev/null || true)
     [ -n "$_ap" ] || return 0
-    kill -0 "$_ap" 2>/dev/null || return 0
+    # Мёртвый pid — агента нет; сокет мог достаться наследнику (fork без exec).
+    # Это НЕ «агент держит сокет»: иначе DNAT остаётся и DNS уходит в никуда.
+    kill -0 "$_ap" 2>/dev/null || return 1
     for _f in /proc/"$_ap"/fd/*; do
         [ "$(readlink "$_f" 2>/dev/null)" = "socket:[$_ino]" ] || continue
         return 0
@@ -91,6 +93,16 @@ maybe_restart() {
 }
 
 echo $$ >"$PIDFILE" 2>/dev/null || true
+# Проверка ОТВЕТА, а не только сокета: агент может быть жив и держать порт,
+# но стоять в главном цикле (ждёт дочерний iptables). Тогда сокет есть, а
+# ответов нет — и DNAT шлёт DNS клиентов в мёртвый порт. Две неудачи подряд
+# (раз в PROBE_EVERY тиков) — считаем форвардер мёртвым.
+PROBE_EVERY=${SUSANIN_DNSLAN_PROBE_EVERY:-12}
+AGENT_BIN=/opt/susanin/bin/susanin-agent
+probe_answers() {
+    [ -x "$AGENT_BIN" ] || return 0
+    "$AGENT_BIN" dnsprobe example.com 127.0.0.1 "$PORT" >/dev/null 2>&1
+}
 # Убираем pid-файл только если он всё ещё наш: иначе сторож, вышедший после
 # restart, удалил бы pid-файл нового сторожа, и тот через тик решил бы, что его
 # сняли.
@@ -100,11 +112,24 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+tick=0
+pfail=0
+
 while :; do
     sleep "$INTERVAL"
+    tick=$((tick + 1))
     # Нас заменил новый сторож (up после restart) или сняли pid-файл — выходим.
     [ "$(cat "$PIDFILE" 2>/dev/null)" = "$$" ] || exit 0
-    agent_holds_socket && continue
+    if agent_holds_socket; then
+        if [ $((tick % PROBE_EVERY)) -eq 0 ] && ! probe_answers; then
+            pfail=$((pfail + 1))
+            note "dns_lan: сокет udp/$PORT есть, но форвардер не отвечает (проба $pfail/2)"
+            [ "$pfail" -lt 2 ] && continue
+        else
+            pfail=0
+            continue
+        fi
+    fi
     # Слушателя нет (или порт держит не агент). Цепь уже снята — тихо выходим.
     chain_present || exit 0
     if [ -n "$(socket_inode)" ]; then

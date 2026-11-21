@@ -420,9 +420,9 @@
   "zh": "log: %s 位于 tmpfs（这是内存！）：日志增长会占用内存，重启后证据会消失。请把日志放在 flash 上（对介质而言比看上去更划算）或使用 disk_mode=soft"
  },
  {
-  "ru": "disk_mode=soft: лог не ведётся (вывод в /dev/null), state не сохраняется (кроме soft_state_interval), бэкапов нет",
-  "en": "disk_mode=soft: no logging (output to /dev/null), state not saved (except soft_state_interval), no backups",
-  "zh": "disk_mode=soft: 不写日志（输出到 /dev/null），state 不保存（soft_state_interval 除外），无备份"
+  "ru": "disk_mode=soft: лог не ведётся (вывод в /dev/null), state сохраняется при остановке и раз в soft_state_interval, бэкапов нет",
+  "en": "disk_mode=soft: no logging (output to /dev/null), state saved on stop and every soft_state_interval, no backups",
+  "zh": "disk_mode=soft: 不写日志（输出到 /dev/null），state 在停止时和每 soft_state_interval 保存一次，无备份"
  },
  {
   "ru": "ok_ttl=0: выученные адреса не истекают (наборы будут расти); рекомендуется конечный TTL, напр. ok_ttl=21600",

@@ -32,7 +32,12 @@ static int service_port(unsigned p)
 /* Списки из конфига (learn_exclude_ports, lan_subnets, media_ports) парсятся
  * один раз и кэшируются: копирование строки + strtok на каждый поток в каждом
  * проходе были заметной статьёй расходов на слабом CPU. Кэш сбрасывается при
- * изменении исходной строки (reload конфига). */
+ * изменении исходной строки (reload конфига).
+ *
+ * ПОТОКОБЕЗОПАСНОСТЬ: кэши и все g_* модуля меняются только из главного цикла
+ * движка (reload и проходы классификатора — один поток). Если появится второй
+ * поток, эти массивы нужно переводить на copy-on-write: чтение из другого
+ * потока во время перезаписи — UB. */
 static unsigned excl_ports[64];
 static int excl_n;
 static char excl_src[CFG_PATH_MAX];
@@ -186,6 +191,28 @@ static int ours(const ct_flow *f, const susanin_config *cfg)
 
 /* Экспорт чистых фильтров для sweep_direct() (engine.c). */
 int clf_service_port(unsigned port) { return service_port(port); }
+
+/* «Помечен в VPN, а REDIRECT его не забрал». REDIRECT/TPROXY применяются к
+ * первому пакету; если правила в этот момент не было, conntrack запомнил прямой
+ * путь, а метка осталась. В conntrack это видно по reply-порту: у забранного
+ * потока это порт Xray (tproxy_port), у ушедшего напрямую — порт сервера
+ * (= dport). sweep_direct() такие потоки пропускает (ctmark != 0), а judge
+ * считает здоровыми: данные от сервера неотличимы от данных из туннеля.
+ * Чистая функция — нужна и аудиту в engine.c, и host-тесту. */
+int clf_marked_direct(const susanin_config *cfg, const ct_flow *f)
+{
+    if (!cfg || !f)
+        return 0;
+    if (f->l4proto != 6 || !f->has_reply)
+        return 0;
+    if (!f->ctmark || (f->ctmark & cfg->mark_mask) == 0)
+        return 0;
+    if (f->dport == 0 || f->r_sport == 0)
+        return 0;
+    if (f->dport == (unsigned)cfg->tproxy_port)
+        return 0;
+    return f->r_sport == f->dport;
+}
 int clf_port_excluded(const susanin_config *cfg, unsigned port)
 {
     return port_excluded(cfg, port);

@@ -5,6 +5,7 @@
 #include "version.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -40,46 +41,144 @@ static void copy_tag(const char *src, char *dst, size_t n)
     dst[i] = '\0';
 }
 
-/* Простое извлечение строкового поля JSON: ключ ищется вместе с кавычками,
- * escape-последовательности декодируются только базовые (tag/URL без \u). */
-static int json_string(const char *json, const char *key, char *out, size_t outsz)
+/* --- разбор JSON без внешних библиотек -------------------------------------
+ * Нужны только строковые поля верхнего уровня объекта релиза (tag_name,
+ * html_url). Полноценный парсер здесь избыточен, но и strstr недостаточно:
+ * ключ может встретиться внутри значения или вложенного объекта (author.
+ * html_url). Ниже — обход верхнего уровня: строки, объекты и массивы
+ * пропускаются с учётом кавычек и глубины. \uXXXX не декодируется (tag/URL
+ * GitHub его не содержат), остальные escape — базовые. */
+static const char *json_ws(const char *p)
 {
-    const char *p;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
+        p++;
+    return p;
+}
+
+/* Разобрать строку с кавычкой; out==NULL — только пропустить. NULL — ошибка. */
+static const char *json_str(const char *p, char *out, size_t n)
+{
     size_t i = 0;
-    if (!json || !key || !out || outsz == 0)
-        return -1;
-    p = strstr(json, key);
-    if (!p)
-        return -1;
-    p += strlen(key);
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
-        p++;
-    if (*p != ':')
-        return -1;
-    p++;
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
-        p++;
+
     if (*p != '"')
-        return -1;
+        return NULL;
     p++;
-    while (*p && *p != '"' && i + 1 < outsz) {
+    while (*p && *p != '"') {
+        char c;
+
         if (*p == '\\' && p[1]) {
             p++;
             switch (*p) {
-            case 'n': out[i++] = '\n'; break;
-            case 'r': out[i++] = '\r'; break;
-            case 't': out[i++] = '\t'; break;
-            default:  out[i++] = *p; break;
+            case 'n': c = '\n'; break;
+            case 'r': c = '\r'; break;
+            case 't': c = '\t'; break;
+            case 'b': c = '\b'; break;
+            case 'f': c = '\f'; break;
+            case '/': c = '/'; break;
+            case '"': c = '"'; break;
+            case '\\': c = '\\'; break;
+            default:  c = *p; break;
             }
             p++;
         } else {
-            out[i++] = *p++;
+            c = *p++;
         }
+        if (out && i + 1 < n)
+            out[i++] = c;
     }
     if (*p != '"')
+        return NULL;
+    p++;
+    if (out && n)
+        out[i] = '\0';
+    return p;
+}
+
+/* Пропустить значение (строку, объект/массив или литерал). NULL — ошибка. */
+static const char *json_skip(const char *p)
+{
+    p = json_ws(p);
+    if (*p == '"')
+        return json_str(p, NULL, 0);
+    if (*p == '{' || *p == '[') {
+        int depth = 0;
+
+        while (*p) {
+            if (*p == '"') {
+                p = json_str(p, NULL, 0);
+                if (!p)
+                    return NULL;
+                continue;
+            }
+            if (*p == '{' || *p == '[')
+                depth++;
+            else if (*p == '}' || *p == ']') {
+                if (--depth == 0)
+                    return p + 1;
+            }
+            p++;
+        }
+        return NULL;
+    }
+    while (*p && *p != ',' && *p != '}' && *p != ']')
+        p++;
+    return p;
+}
+
+/* Строковое поле верхнего уровня объекта. 0 — найдено. */
+static int json_top_string(const char *json, const char *key,
+                           char *out, size_t outsz)
+{
+    const char *p;
+    char kbuf[128];
+
+    if (!json || !key || !out || outsz == 0)
         return -1;
-    out[i] = '\0';
-    return 0;
+    p = json_ws(json);
+    if (*p != '{')
+        return -1;
+    p++;
+    for (;;) {
+        p = json_ws(p);
+        if (*p == '}')
+            return -1;
+        p = json_str(p, kbuf, sizeof(kbuf));
+        if (!p)
+            return -1;
+        p = json_ws(p);
+        if (*p != ':')
+            return -1;
+        p = json_ws(p + 1);
+        if (*p == '"') {
+            char vbuf[512];
+            const char *q = json_str(p, vbuf, sizeof(vbuf));
+
+            if (!q)
+                return -1;
+            if (!strcmp(kbuf, key)) {
+                size_t l = strlen(vbuf);
+
+                if (outsz && l >= outsz)
+                    l = outsz - 1;
+                if (l)
+                    memcpy(out, vbuf, l);
+                if (outsz)
+                    out[l] = '\0';
+                return 0;
+            }
+            p = q;
+        } else {
+            p = json_skip(p);
+            if (!p)
+                return -1;
+        }
+        p = json_ws(p);
+        if (*p == ',') {
+            p++;
+            continue;
+        }
+        return -1;              /* '}' или мусор: поля нет */
+    }
 }
 
 int release_parse_payload(const char *json, char *tag, size_t tagsz,
@@ -92,19 +191,17 @@ int release_parse_payload(const char *json, char *tag, size_t tagsz,
     tag[0] = '\0';
     if (url && urlsz)
         url[0] = '\0';
-    if (json_string(json, "\"tag_name\"", raw, sizeof(raw)) != 0)
+    if (json_top_string(json, "tag_name", raw, sizeof(raw)) != 0)
         return -1;
     copy_tag(raw, tag, tagsz);
     if (tag[0] == '\0' || !isdigit((unsigned char)tag[0]))
         return -1;
     if (url && urlsz) {
-        /* html_url релиза идёт в объекте раньше author; берём его только если он
-         * действительно раньше author.html_url (не полагаемся на порядок ключей). */
-        const char *author_at = strstr(json, "\"author\"");
-        const char *html_at = strstr(json, "\"html_url\"");
-        if (html_at && (!author_at || html_at < author_at) &&
-            json_string(json, "\"html_url\"", rawurl, sizeof(rawurl)) == 0 &&
-            (strncmp(rawurl, "https://", 8) == 0 || strncmp(rawurl, "http://", 7) == 0)) {
+        /* Только ВЕРХНИЙ уровень: html_url внутри author — это профиль
+         * автора, а не ссылка на релиз. */
+        if (json_top_string(json, "html_url", rawurl, sizeof(rawurl)) == 0 &&
+            (strncmp(rawurl, "https://", 8) == 0 ||
+             strncmp(rawurl, "http://", 7) == 0)) {
             snprintf(url, urlsz, "%s", rawurl);
         } else {
             snprintf(url, urlsz, "%sv%s", RELEASE_WEB, tag);
@@ -242,17 +339,31 @@ static void cache_save(void)
         unlink(tmp);
 }
 
-static int fetch_to_file(char *const argv[], const char *path)
+/* Загрузка ответа GitHub — АСИНХРОННО: главный цикл не ждёт загрузчик.
+ * Раньше fetch_to_file() крутил waitpid+usleep до 20 с прямо в цикле, и на это
+ * время вставал dns_lan (DNS всей LAN). Теперь: start_fetch() форкает ребёнка и
+ * возвращает pid, release_poll() забирает результат в следующем тике. */
+static pid_t g_fetch_pid;
+static int g_fetch_attempt;
+static int g_fetch_n;
+static time_t g_fetch_at;
+static const susanin_config *g_fetch_cfg;
+
+static void start_attempt(const susanin_config *c, int a);
+static int read_payload(char *buf, size_t n);
+static void cache_save(void);
+
+static pid_t start_fetch(char *const argv[])
 {
     pid_t pid = fork();
-    int st = -1;
-    (void)path;     /* путь пишет сам curl/wget через -o/-O в argv */
+
     if (pid < 0)
         return -1;
     if (pid == 0) {
         /* Тело пишет сам curl/wget через -o/-O; stdout/stderr уводим в /dev/null,
          * иначе текст ошибки загрузчика попадал бы в payload-файл. */
         int devnull = open("/dev/null", O_WRONLY);
+        setsid();               /* своя группа: kill(-pid) добьёт внуков */
         if (devnull >= 0) {
             dup2(devnull, 1);
             dup2(devnull, 2);
@@ -262,81 +373,136 @@ static int fetch_to_file(char *const argv[], const char *path)
         execvp(argv[0], argv);
         _exit(127);
     }
-    /* Ограничиваем ожидание: BusyBox wget -T ограничивает чтение/коннект, но не
-     * резолв DNS — зависший загрузчик стопорил бы главный цикл навсегда. */
-    {
-        int tries = 0;
-        for (;;) {
-            pid_t r = waitpid(pid, &st, WNOHANG);
-            if (r == pid)
-                break;
-            if (r < 0)
-                return -1;
-            if (++tries > 40) {          /* ~20 с — больше, чем --max-time/-T */
-                kill(pid, SIGKILL);
-                waitpid(pid, &st, 0);
-                return -1;
-            }
-            usleep(500000);
-        }
-    }
-    return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    return pid;
 }
 
-static int fetch_payload(const susanin_config *c)
+/* Один вариант загрузки (0 — через SOCKS Xray, затем wget, затем curl). */
+static void start_attempt(const susanin_config *c, int a)
 {
-    char *curl_socks_argv[10];
+    char *argv[10];
     char socks_url[128];
-    char *wget_argv[8];
-    char *curl_argv[8];
-    int rc;
+    pid_t pid;
 
-    /* Прямой запрос api.github.com с роутера душат провайдеры/ТСПУ —
-     * проверка релизов молча падала, а панель часами показывала отозванную
-     * версию. В tproxy-режиме, когда SOCKS Xray жив, спрашиваем GitHub через
-     * него (тот же путь, что работает для загрузки обновлений). Прямые
-     * wget/curl остаются фолбэком (interface-режим, отсутствие curl/SOCKS). */
-    if (c && strcmp(c->egress_type, "tproxy") == 0 &&
+    argv[0] = NULL;
+    if (a == 0 && c && strcmp(c->egress_type, "tproxy") == 0 &&
         backend_local_listen(c->socks_port > 0 ? c->socks_port : CFG_DEF_SOCKS_PORT)) {
+        /* Прямой api.github.com с роутера душат провайдеры/ТСПУ — спрашиваем
+         * через SOCKS Xray (тот же путь, что и загрузка обновлений). */
         snprintf(socks_url, sizeof(socks_url), "socks5h://%.60s:%d",
                  c->socks_addr[0] ? c->socks_addr : "127.0.0.1",
                  c->socks_port > 0 ? c->socks_port : CFG_DEF_SOCKS_PORT);
-        curl_socks_argv[0] = "curl";
-        curl_socks_argv[1] = "-fsS";
-        curl_socks_argv[2] = "--max-time";
-        curl_socks_argv[3] = "15";
-        curl_socks_argv[4] = "-x";
-        curl_socks_argv[5] = socks_url;
-        curl_socks_argv[6] = "-o";
-        curl_socks_argv[7] = (char *)RELEASE_TMP;
-        curl_socks_argv[8] = (char *)RELEASE_API;
-        curl_socks_argv[9] = NULL;
-        if (fetch_to_file(curl_socks_argv, RELEASE_TMP) == 0)
-            return 0;
+        argv[0] = "curl";
+        argv[1] = "-fsS";
+        argv[2] = "--max-time";
+        argv[3] = "15";
+        argv[4] = "-x";
+        argv[5] = socks_url;
+        argv[6] = "-o";
+        argv[7] = (char *)RELEASE_TMP;
+        argv[8] = (char *)RELEASE_API;
+        argv[9] = NULL;
+    } else if (a == 0) {
+        argv[0] = "wget";
+        argv[1] = "-q";
+        argv[2] = "-T";
+        argv[3] = "10";
+        argv[4] = "-O";
+        argv[5] = (char *)RELEASE_TMP;
+        argv[6] = (char *)RELEASE_API;
+        argv[7] = NULL;
+    } else {
+        argv[0] = "curl";
+        argv[1] = "-fsS";
+        argv[2] = "--max-time";
+        argv[3] = "10";
+        argv[4] = "-o";
+        argv[5] = (char *)RELEASE_TMP;
+        argv[6] = (char *)RELEASE_API;
+        argv[7] = NULL;
     }
+    g_fetch_cfg = c;
+    g_fetch_at = time(NULL);
+    pid = start_fetch(argv);
+    g_fetch_pid = pid;
+}
 
-    wget_argv[0] = "wget";
-    wget_argv[1] = "-q";
-    wget_argv[2] = "-T";
-    wget_argv[3] = "10";
-    wget_argv[4] = "-O";
-    wget_argv[5] = (char *)RELEASE_TMP;
-    wget_argv[6] = (char *)RELEASE_API;
-    wget_argv[7] = NULL;
-    rc = fetch_to_file(wget_argv, RELEASE_TMP);
+/* Разобрать загруженный payload и обновить кэш. 0 — успех. */
+static int release_finish(void)
+{
+    char *buf;
+    char tag[RELEASE_TAG_MAX], url[RELEASE_URL_MAX];
 
-    if (rc != 0) {
-        curl_argv[0] = "curl";
-        curl_argv[1] = "-fsS";
-        curl_argv[2] = "--max-time";
-        curl_argv[3] = "10";
-        curl_argv[4] = "-o";
-        curl_argv[5] = (char *)RELEASE_TMP;
-        curl_argv[6] = (char *)RELEASE_API;
-        curl_argv[7] = NULL;
-        rc = fetch_to_file(curl_argv, RELEASE_TMP);
+    buf = malloc(RELEASE_BODY_MAX);
+    if (!buf) {
+        unlink(RELEASE_TMP);
+        return -1;
     }
-    return rc == 0 ? 0 : -1;
+    if (read_payload(buf, RELEASE_BODY_MAX) != 0 ||
+        release_parse_payload(buf, tag, sizeof(tag), url, sizeof(url)) != 0) {
+        free(buf);
+        unlink(RELEASE_TMP);
+        slogf(SL_WARN, "release: не удалось разобрать ответ GitHub");
+        return -1;
+    }
+    free(buf);
+    unlink(RELEASE_TMP);
+    snprintf(g_info.tag, sizeof(g_info.tag), "%s", tag);
+    snprintf(g_info.url, sizeof(g_info.url), "%s", url);
+    g_info.checked = time(NULL);
+    cache_save();
+    slogf(SL_INFO, "release: последний на GitHub — %s%s", g_info.tag,
+          release_update_available(SUSANIN_VERSION) ? " (есть обновление)" : "");
+    return 0;
+}
+
+/* Неблокирующий сбор результата: вызывается каждый проход главного цикла. */
+/* Идёт ли асинхронная загрузка: нужно движку, чтобы не пожинать чужих детей. */
+int release_busy(void)
+{
+    return g_fetch_pid > 0;
+}
+
+void release_poll(void)
+{
+    int st;
+    pid_t r;
+
+    if (g_fetch_pid <= 0)
+        return;
+    for (;;) {
+        r = waitpid(g_fetch_pid, &st, WNOHANG);
+        if (r == g_fetch_pid)
+            break;
+        if (r < 0) {
+            if (errno == EINTR)
+                continue;
+            g_fetch_pid = 0;
+            return;
+        }
+        /* r == 0: ещё качаем. Общий дедлайн — 30 с, дальше убиваем группу. */
+        if (time(NULL) - g_fetch_at > 30) {
+            kill(-g_fetch_pid, SIGKILL);
+            kill(g_fetch_pid, SIGKILL);
+            (void)waitpid(g_fetch_pid, &st, 0);
+            g_fetch_pid = 0;
+            slogf(SL_WARN, "release: загрузка не уложилась в 30 с — отменена");
+        }
+        return;
+    }
+    g_fetch_pid = 0;
+    if (WIFEXITED(st) && WEXITSTATUS(st) == 0) {
+        (void)release_finish();
+        return;
+    }
+    if (++g_fetch_attempt < g_fetch_n) {
+        start_attempt(g_fetch_cfg, g_fetch_attempt);
+        return;
+    }
+    unlink(RELEASE_TMP);
+    /* НЕ помечаем проверку выполненной: иначе неудача «замораживает»
+     * устаревший бейдж на весь интервал. Повтор — не раньше 60 с. */
+    g_last_attempt = time(NULL);
+    slogf(SL_DEBUG, "release: GitHub недоступен, повтор через 60 с");
 }
 
 static int read_payload(char *buf, size_t n)
@@ -360,13 +526,13 @@ void release_init(const susanin_config *c)
 
 int release_check_now(const susanin_config *c)
 {
-    char *buf;
-    char tag[RELEASE_TAG_MAX], url[RELEASE_URL_MAX];
     time_t now = time(NULL);
     int interval;
 
     if (!c || !c->release_check)
         return -1;
+    if (g_fetch_pid > 0)
+        return 0;               /* загрузка уже идёт — не форкаем вторую */
     interval = c->release_check_interval > 0 ? c->release_check_interval
                                              : RELEASE_DEFAULT_INTERVAL;
     if (g_info.checked > 0 && now >= g_info.checked &&
@@ -377,34 +543,12 @@ int release_check_now(const susanin_config *c)
         return -1;
     g_last_attempt = now;
 
-    if (fetch_payload(c) != 0) {
-        /* НЕ помечаем проверку выполненной (g_info.checked): иначе неудача из-за
-         * блокировки сети «замораживает» устаревший бейдж на целый интервал.
-         * Повтор не чаще раза в 60 с — по g_last_attempt. */
-        slogf(SL_DEBUG, "release: GitHub недоступен, повтор через 60 с");
-        unlink(RELEASE_TMP);
-        return -1;
-    }
-    buf = malloc(RELEASE_BODY_MAX);
-    if (!buf) {
-        unlink(RELEASE_TMP);
-        return -1;
-    }
-    if (read_payload(buf, RELEASE_BODY_MAX) != 0 ||
-        release_parse_payload(buf, tag, sizeof(tag), url, sizeof(url)) != 0) {
-        free(buf);
-        unlink(RELEASE_TMP);
-        /* как выше: не замораживаем кэш неудачей; ретрай по g_last_attempt */
-        slogf(SL_WARN, "release: не удалось разобрать ответ GitHub");
-        return -1;
-    }
-    free(buf);
-    unlink(RELEASE_TMP);
-    snprintf(g_info.tag, sizeof(g_info.tag), "%s", tag);
-    snprintf(g_info.url, sizeof(g_info.url), "%s", url);
-    g_info.checked = now;
-    cache_save();
-    slogf(SL_INFO, "release: последний на GitHub — %s%s", g_info.tag,
-          release_update_available(SUSANIN_VERSION) ? " (есть обновление)" : "");
-    return 0;
+    /* Асинхронно: ребёнок качает, release_poll() заберёт результат. */
+    g_fetch_attempt = 0;
+    g_fetch_n = (strcmp(c->egress_type, "tproxy") == 0 &&
+                 backend_local_listen(c->socks_port > 0 ? c->socks_port
+                                                        : CFG_DEF_SOCKS_PORT))
+                    ? 3 : 2;
+    start_attempt(c, 0);
+    return g_fetch_pid > 0 ? 0 : -1;
 }
