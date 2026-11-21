@@ -42,6 +42,9 @@
   .grid .actions { grid-column: 1 / -1; display: flex; gap: 6px; align-items: center; margin-top: 2px; }
   #st { color: #188038; margin-left: auto; font-size: 12px; }
   #st.err { color: #d93025; }
+  .opts { align-items: center; }
+  .opts label { color: #5f6368; display: flex; align-items: center; gap: 4px; }
+  .opts input { padding: 0; }
 </style>
 </head>
 <body>
@@ -55,11 +58,15 @@
     <button id="nvDel" class="grow">Из never</button>
   </div>
   <div id="lst"></div>
+  <div class="row opts">
+    <label class="grow"><input type="checkbox" id="nowww" checked> без www</label>
+    <button id="refresh">Обновить</button>
+  </div>
   <details>
     <summary>Настройки панели</summary>
     <div class="grid">
       <label for="url">URL</label>
-      <input type="text" id="url" placeholder="http://192.168.0.1:8087">
+      <input type="text" id="url" placeholder="http://192.168.1.1:8087">
       <label for="tok">Токен</label>
       <input type="text" id="tok">
       <div class="actions">
