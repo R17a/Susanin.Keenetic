@@ -10,6 +10,8 @@
 #include <net/if.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -37,7 +39,9 @@
 #define DNS_LAN_CACHE 128
 /* Очередь ожидания: 128, а не 64 — всплеск с 5+ устройств больше не выбивает
  * живые запросы. 256 не берём: запись ~3,7 КБ, это почти +1 МБ RSS, а на
- * роутере свободно единицы мегабайт. */
+ * роутере свободно единицы мегабайт. Решение зафиксировано: остаётся 128 как
+ * предел для устройств этого класса; вопрос объёма снят с повестки до появления
+ * отдельного цикла у форвардера. */
 #define DNS_LAN_PEND 128
 #define DNS_LAN_MAX_UP 4
 
@@ -53,6 +57,19 @@
  * таймаута (5 с) и с запасом на два пропущенных тика. */
 #define DL_T_HARD_MS    4000
 #define DL_MAX_TCP      16      /* одновременных обменов с SOCKS */
+
+/* Причина обрыва обмена с SOCKS (для журнала). */
+enum {
+    DL_WHY_NONE = 0,
+    DL_WHY_CONNECT = 1,     /* не удалось соединиться с SOCKS-портом */
+    DL_WHY_GREET = 2,       /* прокси не принял метод без аутентификации */
+    DL_WHY_REP = 3,         /* прокси отказал в CONNECT к upstream */
+    DL_WHY_EOF = 4,         /* прокси закрыл соединение */
+    DL_WHY_IO = 5,          /* ошибка сокета */
+    DL_WHY_LEN = 6,         /* неверная длина DNS-ответа */
+    DL_WHY_ANSWER = 7,      /* ответ пришёл, но не принят (rcode/подмена) */
+    DL_WHY_QLEN = 8         /* запрос клиента неверной длины */
+};
 
 typedef struct {
     char key[264];
@@ -81,9 +98,21 @@ typedef struct {
     int stage;              /* 0 connect, 1 приветствие, 2 CONNECT, 3 ответ */
     int tlen;               /* сколько принято в tbuf */
     int tsent;              /* сколько отправлено из tbuf */
+    int sending;            /* 1 = есть недосланный хвост, стадию не меняем */
+    int next_stage;         /* стадия после успешной отправки */
+    int next_wait;          /* сколько байт ожидать на новой стадии */
+    /* Почему оборвался обмен — только для журнала: «шаг 3» сам по себе
+     * смешивает четыре разных случая (прокси закрыл связь, ошибка сокета,
+     * неверная длина, ответ не принят из-за rcode). */
+    int why;
+    int rerr;               /* errno на момент обрыва */
+    int rcode;              /* rcode ответа, который не приняли */
+    int first_stage;        /* шаг первой попытки (первый upstream) */
+    unsigned qtype;         /* тип запроса клиента — для журнала */
     int wait;               /* сколько байт ждём на текущей стадии */
     int up_try;             /* какой upstream пробуем (0..g_up_n-1) */
     int esc;                /* эскалация в туннель уже посчитана */
+    int esc_sub;            /* эскалация из-за подмены (127.x/0.0.0.0), а не таймаута */
     unsigned char tbuf[1600];
 } dl_pend;
 
@@ -103,6 +132,34 @@ static unsigned long g_q_fail, g_q_escalate;
 #define DL_VIA_IFACE  1
 #define DL_VIA_DIRECT 2
 static int g_mode = DL_VIA_DIRECT;
+
+/* Режим обслуживания. 0 — прежний: шаги делает тик главного цикла
+ * (dns_lan_poll из engine.c). 1 — свой поток: он сам опрашивает сокеты с шагом
+ * DL_THREAD_TICK_MS и делает те же шаги. В поточном режиме движок к форвардеру
+ * не обращается вообще (ни poll, ни busy, ни снимок), поэтому общих изменяемых
+ * данных между потоками нет — кроме флага остановки и записанной пары: их
+ * достаточно, мьютексы не нужны. */
+static pthread_t g_thr;
+static int g_thr_on;
+static volatile sig_atomic_t g_thr_stop;
+static int g_wake_rd = -1, g_wake_wr = -1;
+#define DL_THREAD_TICK_MS 50
+
+static void dl_step(void);
+static void *dl_thread_main(void *arg);
+
+/* Очередь «поток → главный цикл» для пиннинга по подмене. Пиннинг трогает батч
+ * ipset, который принадлежит главному циклу, поэтому поток только складывает
+ * заявки, а применяет их движок. Частота низкая (только на подменённых
+ * доменах), мьютекса достаточно. */
+#define DL_PIN_QUEUE 16
+typedef struct {
+    char ip[16];
+    char name[64];
+} dl_pin_req;
+static dl_pin_req g_pins[DL_PIN_QUEUE];
+static int g_pin_rd, g_pin_wr;
+static pthread_mutex_t g_pin_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static long long dl_now_ms(void)
 {
@@ -226,11 +283,109 @@ static int dl_answer_ok(const unsigned char *m, int len)
     return got > 0;
 }
 
+/* Заявка на пин: домен был подменён, туннель вернул настоящий адрес. Применяет
+ * заявку главный цикл (см. dns_lan_drain_pins), потому что пиннинг идёт через
+ * батч ipset, который принадлежит ему. */
+static void dl_pin_enqueue(const char *name, const char *ip)
+{
+    pthread_mutex_lock(&g_pin_mu);
+    if ((g_pin_wr + 1) % DL_PIN_QUEUE != g_pin_rd) {
+        snprintf(g_pins[g_pin_wr].ip, sizeof(g_pins[0].ip), "%s", ip);
+        snprintf(g_pins[g_pin_wr].name, sizeof(g_pins[0].name), "%.63s", name);
+        g_pin_wr = (g_pin_wr + 1) % DL_PIN_QUEUE;
+    }
+    pthread_mutex_unlock(&g_pin_mu);
+}
+
+/* Разобрать A-записи ответа из туннеля и поставить заявки на пин. Только если
+ * запрос эскалирован именно из-за подмены: при штатном ответе локального
+ * резолвера и при обменах без smart-режима пиннинг не нужен. */
+static void dl_pins_from_answer(const dl_pend *p, const unsigned char *m, int len)
+{
+    int qd, an, off = 12, i;
+
+    if (!g_cfg || !g_cfg->dns_lan_pin || !p->esc_sub)
+        return;
+    if (len < 12 || (m[3] & 0x0f) != 0)
+        return;                 /* не NOERROR — пинить нечего */
+    qd = (m[4] << 8) | m[5];
+    an = (m[6] << 8) | m[7];
+    for (i = 0; i < qd; i++) {
+        off = skip_name(m, len, off);
+        if (off < 0 || off + 4 > len)
+            return;
+        off += 4;
+    }
+    for (i = 0; i < an && off + 10 <= len; i++) {
+        int type, rdlen;
+        char ip[16];
+
+        off = skip_name(m, len, off);
+        if (off < 0 || off + 10 > len)
+            return;
+        type = (m[off] << 8) | m[off + 1];
+        rdlen = (m[off + 8] << 8) | m[off + 9];
+        off += 10;
+        if (off + rdlen > len)
+            return;
+        if (type == 1 && rdlen == 4) {
+            /* повторную подмену не пиним: адрес 127/0.0.0.0 бесполезен */
+            if (!(m[off] == 127 || (m[off] == 0 && m[off + 1] == 0 &&
+                                    m[off + 2] == 0 && m[off + 3] == 0))) {
+                snprintf(ip, sizeof(ip), "%u.%u.%u.%u",
+                         m[off], m[off + 1], m[off + 2], m[off + 3]);
+                dl_pin_enqueue(p->name, ip);
+            }
+        }
+        off += rdlen;
+    }
+}
+
+/* Есть ли в ответе A-запись с подменой (127.x / 0.0.0.0). */
+static int dl_a_subst(const unsigned char *m, int len)
+{
+    int qd, an, off = 12, i;
+
+    if (len < 12)
+        return 0;
+    qd = (m[4] << 8) | m[5];
+    an = (m[6] << 8) | m[7];
+    for (i = 0; i < qd; i++) {
+        off = skip_name(m, len, off);
+        if (off < 0 || off + 4 > len)
+            return 0;
+        off += 4;
+    }
+    for (i = 0; i < an && off + 10 <= len; i++) {
+        int type, rdlen;
+
+        off = skip_name(m, len, off);
+        if (off < 0 || off + 10 > len)
+            return 0;
+        type = (m[off] << 8) | m[off + 1];
+        rdlen = (m[off + 8] << 8) | m[off + 9];
+        off += 10;
+        if (off + rdlen > len)
+            return 0;
+        if (type == 1 && rdlen == 4 &&
+            (m[off] == 127 || (m[off] == 0 && m[off + 1] == 0 &&
+                               m[off + 2] == 0 && m[off + 3] == 0)))
+            return 1;
+        off += rdlen;
+    }
+    return 0;
+}
+
 /* Ответ из туннеля: NXDOMAIN — валидный ответ, положительный — проверяем на
  * подмену (127/0.0.0.0). SERVFAIL/REFUSED из туннеля считаем неудачей: раньше
  * такой ответ уходил клиенту как есть, и «DNS не работает» выглядело как
  * рабочий резолв. Для локального пути проверка мягче (dl_answer_ok): там
- * NXDOMAIN означает «нужна эскалация». */
+ * NXDOMAIN означает «нужна эскалация».
+ *
+ * ВАЖНО: ответ NOERROR принимается независимо от типа записи. Раньше требовался
+ * A/AAAA (dl_answer_ok), и валидные ответы на запросы типа HTTPS/SVCB (65),
+ * CNAME-только и NODATA считались провалом — клиент получал SERVFAIL. Именно на
+ * такие типы приходится заметная часть запросов браузеров и Android-устройств. */
 static int dl_tunnel_answer_ok(const unsigned char *m, int n)
 {
     int rcode;
@@ -242,7 +397,7 @@ static int dl_tunnel_answer_ok(const unsigned char *m, int n)
         return 1;
     if (rcode != 0)
         return 0;
-    return dl_answer_ok(m, n);
+    return !dl_a_subst(m, n);    /* NOERROR годится, если нет подмены */
 }
 
 /* Минимальный TTL из ответа (1..3600). */
@@ -391,6 +546,9 @@ static void dl_tcp_reset(dl_pend *p)
     p->tfd = -1;
     p->stage = 0;
     p->tlen = p->tsent = p->wait = 0;
+    p->sending = 0;
+    p->next_stage = 0;
+    p->next_wait = 0;
 }
 
 /* Дочитать в tbuf до p->wait байт. 1 — набрали, 0 — ждём, -1 — ошибка. */
@@ -403,12 +561,16 @@ static int dl_tcp_read(dl_pend *p)
             p->tlen += (int)n;
             continue;
         }
-        if (n == 0)
+        if (n == 0) {
+            p->why = DL_WHY_EOF;   /* прокси закрыл соединение */
             return -1;
+        }
         if (errno == EINTR)
             continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK)
             return 0;
+        p->why = DL_WHY_IO;
+        p->rerr = errno;
         return -1;
     }
     return 1;
@@ -485,6 +647,9 @@ static int dl_tcp_start(dl_pend *p)
     g_tcp_active++;
     p->tfd = fd;
     p->stage = 0;
+    p->why = DL_WHY_NONE;
+    p->rerr = 0;
+    p->rcode = 0;
     p->at_ms = dl_now_ms();
     p->state = 3;
     return 0;
@@ -493,13 +658,29 @@ static int dl_tcp_start(dl_pend *p)
 /* Обмен не удался: пробуем следующий upstream, иначе отдаём прямой запрос. */
 static void dl_tcp_give_up(dl_pend *p)
 {
+    /* Шаг нужно запомнить ДО dl_tcp_reset: он обнуляет p->stage, и прежняя
+     * версия журнала всегда печатала «шаг 0» — то есть врала. */
+    int dead_stage = p->stage;
+    int retry = -2;
+
+    if (!p->first_stage)
+        p->first_stage = dead_stage;
     dl_tcp_reset(p);
     if (p->up_try + 1 < g_up_n) {
         p->up_try++;
-        if (dl_tcp_start(p) == 0)
-            return;
+        retry = dl_tcp_start(p);
+        if (retry == 0)
+            return;             /* пошли на следующий upstream */
     }
     dl_tunnel_failed();
+    /* Шаг (0 — connect к SOCKS, 1 — приветствие, 2 — CONNECT, 3 — ответ),
+     * причина (см. DL_WHY_*), rcode непринятого ответа, errno/rep-код, число
+     * активных обменов. Без причины «шаг 3» смешивает четыре разных случая. */
+    slogf(SL_WARN, "dns_lan: обмен с SOCKS прерван: шаг %d, причина %d, rcode %d, "
+                   "ancount %d (тип %u, qlen %d, upstream %d из %d, первый шаг %d, "
+                   "повтор=%d, активных=%d)",
+          dead_stage, p->why, p->rcode, p->rerr, p->qtype, p->qlen,
+          p->up_try + 1, g_up_n, p->first_stage, retry, g_tcp_active);
     dl_warn("DNS через туннель не прошёл (%s, SOCKS-TCP)", p->name);
     if (g_cfg->dns_lan_fallback) {
         dl_pend_send_direct(p);
@@ -509,27 +690,53 @@ static void dl_tcp_give_up(dl_pend *p)
     }
 }
 
+/* Подготовить отправку: данные уже лежат в tbuf. Стадия сменится только когда
+ * уйдут ВСЕ байты: `dl_tcp_flush` может вернуть 0 («в сокете нет места»), и
+ * прежняя версия в этом случае всё равно переходила дальше, теряя хвост запроса.
+ * Ответа на обрезанный запрос не бывает никогда — обмен висел до таймаута. */
+static void dl_tcp_arm(dl_pend *p, int len, int next_stage, int next_wait)
+{
+    p->tlen = len;
+    p->tsent = 0;
+    p->next_stage = next_stage;
+    p->next_wait = next_wait;
+    p->sending = 1;
+}
+
 /* Один шаг обмена: connect -> приветствие -> CONNECT -> запрос -> ответ.
  * Возврат: 1 — шаг завершён и можно сразу пробовать следующий (данные уже
  * пришли); 0 — ждём сокет или обмен закончен. */
 static int dl_tcp_step(dl_pend *p)
 {
+    /* Недосланный хвост: докидываем, стадию не меняем. */
+    if (p->sending) {
+        int rc = dl_tcp_flush(p);
+
+        if (rc == 0)
+            return 0;               /* места нет — вернёмся на следующем тике */
+        if (rc < 0) {
+            p->why = DL_WHY_IO;
+            p->rerr = errno;
+            goto fail;
+        }
+        p->sending = 0;
+        p->tlen = p->tsent = 0;
+        p->stage = p->next_stage;
+        p->wait = p->next_wait;
+        return 1;
+    }
+
     switch (p->stage) {
     case 0:                             /* connect к SOCKS */
         switch (dl_tcp_connected(p->tfd)) {
         case 0:
             return 0;
         case -1:
+            p->why = DL_WHY_CONNECT;
             goto fail;
         }
         p->tbuf[0] = 0x05; p->tbuf[1] = 0x01; p->tbuf[2] = 0x00;
-        p->tlen = 3;
-        p->tsent = 0;
-        if (dl_tcp_flush(p) < 0)
-            goto fail;
-        p->stage = 1;
-        p->tlen = p->tsent = 0;
-        p->wait = 2;
+        dl_tcp_arm(p, 3, 1, 2);
         return 1;
 
     case 1:                             /* метод без авторизации принят */
@@ -539,20 +746,16 @@ static int dl_tcp_step(dl_pend *p)
         case -1:
             goto fail;
         }
-        if (p->tbuf[0] != 0x05 || p->tbuf[1] != 0x00)
+        if (p->tbuf[0] != 0x05 || p->tbuf[1] != 0x00) {
+            p->why = DL_WHY_GREET;
             goto fail;
+        }
         /* CONNECT <upstream>:53 — IP-адресом, без DNS у самого прокси */
         p->tbuf[0] = 0x05; p->tbuf[1] = 0x01; p->tbuf[2] = 0x00;
         p->tbuf[3] = 0x01;
         memcpy(p->tbuf + 4, &g_up[p->up_try].sin_addr.s_addr, 4);
         memcpy(p->tbuf + 8, &g_up[p->up_try].sin_port, 2);
-        p->tlen = 10;
-        p->tsent = 0;
-        if (dl_tcp_flush(p) < 0)
-            goto fail;
-        p->stage = 2;
-        p->tlen = p->tsent = 0;
-        p->wait = 4;
+        dl_tcp_arm(p, 10, 2, 4);
         return 1;
 
     case 2:                             /* ответ на CONNECT */
@@ -562,8 +765,11 @@ static int dl_tcp_step(dl_pend *p)
         case -1:
             goto fail;
         }
-        if (p->tbuf[0] != 0x05 || p->tbuf[1] != 0x00)
+        if (p->tbuf[0] != 0x05 || p->tbuf[1] != 0x00) {
+            p->why = p->tbuf[1] ? DL_WHY_REP : DL_WHY_GREET;
+            p->rerr = p->tbuf[1];   /* rep-код SOCKS для журнала */
             goto fail;
+        }
         if (p->tbuf[3] == 0x01) {          /* IPv4: 4 + 2 */
             p->wait = 4 + 4 + 2;
         } else if (p->tbuf[3] == 0x04) {   /* IPv6: 16 + 2 */
@@ -574,22 +780,20 @@ static int dl_tcp_step(dl_pend *p)
                 return 0;
             p->wait = 5 + (int)p->tbuf[4] + 2;
         } else {
+            p->why = DL_WHY_REP;
             goto fail;
         }
         if (dl_tcp_read(p) != 1)
             return 0;
-        if (p->qlen < 12 || p->qlen > 1500)
+        if (p->qlen < 12 || p->qlen > 1500) {
+            p->why = DL_WHY_QLEN;
+            p->rerr = p->qlen;
             goto fail;
+        }
         p->tbuf[0] = (unsigned char)(p->qlen >> 8);
         p->tbuf[1] = (unsigned char)(p->qlen & 0xff);
         memcpy(p->tbuf + 2, p->q, (size_t)p->qlen);
-        p->tlen = 2 + p->qlen;
-        p->tsent = 0;
-        if (dl_tcp_flush(p) < 0)
-            goto fail;
-        p->stage = 3;
-        p->tlen = p->tsent = 0;
-        p->wait = 2;
+        dl_tcp_arm(p, 2 + p->qlen, 3, 2);
         return 1;
 
     case 3:                             /* ответ DNS */
@@ -597,16 +801,26 @@ static int dl_tcp_step(dl_pend *p)
             return 0;
         if (p->wait == 2) {
             int n = (p->tbuf[0] << 8) | p->tbuf[1];
-            if (n < 12 || n > 1500)
+            if (n < 12 || n > 1500) {
+                p->why = DL_WHY_LEN;
+                p->rerr = n;
                 goto fail;
+            }
             p->wait = 2 + n;
             if (dl_tcp_read(p) != 1)
                 return 0;
         }
-        if (!dl_tunnel_answer_ok(p->tbuf + 2, p->wait - 2))
+        if (!dl_tunnel_answer_ok(p->tbuf + 2, p->wait - 2)) {
+            p->why = DL_WHY_ANSWER;
+            /* Поля DNS-сообщения начинаются с tbuf[2]: rcode — байт 3 сообщения
+             * (tbuf[5]), ANCOUNT — байты 6-7 (tbuf[8..9]). */
+            p->rcode = p->tbuf[5] & 0x0f;
+            p->rerr = (p->tbuf[8] << 8) | p->tbuf[9];   /* ANCOUNT */
             goto fail;
+        }
         g_q_tunnel++;
         dl_tunnel_ok();
+        dl_pins_from_answer(p, p->tbuf + 2, p->wait - 2);
         dl_pend_done(p, p->tbuf + 2, p->wait - 2);
         return 0;
     }
@@ -891,6 +1105,7 @@ static void dl_drain_clients(void)
         p = dl_pend_new();
         memcpy(p->q, q, (size_t)n);
         p->qlen = n;
+        p->qtype = qtype;       /* для журнала: тип запроса (65 = HTTPS/SVCB) */
         p->id = (unsigned)((q[0] << 8) | q[1]);
         p->from = from;
         p->born_ms = dl_now_ms();
@@ -917,12 +1132,20 @@ static void dl_drain_local(void)
         p = dl_pend_find(r, n, NULL);
         if (!p || p->state != 0)
             continue;
-        if (dl_answer_ok(r, n)) {
+        /* Локальный ответ: для A/AAAA пустой ответ означает блокировку и требует
+         * эскалации. Для остальных типов (HTTPS/SVCB 65, CNAME-только, MX, TXT)
+         * NODATA — нормальный ответ, эскалировать незачем. */
+        int ok = dl_answer_ok(r, n);
+        if (!ok && p->qtype != 1 && p->qtype != 28 &&
+            (r[3] & 0x0f) == 0 && !dl_a_subst(r, n))
+            ok = 1;
+        if (ok) {
             g_q_local++;
             dl_pend_done(p, r, n);
         } else {
             /* подмена/пусто: эскалируем в туннель */
             g_q_escalate++;
+            p->esc_sub = 1;     /* признак: ответ был подменён, а не «молчал» */
             dl_pend_send_tunnel(p);
         }
     }
@@ -959,6 +1182,7 @@ static void dl_drain_tunnel(void)
         }
         g_q_tunnel++;
         dl_tunnel_ok();
+        dl_pins_from_answer(p, r, n);
         dl_pend_done(p, r, n);
     }
 }
@@ -1162,6 +1386,38 @@ int dns_lan_start(const susanin_config *cfg)
     for (i = 0; i < DNS_LAN_PEND; i++)
         g_pend[i].tfd = -1;
     dl_stats_reset();
+    /* Режим обслуживания выбирается здесь. Поточный: свой опрос сокетов с
+     * шагом 50 мс, движок к форвардеру не обращается. Непоточный: шаги делает
+     * тик движка, а во время ожидания внешних процессов (iptables/ipset/
+     * conntrack) его обслуживает wait_yield через этот колбэк. */
+    g_thr_on = 0;
+    if (cfg->dns_lan_thread) {
+        int w[2];
+        if (pipe(w) == 0) {
+            int fl;
+            fl = fcntl(w[0], F_GETFL, 0);
+            (void)fcntl(w[0], F_SETFL, (fl < 0 ? 0 : fl) | O_NONBLOCK);
+            dl_cloexec(w[0]);
+            dl_cloexec(w[1]);
+            g_wake_rd = w[0];
+            g_wake_wr = w[1];
+            g_thr_stop = 0;
+            if (pthread_create(&g_thr, NULL, dl_thread_main, NULL) == 0) {
+                g_thr_on = 1;
+                slogf(SL_INFO, "dns_lan: форвардер в своём потоке (тик %d мс)",
+                      DL_THREAD_TICK_MS);
+            } else {
+                close(w[0]);
+                close(w[1]);
+                g_wake_rd = g_wake_wr = -1;
+                slogf(SL_WARN, "dns_lan: поток не создан — работаю по тику движка");
+            }
+        } else {
+            slogf(SL_WARN, "dns_lan: pipe пробуждения не создан — работаю по тику движка");
+        }
+    }
+    if (!g_thr_on)
+        backend_set_yield_cb(dns_lan_poll);
     slogf(SL_INFO, "dns_lan: слушаю DNS клиентов на порту %d, путь: %s%s",
           DNS_LAN_PORT,
           g_mode == DL_VIA_SOCKS ? "SOCKS-Xray (DNS-over-TCP)" :
@@ -1173,6 +1429,25 @@ int dns_lan_start(const susanin_config *cfg)
 void dns_lan_stop(void)
 {
     int i;
+    /* Сначала гасим свой поток (если он есть) и только потом закрываем сокеты:
+     * иначе поток читал бы уже закрытые дескрипторы. */
+    if (g_thr_on) {
+        g_thr_stop = 1;
+        if (g_wake_wr >= 0) {
+            char c = 1;
+            if (write(g_wake_wr, &c, 1) < 0) {
+                /* труба переполнена — поток всё равно проснётся по таймауту */
+            }
+        }
+        pthread_join(g_thr, NULL);
+        g_thr_on = 0;
+        if (g_wake_rd >= 0)
+            close(g_wake_rd);
+        if (g_wake_wr >= 0)
+            close(g_wake_wr);
+        g_wake_rd = g_wake_wr = -1;
+    }
+    backend_set_yield_cb(NULL);   /* цикл больше не обязан нас обслуживать */
     if (g_fd >= 0)
         close(g_fd);
     g_fd = -1;
@@ -1225,7 +1500,68 @@ void dns_lan_reload(const susanin_config *cfg)
 }
 
 /* Никаких блокирующих ожиданий: только приём и продвижение по срокам. */
-void dns_lan_poll(void)
+/* Поток форвардера: свой poll на слушающем сокете, сокете локального
+ * резолвера, обменах с SOCKS и трубе пробуждения. Шаг 50 мс — компромисс между
+ * задержкой ответа (каждый шаг обмена — RTT) и ценой пробуждений на mipsel. */
+static void *dl_thread_main(void *arg)
+{
+    time_t last_snap = 0;
+
+    (void)arg;
+    for (;;) {
+        struct pollfd pf[2 + DNS_LAN_PEND];
+        int n = 0, i, rc;
+
+        if (g_thr_stop)
+            break;
+        if (g_fd >= 0) {
+            pf[n].fd = g_fd;
+            pf[n].events = POLLIN;
+            pf[n].revents = 0;
+            n++;
+        }
+        if (g_wake_rd >= 0) {
+            pf[n].fd = g_wake_rd;
+            pf[n].events = POLLIN;
+            pf[n].revents = 0;
+            n++;
+        }
+        for (i = 0; i < DNS_LAN_PEND && n < (int)(sizeof(pf) / sizeof(pf[0])); i++) {
+            if (g_pend[i].used && g_pend[i].tfd >= 0) {
+                pf[n].fd = g_pend[i].tfd;
+                /* POLLOUT нужен, пока есть недосланный хвост: иначе поток узнаёт
+                 * о готовности сокета к записи только по таймауту 50 мс. */
+                pf[n].events = POLLIN | (g_pend[i].sending ? POLLOUT : 0);
+                pf[n].revents = 0;
+                n++;
+            }
+        }
+        rc = poll(pf, (nfds_t)n, DL_THREAD_TICK_MS);
+        if (rc < 0 && errno != EINTR)
+            break;
+        if (g_thr_stop)
+            break;
+        if (g_wake_rd >= 0) {
+            char drain[16];
+            while (read(g_wake_rd, drain, sizeof(drain)) > 0)
+                ;
+        }
+        dl_step();
+        if (g_cfg) {
+            time_t now = time(NULL);
+            if (!last_snap || now - last_snap >= 60) {
+                last_snap = now;
+                dns_lan_write_snapshot(g_cfg);
+            }
+        }
+    }
+    return NULL;
+}
+
+/* Шаги форвардера. Вызывается либо из тика движка (dns_lan_poll), либо из
+ * своего потока (dl_thread_main) — но никогда из обоих сразу: режим выбирается
+ * при старте. */
+static void dl_step(void)
 {
     if (g_fd < 0 || !g_cfg || !g_cfg->dns_lan)
         return;
@@ -1234,6 +1570,43 @@ void dns_lan_poll(void)
     dl_drain_tunnel();
     dl_tcp_tick();
     dl_expire();
+}
+
+void dns_lan_poll(void)
+{
+    if (g_thr_on)
+        return;                 /* форвардер обслуживает свой поток */
+    dl_step();
+}
+
+int dns_lan_threaded(void)
+{
+    return g_thr_on;
+}
+
+/* Есть ли заявки на пин. Проверка без блокировки: это только подсказка движку,
+ * применять всё равно будет dns_lan_drain_pins под мьютексом. */
+int dns_lan_pins_pending(void)
+{
+    return g_pin_rd != g_pin_wr;
+}
+
+/* Забрать до max заявок на пин. Вызывается из главного цикла. */
+int dns_lan_drain_pins(char ips[][16], char names[][64], int max)
+{
+    int n = 0;
+
+    if (!ips || !names || max <= 0)
+        return 0;
+    pthread_mutex_lock(&g_pin_mu);
+    while (n < max && g_pin_rd != g_pin_wr) {
+        snprintf(ips[n], 16, "%s", g_pins[g_pin_rd].ip);
+        snprintf(names[n], 64, "%s", g_pins[g_pin_rd].name);
+        g_pin_rd = (g_pin_rd + 1) % DL_PIN_QUEUE;
+        n++;
+    }
+    pthread_mutex_unlock(&g_pin_mu);
+    return n;
 }
 
 int dns_lan_pending(void)
@@ -1291,6 +1664,8 @@ int dns_lan_busy(void)
 {
     int i;
 
+    if (g_thr_on)
+        return 0;               /* поток сам просыпается, движку ускорять нечего */
     for (i = 0; i < DNS_LAN_PEND; i++)
         if (g_pend[i].used && g_pend[i].state == 3)
             return 1;

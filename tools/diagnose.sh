@@ -556,6 +556,41 @@ if [ -n "$_unc" ]; then
     rec "Добавьте нужные подсети в lan_subnets (панель или: susanin-agent config set lan_subnets \"$SUBS,$(printf '%s' "$_unc" | head -n1 | awk '{print $2}')\"), затем susanin restart. Если подсеть — гостевая и намеренно изолирована, игнорируйте."
 fi
 
+# ------------------------------------------------------------ DNS клиентов LAN
+# dns_lan держит форвардер внутри главного цикла агента: пока цикл занят
+# (iptables/ipset/conntrack, пересборка датаплейна), ответов нет и клиенты
+# получают SERVFAIL. На устройстве с малой RAM это самый частый источник
+# «интернет есть, сайты не открываются».
+sec "DNS клиентов LAN"
+echo "dns_lan=$(cfg dns_lan) dns_lan_smart=$(cfg dns_lan_smart) fallback=$(cfg dns_lan_fallback)"
+echo "upstream: $(cfg dns_lan_upstream)"
+if [ -r /opt/susanin/var/dnslan.state ]; then
+    echo "форвардер (последнее сохранённое состояние):"
+    sed 's/^/   /' /opt/susanin/var/dnslan.state 2>/dev/null
+fi
+if command -v iptables >/dev/null 2>&1; then
+    _dlc=$(iptables -w -t nat -S SUSANIN_DNSLAN 2>/dev/null | grep -c 'DNAT' || true)
+    echo "DNAT перехвата (SUSANIN_DNSLAN): ${_dlc:-0}"
+    if [ "$(cfg dns_lan)" = "1" ] && [ "${_dlc:-0}" -eq 0 ]; then
+        rec "dns_lan=1, но DNAT клиентов не стоит: после смены ключа нужен 'susanin.sh restart' (reload поднимает форвардер, но не перехват)."
+    fi
+fi
+if pidof dnslan-guard >/dev/null 2>&1; then
+    echo "сторож DNS: запущен"
+else
+    if [ -f /opt/susanin/var/dnslan-guard.last ]; then
+        echo "сторож DNS: НЕ запущен; последняя запись:"
+        tail -n1 /opt/susanin/var/dnslan-guard.last 2>/dev/null | sed 's/^/   /'
+    fi
+fi
+_mem_total=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null)
+if [ -n "$_mem_total" ]; then
+    echo "память: $((_mem_total / 1024)) МБ всего"
+    if [ "$(cfg dns_lan)" = "1" ] && [ "$_mem_total" -lt 262144 ]; then
+        rec "dns_lan=1 на устройстве с $((_mem_total / 1024)) МБ RAM: форвардер делит главный цикл с iptables/ipset, при занятом цикле клиенты получают SERVFAIL. До выноса форвардера в отдельный цикл устойчивее dns_lan=0."
+    fi
+fi
+
 # -------------------------------------------------- OpenConnect (серверный VPN)
 # Регрессия: клиенты OpenConnect не обрабатывались, потому что `oc*`
 # не было в lan_interfaces (tun создаётся по требованию клиента и теряется при
@@ -592,10 +627,14 @@ if [ "$OC_SRV" = "1" ]; then
             rec "В цепочке SUSANIN нет правил с -i oc* — трафик клиентов OpenConnect проходит мимо (счётчики не растут). Проверьте lan_interfaces и перезапустите агент."
         fi
         # T3: клиент шлёт DNS на 8.8.8.8? Тогда нужен dns_hijack, иначе NXDOMAIN.
-        _dh=$(iptables -t nat -S PREROUTING 2>/dev/null | grep -cF -- 'susanin-dns' || true)
+        # Правила держим в отдельной цепочке (комментарий недоступен на прошивках
+        # без xt_comment); правила прежней версии считаем отдельно.
+        _dh=$(iptables -t nat -S SUSANIN_DNSHIJ 2>/dev/null | grep -c '^-A' || true)
+        _dh_old=$(iptables -t nat -S PREROUTING 2>/dev/null | grep -cF -- 'susanin-dns' || true)
+        _dh=$(( ${_dh:-0} + ${_dh_old:-0} ))
         echo "DNAT 53 для клиентов (dns_hijack): наших правил ${_dh:-0}"
         if [ "$(cfg dns_hijack)" = "1" ] && [ "${_dh:-0}" -eq 0 ]; then
-            rec "dns_hijack=1, но правил DNAT 53 нет — выполните 'susanin.sh reload' (или restart). Правило ставится шаблоном oc+ заранее и работает, когда клиент подключится позже."
+            rec "dns_hijack=1, но правил DNAT 53 нет — выполните 'susanin.sh restart'. Если повторится, проверьте, создаётся ли цепочка SUSANIN_DNSHIJ (iptables -t nat -S SUSANIN_DNSHIJ)."
         elif [ "$(cfg dns_hijack)" != "1" ] && [ "${_dh:-0}" -eq 0 ]; then
             rec "Если на телефоне через OpenConnect «сайты не открываются» / DNS_PROBE_FINISHED_NXDOMAIN — включите dns_hijack=1 (DNS клиентов уйдёт на резолвер роутера; Android часто шлёт запросы на 8.8.8.8)."
         fi

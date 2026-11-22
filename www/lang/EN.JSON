@@ -373,5 +373,11 @@
   "cfg.dns_lan_upstream.label": "Forwarder upstreams",
   "cfg.dns_lan_upstream.desc": "comma-separated IPv4: 8.8.8.8,1.1.1.1",
   "cfg.dns_lan_fallback.label": "Fail-open: ask directly",
-  "cfg.dns_lan_fallback.desc": "if the tunnel did not answer, ask directly so the domain does not lose DNS"
+  "cfg.dns_lan_fallback.desc": "if the tunnel did not answer, ask directly so the domain does not lose DNS",
+  "cfg.dns_lan_smart.label": "Local resolver first",
+  "cfg.dns_lan_smart.desc": "yes - the local answer is faster, only a rewritten (127.0.0.1/0.0.0.0) or empty answer goes to the tunnel; no - all DNS through the tunnel",
+  "cfg.dns_lan_thread.label": "Forwarder in its own thread",
+  "cfg.dns_lan_thread.desc": "yes - its own socket polling with a 50 ms step, independent of the engine tick; needed where the tick is rare and the SOCKS exchange does not fit",
+  "cfg.dns_lan_pin.label": "Pin the address on rewrite",
+  "cfg.dns_lan_pin.desc": "yes - if the direct answer was rewritten and the tunnel returned the real address, that address is pinned into VPN without a vpn_always entry; ad-blocker stubs get pinned the same way"
 }

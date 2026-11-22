@@ -62,6 +62,61 @@ static const char *tool_conntrack(void)
 #define RUN_SCRIPT_TIMEOUT_MS    30000
 #define RUN_PROVISION_TIMEOUT_MS 60000
 
+/* Точка «отдать время», пока ждём внешний процесс. Без неё ожидание (2 с на
+ * команду, 60 с на провижн) останавливало всё, что живёт в главном цикле, —
+ * в первую очередь DNS-форвардер клиентов: они получали SERVFAIL, хотя
+ * проблема была только в ожидании. Колбэк ставит сам форвардер при старте. */
+static void (*g_yield_cb)(void);
+
+void backend_set_yield_cb(void (*cb)(void))
+{
+    g_yield_cb = cb;
+}
+
+/* Подождать ms миллисекунд, между шагами отдавая время подсистемам. Шаг 5 мс:
+ * форвардер проверяет свои сроки по часам, поэтому чаще и не нужно. */
+static void wait_yield(int ms)
+{
+    int left = ms;
+
+    while (left > 0) {
+        int step = left > 5 ? 5 : left;
+        usleep((useconds_t)step * 1000);
+        if (g_yield_cb)
+            g_yield_cb();
+        left -= step;
+    }
+}
+
+/* Командная строка для журнала: argv склеивается через пробел и обрезается.
+ * Имя одного процесса не говорит, чем он был занят (`iptables -w -t nat -S`
+ * или `ipset restore` ждут разные замки), поэтому в предупреждении о таймауте
+ * нужен весь argv, а не только argv[0]. */
+static const char *argv_logline(char *buf, size_t n, char *const argv[])
+{
+    size_t used = 0;
+    int i;
+
+    if (!buf || n == 0)
+        return "";
+    buf[0] = '\0';
+    for (i = 0; argv && argv[i]; i++) {
+        size_t l = strlen(argv[i]);
+        if (used + l + 5 >= n) {
+            memcpy(buf + used, " ...", 4);
+            used += 4;
+            buf[used] = '\0';
+            break;
+        }
+        if (used)
+            buf[used++] = ' ';
+        memcpy(buf + used, argv[i], l);
+        used += l;
+        buf[used] = '\0';
+    }
+    return buf;
+}
+
 static int run_argv_to(char *const argv[], int timeout_ms)
 {
     pid_t pid = fork();
@@ -92,13 +147,14 @@ static int run_argv_to(char *const argv[], int timeout_ms)
         if (waited >= timeout_ms) {
             /* Завис (обычно ждёт xtables-lock): убиваем и говорим об этом —
              * иначе одно зависание снова валит DNS всей LAN. */
+            char cl[192];
             kill(pid, SIGKILL);
             (void)waitpid(pid, &st, 0);
-            slogf(SL_WARN, "команда %s не уложилась в %d мс — прервана",
-                  argv && argv[0] ? argv[0] : "?", timeout_ms);
+            slogf(SL_WARN, "команда '%s' не уложилась в %d мс — прервана",
+                  argv_logline(cl, sizeof(cl), argv), timeout_ms);
             return -1;
         }
-        usleep(10000);
+        wait_yield(10);
         waited += 10;
     }
     if (WIFEXITED(st))
@@ -283,7 +339,7 @@ static int bt_wait_child(pid_t pid, int timeout_ms)
             waitpid(pid, &st, 0);
             return -2;
         }
-        usleep(20 * 1000);
+        wait_yield(20);
         waited += 20;
     }
 }
@@ -380,7 +436,7 @@ static int bt_run_restore(char *err, size_t errsz)
                 timedout = 1;
                 break;
             }
-            usleep(20 * 1000);
+            wait_yield(20);
             waited += 20;
         }
         close(p[0]);
@@ -728,16 +784,17 @@ static int run_capture_argv(char *const argv[], char *out, size_t outsz)
                     break;
             }
             if (waited >= RUN_PROVISION_TIMEOUT_MS) {
+                char cl[192];
                 kill(pid, SIGKILL);
                 (void)waitpid(pid, &st, 0);
-                slogf(SL_WARN, "провижн датаплейна не уложился в %d мс — прерван",
-                      RUN_PROVISION_TIMEOUT_MS);
+                slogf(SL_WARN, "провижн датаплейна не уложился в %d мс — прерван: '%s'",
+                      RUN_PROVISION_TIMEOUT_MS, argv_logline(cl, sizeof(cl), argv));
                 close(p[0]);
                 if (out && outsz)
                     out[n] = '\0';
                 return -1;
             }
-            usleep(20000);
+            wait_yield(20);
             waited += 20;
         }
         if (out && outsz)
@@ -1013,7 +1070,7 @@ static int run_check(char *const argv[], char *out, size_t outsz)
         if (i) {
             if (out && outsz)
                 out[0] = '\0';
-            usleep(XT_LOCK_WAIT_US);
+            wait_yield(XT_LOCK_WAIT_US / 1000);
         }
         rc = out ? run_capture_argv(argv, out, outsz) : run_argv(argv);
         if (!backend_xt_locked(rc, out))
@@ -1124,25 +1181,31 @@ static int be_ready_int(const susanin_config *c, int *unknown,
         return 0;
     }
 
-    /* T3: dns_hijack ставит DNAT 53 заранее (в т.ч. шаблоном oc+ без живого
-     * клиента) и помечает правила comment-меткой susanin-dns. Если правила
-     * пропали (NDM/смена режима), их надо вернуть — иначе фича «включается»
-     * только после ручного restart. Чужой DNAT 53 «готовым» не считается. */
+    /* T3: dns_hijack ставит DNAT 53 для клиентов серверных VPN (oc+/wdtt+), в
+     * том числе шаблоном `-i oc+` без живого клиента. Признак готовности —
+     * отдельная цепочка SUSANIN_DNSHIJ с правилами. Комментарий для этого не
+     * годится: модуля xt_comment на части прошивок Keenetic нет («No
+     * chain/target/match by that name»), правило с комментарием добавить
+     * невозможно, и проверка требовала того, чего установка не могла создать —
+     * агент пересобирал датаплейн бесконечно. */
     if (c->dns_hijack &&
         (iface_prefix_in_list(c->lan_interfaces, "oc") ||
          iface_prefix_in_list(c->lan_interfaces, "wdtt") ||
          iface_prefix_in_list(c->lan_interfaces, "wdttraw"))) {
         char *na[6];
         na[0] = (char *)tool_iptables();
-        na[1] = "-t"; na[2] = "nat"; na[3] = "-S"; na[4] = "PREROUTING"; na[5] = NULL;
+        na[1] = "-t"; na[2] = "nat"; na[3] = "-S";
+        na[4] = (char *)"SUSANIN_DNSHIJ"; na[5] = NULL;
         rc = run_check(na, out, sizeof(out));
         if (rc == XT_BUSY) {
             if (unknown)
                 *unknown = 1;
             return 1;
         }
-        if (rc != 0 || !strstr(out, "susanin-dns")) {
-            why_set(why, whysz, "dns hijack DNAT");
+        /* `-S` печатает `-N SUSANIN_DNSHIJ` и строки `-A SUSANIN_DNSHIJ ...`:
+         * пустая цепочка готовностью не считается. */
+        if (rc != 0 || !strstr(out, "-A SUSANIN_DNSHIJ")) {
+            why_set(why, whysz, "dns hijack chain");
             return 0;
         }
     }

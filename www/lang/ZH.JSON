@@ -373,5 +373,11 @@
   "cfg.dns_lan_upstream.label": "转发器上游",
   "cfg.dns_lan_upstream.desc": "逗号分隔的 IPv4：8.8.8.8,1.1.1.1",
   "cfg.dns_lan_fallback.label": "Fail-open：直接查询",
-  "cfg.dns_lan_fallback.desc": "隧道无应答时直接查询，避免域名丢失 DNS"
+  "cfg.dns_lan_fallback.desc": "隧道无应答时直接查询，避免域名丢失 DNS",
+  "cfg.dns_lan_smart.label": "先问本地解析器",
+  "cfg.dns_lan_smart.desc": "是 - 本地应答更快，只有被改写（127.0.0.1/0.0.0.0）或空应答才走隧道；否 - 全部 DNS 走隧道",
+  "cfg.dns_lan_thread.label": "转发器使用独立线程",
+  "cfg.dns_lan_thread.desc": "是 - 自己以 50 毫秒步长轮询套接字，不依赖引擎节拍；适用于节拍稀疏、SOCKS 交换来不及的情况",
+  "cfg.dns_lan_pin.label": "改写时固定地址",
+  "cfg.dns_lan_pin.desc": "是 - 直连应答被改写、而隧道返回真实地址时，该地址直接固定到 VPN，无需写入 vpn_always；广告拦截的占位地址同样会被固定"
 }

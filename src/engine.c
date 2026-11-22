@@ -2019,7 +2019,9 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             }
         }
 
-        if (cfg->dns_lan) {
+        /* В поточном режиме снимок и счётчики принадлежат потоку форвардера:
+         * движок к ним не обращается, иначе читал бы их во время обновления. */
+        if (cfg->dns_lan && !dns_lan_threaded()) {
             static time_t dl_at, dl_snap;
             if (!dl_snap || now - dl_snap >= 60) {
                 dl_snap = now;
@@ -2032,6 +2034,24 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 dl_at = now;
                 dns_lan_stats(dl, sizeof(dl));
                 slogf(SL_INFO, "dns_lan: %s", dl);
+            }
+        }
+
+        /* Пиннинг по подмене: форвардер (в поточном режиме — из своего потока)
+         * складывает заявки «домен → настоящий адрес из туннеля», применяет их
+         * главный цикл: пиннинг идёт через батч ipset, который принадлежит ему. */
+        if (cfg->dns_lan && cfg->dns_lan_pin && dns_lan_pins_pending()) {
+            char pips[4][16], pnames[4][64];
+            int got = dns_lan_drain_pins(pips, pnames, 4), k;
+
+            for (k = 0; k < got; k++) {
+                if (backend_ok_pin_add(cfg, pips[k], cfg->ok_ttl) == 0) {
+                    slogf(SL_INFO, "dns_lan: подмена %s — адрес %s из туннеля запинен",
+                          pnames[k], pips[k]);
+                } else {
+                    slogf(SL_WARN, "dns_lan: подмена %s — адрес %s запинить не удалось",
+                          pnames[k], pips[k]);
+                }
             }
         }
 

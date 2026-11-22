@@ -41,6 +41,13 @@ int backend_xt_locked(int rc, const char *out);
 void backend_mark_reprov(const char *reason);
 int backend_read_reprov(long *when, char *reason, size_t reasonsz);
 
+/* Точка «отдать время» на время ожидания внешнего процесса. Пока цикл ждёт
+ * `iptables`/`ipset`/`conntrack` (до 2 с) или провижн (до 60 с), подсистемы,
+ * живущие в этом же цикле, обязаны обслуживаться — иначе DNS-форвардер клиентов
+ * молчит и клиенты получают SERVFAIL. Колбэк ставит сам форвардер при старте
+ * (dns_lan), поэтому backend не зависит от dns_lan при линковке тестов. */
+void backend_set_yield_cb(void (*cb)(void));
+
 /* Аудит потоков «помечено в VPN, а REDIRECT не забрал»: путь снимка (в soft —
  * tmpfs) и запись счётчиков для `status`. */
 #define FLOWAUDIT_FILE      "/opt/susanin/var/flowaudit.state"

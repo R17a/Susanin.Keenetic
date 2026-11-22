@@ -218,6 +218,8 @@ void config_set_defaults(susanin_config *c)
              "8.8.8.8,1.1.1.1");
     c->dns_lan_fallback = 1;         /* туннель молчит — спросить напрямую */
     c->dns_lan_smart = 1;            /* локальный резолвер быстрее туннеля */
+    c->dns_lan_thread = 0;           /* по умолчанию — прежний тик движка */
+    c->dns_lan_pin = 0;              /* пиннинг по подмене выключен */
     c->soft_state_interval = 12 * 3600;   /* soft: сохранять состояние раз в 12 ч */
     /* Порты, которые не участвуют в автообучении (типовой скан-шум). */
     snprintf(c->learn_exclude_ports, sizeof(c->learn_exclude_ports), "%s",
@@ -791,6 +793,10 @@ int config_load(const char *path, susanin_config *c)
             c->dns_lan_fallback = val[0] ? (int)cfg_num(c, key, val) : 1;
         else if (!strcmp(key, "dns_lan_smart"))
             c->dns_lan_smart = val[0] ? (int)cfg_num(c, key, val) : 1;
+        else if (!strcmp(key, "dns_lan_thread"))
+            c->dns_lan_thread = val[0] ? (int)cfg_num(c, key, val) : 0;
+        else if (!strcmp(key, "dns_lan_pin"))
+            c->dns_lan_pin = val[0] ? (int)cfg_num(c, key, val) : 0;
         else if (!strcmp(key, "soft_state_interval"))
             c->soft_state_interval = cfg_dur(c, key, val, U_HOUR);
         else if (!strcmp(key, "learn_exclude_ports"))
@@ -1203,6 +1209,14 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "# 1 = спрашивать локальный резолвер первым (быстро), в туннель —\n");
     fprintf(fp, "# только если ответ подменён (127.0.0.1/0.0.0.0) или пуст.\n");
     fprintf(fp, "dns_lan_smart=%d\n", c->dns_lan_smart);
+    fprintf(fp, "# 1 = форвардер в своём потоке (свой опрос сокетов), 0 = по тику движка.\n");
+    fprintf(fp, "# Нужен там, где тик редкий: обмен DNS-over-TCP через SOCKS идёт шагами\n");
+    fprintf(fp, "# и при тике ~1 с не успевает в бюджет запроса.\n");
+    fprintf(fp, "dns_lan_thread=%d\n", c->dns_lan_thread);
+    fprintf(fp, "# 1 = если прямой ответ подменён, а туннель вернул настоящий адрес —\n");
+    fprintf(fp, "# запинить этот адрес (трафик домена пойдёт через VPN без vpn_always).\n");
+    fprintf(fp, "# Внимание: так же запинятся заглушки блокировщиков рекламы.\n");
+    fprintf(fp, "dns_lan_pin=%d\n", c->dns_lan_pin);
     fprintf(fp, "# Период сохранения состояния в soft-режиме, ч; 0 = никогда.\n");
     out_dur_exact(c->soft_state_interval, U_HOUR, dv, sizeof(dv));
     fprintf(fp, "soft_state_interval=%s\n", dv);
@@ -1994,6 +2008,8 @@ void config_print(const susanin_config *c)
     printf("dns_lan_upstream=%s\n", c->dns_lan_upstream);
     printf("dns_lan_fallback=%d\n", c->dns_lan_fallback);
     printf("dns_lan_smart=%d\n", c->dns_lan_smart);
+    printf("dns_lan_thread=%d\n", c->dns_lan_thread);
+    printf("dns_lan_pin=%d\n", c->dns_lan_pin);
     out_dur_exact(c->soft_state_interval, U_HOUR, dv, sizeof(dv));
     printf("soft_state_interval=%s\n", dv);
     printf("learn_exclude_ports=%s\n", c->learn_exclude_ports);
