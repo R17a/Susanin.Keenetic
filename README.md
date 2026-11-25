@@ -26,7 +26,7 @@ MikroTik RouterOS), перенесён на роутеры Keenetic/Entware.
 VPN недоступен — всё идёт напрямую. Есть и простой список доменов, которые должны
 идти через VPN **всегда** (без ручных списков IP — только имена, как в Keenetic).
 
-**Статус: релиз 0.5.0.** Поддерживается и проверяется на Keenetic Viva (MT7621, MIPS),
+**Статус: релиз 0.5.4.** Поддерживается и проверяется на Keenetic Viva (MT7621, MIPS),
 KeeneticOS 5.1.4–5.1.5, Entware, туннели WireGuard/AmneziaWG (`nwg0`/`nwg1`),
 Xray VLESS+REALITY и VLESS+WS+TLS (`egress_type=tproxy`), Keenetic Giga/Ultra.
 
@@ -42,7 +42,8 @@ Xray VLESS+REALITY и VLESS+WS+TLS (`egress_type=tproxy`), Keenetic Giga/Ultra.
   умолчанию напрямую, в VPN адрес уходит, когда прямой путь деградировал;
 - fail-open (нет туннеля — прямой доступ), failover между несколькими VPN и
   автоматический возврат на приоритетный;
-- egress — интерфейс (`nwg*`, `wdtt*`) или Xray/VLESS+REALITY (`egress_type=tproxy`);
+- egress — интерфейс (`nwg*`, `wdtt*`), Xray/VLESS+REALITY (`egress_type=tproxy`)
+  или собственный сервер AY (`egress_type=ay`);
 - профили маршрутизации: до 4 списков «домены/CIDR → свой туннель»;
 - встроенная веб-панель (только LAN) с интерфейсом на русском, английском и
   китайском; по умолчанию выключена;
@@ -64,14 +65,24 @@ Xray VLESS+REALITY и VLESS+WS+TLS (`egress_type=tproxy`), Keenetic Giga/Ultra.
 - UDP/QUIC через туннель (встроенный SOCKS-UDP-релей) и авто-обновление
   диапазонов CDN.
 
-Не является VPN-клиентом: туннель (WireGuard/AmneziaWG «Дополнительное
-подключение») должен уже работать. IPv6 в v1 не поддерживается.
+Не является клиентом чужого VPN: туннель (WireGuard/AmneziaWG «Дополнительное
+подключение») должен уже работать — либо поднимите свой сервер AY (см. ниже).
+IPv6 в v1 не поддерживается.
+
+**AY: свой сервер вместо VPN.** Отдельный тип egress — агент поднимает собственный
+tun (`ay0`) и держит сессию с сервером Susanin.Keenetic.AY, без WireGuard и без
+Xray. В панели **VPN / Egress → Susanin.Keenetic.AY** вписываются адрес сервера и
+ключ, затем **Тип egress** = `ay`: признанный «через VPN» трафик уходит в этот
+туннель. Сервер под Ubuntu x86-64 идёт в комплекте пакета
+(`/opt/susanin/ay-server`) и отдельным архивом в релизе; транспорт поставляется
+бинарником. Параметры, ограничения и диагностика — [docs/AY.md](docs/AY.md).
 
 **Требования**
 
 - Keenetic с Entware; пакеты `ipset`, `iptables`, `conntrack`,
   `ca-certificates` + `wget-ssl`;
-- работающий VPN-туннель (WireGuard/AmneziaWG) или Xray/VLESS+REALITY;
+- работающий VPN-туннель (WireGuard/AmneziaWG), Xray/VLESS+REALITY или собственный
+  сервер AY;
 - в Keenetic **выключена «Маршрутизация DNS»**, включён шифрованный DNS (DoH/DoT) —
   иначе возможны подмена DNS и «YouTube/Claude не открывается».
 
@@ -99,6 +110,8 @@ susanin version && susanin status && susanin diagnose
   доменов, OpenConnect/qWDTT/XRay, профили, CLI, сборка, все параметры конфига;
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — если что-то не работает, по симптомам;
 - [XRAY.md](XRAY.md) — XRay/VLESS-REALITY: совместимость, конфликты, XKeen;
+- [docs/AY.md](docs/AY.md) — AY: свой сервер вместо VPN — требования, ключи,
+  диагностика;
 - [CHANGELOG.md](CHANGELOG.md) — что нового по версиям.
 
 Описание релиза на GitHub собирается при публикации тега: `.github/workflows/release.yml`
@@ -121,7 +134,7 @@ the VPN. If the VPN is unavailable, everything goes direct. There is also a plai
 list of domains that must **always** go through the VPN (no manual IP lists —
 names only, like in Keenetic).
 
-**Status: release 0.5.0.** Supported and tested on Keenetic Viva (MT7621, MIPS),
+**Status: release 0.5.4.** Supported and tested on Keenetic Viva (MT7621, MIPS),
 KeeneticOS 5.1.4–5.1.5, Entware, WireGuard/AmneziaWG tunnels (`nwg0`/`nwg1`),
 Xray VLESS+REALITY and VLESS+WS+TLS (`egress_type=tproxy`), Keenetic Giga/Ultra.
 
@@ -137,8 +150,8 @@ Xray VLESS+REALITY and VLESS+WS+TLS (`egress_type=tproxy`), Keenetic Giga/Ultra.
   direct by default, moved into the VPN once the direct path degrades;
 - fail-open (no tunnel — direct access), failover between several VPNs and
   automatic return to the preferred one;
-- egress is an interface (`nwg*`, `wdtt*`) or Xray/VLESS+REALITY
-  (`egress_type=tproxy`);
+- egress is an interface (`nwg*`, `wdtt*`), Xray/VLESS+REALITY
+  (`egress_type=tproxy`) or your own AY server (`egress_type=ay`);
 - routing profiles: up to 4 lists "domains/CIDR → their own tunnel";
 - built-in web panel (LAN only) with a Russian, English and Chinese interface;
   disabled by default;
@@ -154,14 +167,26 @@ Xray VLESS+REALITY and VLESS+WS+TLS (`egress_type=tproxy`), Keenetic Giga/Ultra.
 - UDP/QUIC through the tunnel (built-in SOCKS UDP relay) and automatic CDN
   ranges updates.
 
-It is not a VPN client: the tunnel (WireGuard/AmneziaWG "Additional connection")
-must already work. IPv6 is not supported in v1.
+It is not a client of a third-party VPN: the tunnel (WireGuard/AmneziaWG
+"Additional connection") must already work — or raise your own AY server (see
+below). IPv6 is not supported in v1.
+
+**AY: your own server instead of a VPN.** A separate egress type — the agent
+brings up its own tun (`ay0`) and keeps a session with the
+Susanin.Keenetic.AY server, without WireGuard and without Xray. In the panel
+**VPN / Egress → Susanin.Keenetic.AY** you enter the server address and key,
+then **Egress type** = `ay`: traffic recognised as "via VPN" goes into that
+tunnel. The Ubuntu x86-64 server ships inside the package
+(`/opt/susanin/ay-server`) and as a separate archive in the release; the
+transport is shipped as a binary. Parameters, limitations and diagnostics —
+[docs/AY.md](docs/AY.md).
 
 **Requirements**
 
 - Keenetic with Entware; packages `ipset`, `iptables`, `conntrack`,
   `ca-certificates` + `wget-ssl`;
-- a working VPN tunnel (WireGuard/AmneziaWG) or Xray/VLESS+REALITY;
+- a working VPN tunnel (WireGuard/AmneziaWG), Xray/VLESS+REALITY, or your own
+  AY server;
 - Keenetic **"DNS routing" turned off** and encrypted DNS (DoH/DoT) configured —
   otherwise DNS spoofing is possible and "YouTube/Claude does not open".
 
@@ -187,6 +212,8 @@ English, Chinese.
   OpenConnect/qWDTT/XRay, profiles, CLI, build, all config parameters;
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — when something does not work, by symptom;
 - [XRAY.md](XRAY.md) — XRay/VLESS-REALITY: compatibility, conflicts, XKeen;
+- [docs/AY.md](docs/AY.md) — AY: your own server instead of a VPN — requirements,
+  keys, diagnostics;
 - [CHANGELOG.md](CHANGELOG.md) — what changed per version.
 
 <hr>
@@ -201,7 +228,7 @@ VPN 路由）实现，并移植到 Keenetic/Entware 路由器。
 连接并继续让它们走 VPN。如果 VPN 不可用，所有流量都直连。此外还有一份「始终走
 VPN」的域名列表（无需手工维护 IP 列表——只写域名，和 Keenetic 一样）。
 
-**状态：0.5.0 版。** 支持并在 Keenetic Viva（MT7621，MIPS）、KeeneticOS
+**状态：0.5.4 版。** 支持并在 Keenetic Viva（MT7621，MIPS）、KeeneticOS
 5.1.4–5.1.5、Entware、WireGuard/AmneziaWG 隧道（`nwg0`/`nwg1`）、
 Xray VLESS+REALITY 及 VLESS+WS+TLS（`egress_type=tproxy`）、Keenetic Giga/Ultra 上验证。
 
@@ -214,7 +241,8 @@ Xray VLESS+REALITY 及 VLESS+WS+TLS（`egress_type=tproxy`）、Keenetic Giga/Ul
 - 「始终走 VPN」与「始终直连」列表：域名、`*.example.com` 通配、CIDR、IP；
   在「始终走 VPN」中 `?domain` 是软记录：默认直连，直连路径劣化时自动转入 VPN；
 - fail-open（隧道不可用则直连）、多个 VPN 之间的故障切换与自动切回；
-- egress 为接口（`nwg*`、`wdtt*`）或 Xray/VLESS+REALITY（`egress_type=tproxy`）；
+- egress 为接口（`nwg*`、`wdtt*`）、Xray/VLESS+REALITY（`egress_type=tproxy`）
+  或自有 AY 服务器（`egress_type=ay`）；
 - 路由配置文件：最多 4 份「域名/CIDR → 指定隧道」列表；
 - 内置网页面板（仅限 LAN），界面支持俄语、英语、中文；默认关闭；
 - 若 NDM 清除了规则会自动修复，还可把同一台路由器上 OpenConnect 服务器的客户端
@@ -227,14 +255,21 @@ Xray VLESS+REALITY 及 VLESS+WS+TLS（`egress_type=tproxy`）、Keenetic Giga/Ul
   反欺诈会切断境外出口；
 - 内置 SOCKS UDP 中继让 UDP/QUIC 也走隧道，CDN 网段自动更新。
 
-它不是 VPN 客户端：隧道（WireGuard/AmneziaWG「额外连接」）必须已经在工作。
-v1 不支持 IPv6。
+它不是第三方 VPN 客户端：隧道（WireGuard/AmneziaWG「额外连接」）必须已经在工作——
+或者架设自有 AY 服务器（见下文）。v1 不支持 IPv6。
+
+**AY：用自有服务器代替 VPN。** 独立的 egress 类型——agent 自行创建 tun（`ay0`），
+与 Susanin.Keenetic.AY 服务器保持会话，无需 WireGuard，也无需 Xray。在面板
+**VPN / Egress → Susanin.Keenetic.AY** 中填写服务器地址与密钥，然后把
+**egress 类型** 设为 `ay`：被判定为「走 VPN」的流量进入该隧道。Ubuntu x86-64
+服务器随软件包提供（`/opt/susanin/ay-server`），发布页另有独立压缩包；传输层以
+二进制形式提供。参数、限制与诊断见 [docs/AY.md](docs/AY.md)。
 
 **环境要求**
 
 - 已安装 Entware 的 Keenetic；软件包 `ipset`、`iptables`、`conntrack`、
   `ca-certificates` + `wget-ssl`；
-- 已工作的 VPN 隧道（WireGuard/AmneziaWG）或 Xray/VLESS+REALITY；
+- 已工作的 VPN 隧道（WireGuard/AmneziaWG）、Xray/VLESS+REALITY，或自有 AY 服务器；
 - Keenetic 中**关闭「DNS 路由」**并配置加密 DNS（DoH/DoT）——否则可能出现 DNS
   篡改以及「YouTube/Claude 打不开」。
 
@@ -259,6 +294,7 @@ susanin version && susanin status && susanin diagnose
   OpenConnect/qWDTT/XRay、配置文件、CLI、构建、全部配置参数；
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — 出问题时按症状排查；
 - [XRAY.md](XRAY.md) — XRay/VLESS-REALITY：兼容性、冲突、XKeen；
+- [docs/AY.md](docs/AY.md) — AY：用自有服务器代替 VPN——要求、配置项、诊断；
 - [CHANGELOG.md](CHANGELOG.md) — 各版本变更。
 
 <hr>
