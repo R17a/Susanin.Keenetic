@@ -12,12 +12,15 @@
 /DNS.md
 /DNS_result.md
 
-# build intermediates (release binaries ARE committed, see build/)
+# build intermediates: готовые бинарники агента в репозитории НЕ лежат —
+# их собирает локально tools/wsl-build.sh или CI, а .ipk и архив релиза
+# собираются из этого файла (make-ipk/stage-release берут его аргументом)
 *.o
 susanin-agent
+/build/
 # закрытая часть транспорта AY: кладёт сборщик из проекта Susanin.Keenetic.AY
 /src/ay_transport_private.c
-# копии кросс-бинарников в корне (build/susanin-agent.* — коммитятся)
+# копии кросс-бинарников в корне
 /susanin-agent.*
 # скомпилированные host-тесты (исходники .c/.sh — на месте)
 /tests/test_*
@@ -35,8 +38,8 @@ susanin-agent
 /opt/
 
 # OpenWRT artifacts (built by CI / tools/build-openwrt.sh; not committed)
+# сами бинарники лежат в /build/, он игнорируется целиком выше
 /deploy-openwrt/
-/build/susanin-agent.openwrt-*
 
 # editors / OS
 .DS_Store
