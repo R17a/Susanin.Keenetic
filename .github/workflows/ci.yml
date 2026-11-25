@@ -32,7 +32,7 @@ jobs:
         run: |
           set -e
           fail=0
-          for f in install.sh bootstrap.sh tools/*.sh init/entware/* \
+          for f in install.sh bootstrap.sh tools/*.sh init/entware/* init/ndm/* \
                    opkg/postinst opkg/prerm opkg/postrm tests/*.sh; do
             [ -f "$f" ] || continue
             if ! sh -n "$f"; then echo "SYNTAX FAIL: $f"; fail=1; fi
@@ -43,7 +43,7 @@ jobs:
         run: |
           set +e
           shellcheck -S error install.sh bootstrap.sh tools/*.sh \
-                     opkg/postinst opkg/prerm opkg/postrm || exit 1
+                     init/ndm/* opkg/postinst opkg/prerm opkg/postrm || exit 1
 
       - name: Проверка сборки .ipk (linux x86_64)
         run: |
