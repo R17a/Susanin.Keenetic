@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "engine.h"
+#include "ay_client.h"
 #include "backend.h"
 #include "cdn.h"
 #include "classifier.h"
@@ -1630,6 +1631,10 @@ static int engine_pick_start_egress(const susanin_config *cfg)
     int i;
     if (cfg->n_egress <= 0)
         return 0;
+    /* AY: пока клиент не поднят, переключать таблицу не на что — интерфейса
+     * ещё нет, а ошибка в логе выглядела бы как поломка. */
+    if (strcmp(cfg->egress_type, "ay") == 0 && !ay_client_running())
+        return 0;
     if (strcmp(cfg->egress_type, "tproxy") != 0) {
         backend_set_egress(cfg, cfg->egress_list[0]);
         return 0;
@@ -1825,6 +1830,22 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         dns_sniff_start(cfg);
     if (cfg->dns_lan)
         dns_lan_start(cfg);
+    /* AY: клиент поднимает tun до preflight и провижна — иначе маршрут в
+     * ещё не существующий интерфейс не встанет, а отправлять трафик в
+     * туннель без сессии нельзя (чёрная дыра). */
+    (void)ay_client_apply(cfg);
+    /* AY: если сервер недоступен, tun уже существует, но сессии нет. Правила в
+     * него ставить нельзя — это чёрная дыра. Ждём первый ACK коротко (обычно
+     * сервер отвечает за десятки миллисекунд), дальше решает preflight. */
+    if (strcmp(cfg->egress_type, "ay") == 0) {
+        int w;
+
+        for (w = 0; w < 30 && ay_client_running() && !ay_client_connected(); w++)
+            usleep(100000);
+        if (ay_client_running() && !ay_client_connected())
+            slogf(SL_WARN, "ay: сессия не подтверждена — правила не поднимаю "
+                           "(трафик идёт напрямую до ответа сервера)");
+    }
 
     state_init(&st);
     vpin_reset();
@@ -1867,7 +1888,15 @@ int engine_run(susanin_config *cfg, const char *conf_path)
          * иначе на старте уходим в fail-open из-за гонки. */
         (void)wait_xray_port_blocking(cfg, 10);
     }
-    if (strcmp(cfg->egress_type, "tproxy") == 0 &&
+    if (strcmp(cfg->egress_type, "ay") == 0 && !ay_client_connected()) {
+        /* Туннель есть, но сессии нет (отключён оператором, сервер молчит или
+         * ключ не тот): правила в мёртвый tun не ставим — трафик остаётся
+         * прямым, пока сессия не появится (тогда Reload пересоберёт датаплейн). */
+        slogf(SL_WARN, "ay: сессии нет — правила не ставлю, трафик идёт напрямую");
+        backend_teardown(cfg);
+        dp_ok = 0;
+        next_dp_try = time(NULL) + 15;
+    } else if (strcmp(cfg->egress_type, "tproxy") == 0 &&
         !backend_local_listen(cfg->tproxy_port) && cfg->xray_watchdog) {
         /* Xray не слушает — пробуем поднять watchdog'ом (свежий старт после ребута).
          * Если процесс УЖЕ есть (завис или не смог забиндить порт), новый не
@@ -1949,7 +1978,6 @@ int engine_run(susanin_config *cfg, const char *conf_path)
              * при dns_sniff=1 (второй — пережиток, когда SNI жил отдельным
              * вызовом), и каждый кадр вычитывался из сокетов в два захода. */
             dns_sniff_poll();   /* DNS-ответы и SNI из TLS ClientHello */
-            dns_lan_poll();     /* DNS клиентов: в туннель через SOCKS-Xray */
             /* Раз в 5 минут: сводка на DEBUG, снимок для status/why и не более
              * одного WARN. Прежнее одно условие «пакеты идут, сохранено 0»
              * сливало три разные поломки в одну и допускало вывод про
@@ -2019,14 +2047,19 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             }
         }
 
-        /* В поточном режиме снимок и счётчики принадлежат потоку форвардера:
-         * движок к ним не обращается, иначе читал бы их во время обновления. */
+        /* dns_lan: в поточном режиме шаги делает поток форвардера; если он
+         * перестал тикать (poll завис/ошибка), перезапускаем его. В
+         * непоточном шаги делает главный цикл. Раньше dns_lan_poll() жил
+         * внутри блока dns_sniff: при dns_sniff=0/sni_sniff=0 не вызывался
+         * вовсе — dnslan.state не обновлялся, DNS клиентов молчал. */
+        if (cfg->dns_lan && dns_lan_threaded() && dns_lan_thread_stale()) {
+            slogf(SL_WARN, "dns_lan: поток не тикает >10 с — перезапускаю форвардер");
+            dns_lan_stop();
+            (void)dns_lan_start(cfg);
+        }
         if (cfg->dns_lan && !dns_lan_threaded()) {
-            static time_t dl_at, dl_snap;
-            if (!dl_snap || now - dl_snap >= 60) {
-                dl_snap = now;
-                dns_lan_write_snapshot(cfg);
-            }
+            static time_t dl_at;
+            dns_lan_poll();
             if (!dl_at)
                 dl_at = now;
             else if (now - dl_at >= 300) {
@@ -2056,6 +2089,20 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         }
 
         vq_tick(&st, cfg, now);   /* аудит пинов автообучения: жив ли путь через туннель */
+
+        /* AY: обновить снимок состояния для панели и, если клиент не поднят
+         * (нет tun/имя не разрешилось), изредка повторить попытку. */
+        ay_client_tick(cfg);
+        /* DNS-форвардер стартует раньше асинхронного HELLO AY: как только
+         * сессия жива, переключаем его на ay0 (иначе DNS клиентов — direct). */
+        {
+            static time_t last_ay_dns;
+            if (!strcmp(cfg->egress_type, "ay") && ay_client_connected() &&
+                (!last_ay_dns || now - last_ay_dns >= 5)) {
+                last_ay_dns = now;
+                (void)dns_lan_ay_ensure(cfg);
+            }
+        }
 
         if (g_reload) {
             susanin_config nc;
@@ -2137,6 +2184,9 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                  * при смене значимых полей — перезапуск, при выключении
                  * udp_relay — остановка. */
                 udp_relay_reload(cfg);
+                /* AY: применить новые параметры (сервер/ключ/tun) и желание
+                 * «Подключиться/Отключиться» из var/ay.desired. */
+                (void)ay_client_apply(cfg);
                 /* Снифер同样 мог быть включён/выключен уже в работающем
                  * процессе: раньше ключ применялся только при старте службы. */
                 dns_sniff_reload(cfg);
@@ -2170,7 +2220,14 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 /* Режим берём из конфига; смена режима — только при явном
                  * псевдониме tproxy/xray или смене egress_type. */
                 ei = engine_pick_start_egress(cfg);
-                if (strcmp(cfg->egress_type, "tproxy") == 0 &&
+                if (strcmp(cfg->egress_type, "ay") == 0 && !ay_client_connected()) {
+                    slogf(SL_WARN, "ay: сессии нет — правила не ставлю "
+                          "(трафик напрямую до появления сессии)");
+                    backend_teardown(cfg);
+                    backend_ct_flush_vpn(cfg);
+                    dp_ok = 0;
+                    next_dp_try = now + 15;
+                } else if (strcmp(cfg->egress_type, "tproxy") == 0 &&
                     !backend_local_listen(cfg->tproxy_port)) {
                     slogf(SL_ERROR, "tproxy: порт %d не слушается — правила не поднимаю (DIRECT)",
                           cfg->tproxy_port);
@@ -2208,9 +2265,11 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                  now - last[1] >= cfg->soft_interval * idle_mult ||
                  now - last[2] >= cfg->judge_interval * idle_mult))
                 need_scan = 1;
-            if (dp_ok && tunnel_up && now - last_sweep >= 60)
+            if (dp_ok && tunnel_up && !strcmp(cfg->egress_type, "tproxy") &&
+                now - last_sweep >= 60)
                 need_scan = 1;
-            if (dp_ok && tunnel_up && now - last_nsweep >= 60)
+            if (dp_ok && tunnel_up && !strcmp(cfg->egress_type, "tproxy") &&
+                now - last_nsweep >= 60)
                 need_scan = 1;
             if (now - last[3] >= cfg->health_interval)
                 need_scan = 1;
@@ -2264,8 +2323,11 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         }
 
         /* Периодически сбрасываем «залипшие» прямые потоки (mark=0) по адресам
-         * из ok/vpn_always, чтобы они переустановились через туннель (bounded). */
-        if (dp_ok && tunnel_up && now - last_sweep >= 60) {
+         * из ok/vpn_always, чтобы они переустановились через туннель (bounded).
+         * Только для tproxy: в AY/interface-режиме потоки уже маршрутизируются
+         * через ay0, и признак «reply-порт не Xray» ложно считает их прямыми. */
+        if (dp_ok && tunnel_up && !strcmp(cfg->egress_type, "tproxy") &&
+            now - last_sweep >= 60) {
             unsigned long amk = 0, amd = 0;
             int killed;
 
@@ -2285,8 +2347,10 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         }
 
         /* И обратное: помеченные (VPN) потоки к адресам из vpn_never — точечно
-         * рвём, иначе они «залипают» в туннеле до конца соединения. */
-        if (dp_ok && tunnel_up && now - last_nsweep >= 60) {
+         * рвём, иначе они «залипают» в туннеле до конца соединения. Только для
+         * tproxy: в AY-режиме эта проверка не про REDIRECT-потоки. */
+        if (dp_ok && tunnel_up && !strcmp(cfg->egress_type, "tproxy") &&
+            now - last_nsweep >= 60) {
             last_nsweep = now;
             never_sweep_marked(cfg, &st, L.v, L.n, now);
         }
@@ -2610,7 +2674,15 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                     next_xray_try = time(NULL) + back;
                 }
             }
-            if (dp_ok && tproxy && !tp_ok) {
+            if (dp_ok && strcmp(cfg->egress_type, "ay") == 0 && !ay_client_running()) {
+                /* Клиент AY остановлен (оператор нажал «Отключиться» или tun
+                 * пропал): правила в несуществующий интерфейс не держим. */
+                slogf(SL_WARN, "ay: клиент остановлен — снимаю правила, трафик DIRECT");
+                backend_teardown(cfg);
+                backend_ct_flush_vpn(cfg);
+                dp_ok = 0;
+                next_dp_try = now + 10;
+            } else if (dp_ok && tproxy && !tp_ok) {
                 /* Xray умер — снимаем правила (fail-open DIRECT); watchdog выше
                  * уже пытается поднять Xray. Conntrack VPN-метки тоже чистим:
                  * иначе помеченные потоки останутся в мёртвом туннеле. */
@@ -2653,7 +2725,12 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             } else if (!dp_ok && now >= next_dp_try) {
                 /* Never provisioned (or lost earlier): retry with backoff
                  * (60s, 120s, 240s, ... — чтобы не «долбить» в цикле). */
-                if (!tp_ok) {
+                if (strcmp(cfg->egress_type, "ay") == 0 && !ay_client_connected()) {
+                    /* AY ещё не подключён (ждём «Подключиться» или первый ACK):
+                     * правила в мёртвый tun не ставим, проверяем часто, но не
+                     * долбим лог. */
+                    next_dp_try = now + 10;
+                } else if (!tp_ok) {
                     slogf(SL_WARN, "tproxy: жду Xray на :%d — правила не поднимаю (DIRECT)",
                           cfg->tproxy_port);
                     next_dp_try = now + 60;
@@ -2796,6 +2873,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
 
     probe_job_stop();
     udp_relay_stop();
+    ay_client_stop();
     dns_lan_stop();
     dns_sniff_stop();
     vq_stop();

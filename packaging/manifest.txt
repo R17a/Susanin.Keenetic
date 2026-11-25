@@ -41,6 +41,7 @@ doc     USER_GUIDE.md
 doc     TROUBLESHOOTING.md
 doc     DEPLOY.md
 doc     XRAY.md
+doc     docs/AY.md
 doc     CHANGELOG.md
 doc     LICENSE
 
@@ -55,6 +56,13 @@ share   lang/EN.json
 share   lang/ZH.json
 
 www     www
+
+ayserver ../Susanin.Keenetic.AY/dist/ay-server-binary
+
+# Хук NDM: возвращает FORWARD-разрешение по метке VPN сразу после пересборки
+# netfilter (иначе агент восстанавливает его за 5–8 с, и трафик в это окно
+# упирается в политику DROP). Ставится в /opt/etc/ndm/netfilter.d/.
+ndmhook init/ndm/60-susanin-forward.sh
 
 root    install.sh
 root    bootstrap.sh

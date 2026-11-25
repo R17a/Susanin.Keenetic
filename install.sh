@@ -1034,6 +1034,16 @@ if [ -n "$_s95" ]; then
     chmod +x "$INITD/S95susanin-web"
 fi
 
+# Хук NDM: возвращает FORWARD-разрешение по метке VPN сразу после пересборки
+# netfilter. Без него агент восстанавливает правило своим быстрым контролем,
+# но трафик в это окно (5–8 с) упирается в политику DROP.
+_nfh=$(find_file 60-susanin-forward.sh) || _nfh=""
+if [ -n "$_nfh" ]; then
+    mkdir -p /opt/etc/ndm/netfilter.d 2>/dev/null || true
+    cp "$_nfh" /opt/etc/ndm/netfilter.d/60-susanin-forward.sh
+    chmod +x /opt/etc/ndm/netfilter.d/60-susanin-forward.sh
+fi
+
 # Сторож S95xray-guard (появлялся в 0.4.6) из поставки ИСКЛЮЧЁН: он лечил
 # следствие блокирующего watchdog и конфликтовал с агентом. Здесь — только
 # вычистка остатков после 0.4.6, иначе сторож продолжит поднимать Xray в обход

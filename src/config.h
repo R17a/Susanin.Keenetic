@@ -221,11 +221,23 @@ typedef struct {
     char web_listen[64];    /* LAN-адрес, напр. 192.168.1.1 */
     int web_port;
     char web_token[64];     /* токен; пусто = вход без пароля (только LAN) */
-    /* Тип egress: interface (nwg/wdtt/tun) | tproxy | xray (перспектива).
-     * Для R1 информативно + задел под XRay-egress (R2). */
+    /* Тип egress: interface (nwg/wdtt/tun) | tproxy (XRay/REALITY) | ay
+     * (закрытый транспорт Susanin.Keenetic.AY). */
     char egress_type[16];
     /* Для egress_type=tproxy: порт локального Xray (dokodemo-door, tproxy). */
     int tproxy_port;
+    /* AY: закрытый транспорт. Клиент поднимает свой tun (ay_iface) и держит
+     * сессию с сервером (ay_server:ay_port) на ключе ay_key. При
+     * egress_type=ay весь VPN-трафик уходит в этот tun; адрес клиента в
+     * туннеле (ay_tun_ip) — источник SNAT, по нему сервер находит сессию. */
+    char ay_server[128];    /* адрес или имя сервера                    */
+    char ay_key[128];       /* PSK: 64 hex или парольная фраза          */
+    int ay_port;            /* UDP-порт сервера (по умолчанию 5004)     */
+    char ay_iface[16];      /* имя tun-интерфейса клиента (ay0)         */
+    char ay_tun_ip[32];     /* адрес клиента в туннеле: 10.23.0.2/24    */
+    int ay_mtu;             /* MTU туннеля (1200, не больше 1212)       */
+    int ay_keepalive;       /* период keepalive PING, сек (5)           */
+    unsigned long ay_mark;  /* fwmark своего UDP-сокета (обход VPN)     */
     /* UDP-релей в демоне (egress через XRay): TPROXY-приём UDP + SOCKS5 UDP
      * ASSOCIATE к локальному Xray-socks. По умолчанию выключен. */
     int udp_relay;

@@ -863,6 +863,11 @@ static int is_tproxy_name(const char *s)
 
 static const char *active_egress(const susanin_config *c)
 {
+    /* AY: клиент сам поднимает ay0; egress_interface в конфиге намеренно не
+     * перезаписывается и может остаться nwg0/пустым. Скрипту datapath нужен
+     * реальный интерфейс — иначе статус врёт «dev=nwg0, up=0». */
+    if (strcmp(c->egress_type, "ay") == 0)
+        return c->ay_iface[0] ? c->ay_iface : "ay0";
     if (g_active_egress[0])
         return g_active_egress;
     if (c->n_egress > 0 && c->egress_list[0][0])
@@ -909,6 +914,14 @@ static void set_env(const susanin_config *c)
     setenv("SUSANIN_PROXY_EGRESS", c->proxy_egress, 1);
     setenv("SUSANIN_PROXY_TABLE", (snprintf(v, sizeof(v), "%d", c->proxy_table), v), 1);
     setenv("SUSANIN_PROXY_MARK", (snprintf(v, sizeof(v), "0x%lx", c->proxy_mark), v), 1);
+    /* AY: датаплейн делает SNAT в туннель (сервер ищет сессию по внутреннему
+     * адресу) и ставит обходную метку для собственного UDP-сокета клиента,
+     * чтобы его пакеты не попали в тот же туннель. */
+    setenv("SUSANIN_AY", strcmp(c->egress_type, "ay") == 0 ? "1" : "0", 1);
+    setenv("SUSANIN_AY_MARK", (snprintf(v, sizeof(v), "0x%lx", c->ay_mark), v), 1);
+    setenv("SUSANIN_AY_MTU", (snprintf(v, sizeof(v), "%d", c->ay_mtu), v), 1);
+    setenv("SUSANIN_AY_IFACE", c->ay_iface[0] ? c->ay_iface : "ay0", 1);
+    setenv("SUSANIN_AY_TUN_IP", c->ay_tun_ip, 1);
 }
 
 static int run_script(const susanin_config *c, const char *a1, const char *a2)
@@ -930,6 +943,11 @@ static int run_script(const susanin_config *c, const char *a1, const char *a2)
 int backend_dns_lan_down(const susanin_config *c)
 {
     return run_script(c, "dns-lan-down", NULL);
+}
+
+int backend_dns_lan_up(const susanin_config *c)
+{
+    return run_script(c, "dns-lan-up", NULL);
 }
 
 int backend_provision(const susanin_config *c)
@@ -1505,7 +1523,9 @@ int backend_preflight(const susanin_config *c, char *err, size_t errsz)
         snprintf(err, errsz, "'ip' not found (install iproute2 or busybox ip)");
         return -1;
     }
-    if (c->egress_interface[0]) {
+    /* Для egress_type=ay интерфейс создаёт сам клиент; его отсутствие — не
+     * ошибка preflight: пока сессии нет, движок и не поднимает правила. */
+    if (strcmp(c->egress_type, "ay") != 0 && c->egress_interface[0]) {
         /* Список кандидатов (фейловер): достаточно одного живого. */
         int i, alive = 0, miss = 0;
         char missing[200];

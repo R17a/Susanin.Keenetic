@@ -8,6 +8,7 @@
 
 int backend_provision(const susanin_config *c);
 int backend_dns_lan_down(const susanin_config *c);
+int backend_dns_lan_up(const susanin_config *c);
 int backend_teardown(const susanin_config *c);
 int backend_p5_up(const susanin_config *c);
 int backend_p5_down(const susanin_config *c);

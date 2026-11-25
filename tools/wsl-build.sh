@@ -47,7 +47,27 @@ pick_pkg() {
 }
 
 rm -rf "$DEST"
-cp -r "$SRC" "$DEST"
+mkdir -p "$DEST"
+# Копируем через tar с исключениями: `cp -r` тащил .git (сотни мегабайт
+# объектов), dist/ и build/ — на 9p это занимало минуты и ничего не давало
+# сборке. Каталог build/ создаётся заново ниже.
+( cd "$SRC" && tar -cf - \
+    --exclude=./.git --exclude=./dist --exclude=./dist-* \
+    --exclude=./build --exclude=./local --exclude='./~&&' . ) | \
+    ( cd "$DEST" && tar -xf - )
+
+# Закрытая часть транспорта AY. Исходники НЕ лежат в публичном дереве: они в
+# проекте Susanin.Keenetic.AY. По умолчанию ищем соседнюю папку; другой путь
+# можно передать через AY_SRC. Без файла собирается заглушка (AY выключен) —
+# так публичный CI остаётся работоспособным.
+AY_CLIENT="${AY_SRC:-$(dirname "$SRC")/Susanin.Keenetic.AY/client}"
+if [ -f "$AY_CLIENT/ay_transport.c" ]; then
+    cp "$AY_CLIENT/ay_transport.c" "$DEST/src/ay_transport_private.c"
+    echo "AY: закрытый транспорт подключён ($AY_CLIENT/ay_transport.c)"
+else
+    echo "AY: закрытый транспорт не найден ($AY_CLIENT/ay_transport.c) — сборка без AY" >&2
+fi
+
 mkdir -p "$SRC/build"
 ok=0
 

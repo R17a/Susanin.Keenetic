@@ -77,7 +77,8 @@ build_one() { # build_one <target-arch> <binary>
     _ctrl="$_work/control"
     mkdir -p "$_data/opt/susanin/bin" "$_data/opt/susanin/tools" \
              "$_data/opt/susanin/share" "$_data/opt/susanin/www" \
-             "$_data/opt/susanin/docs" "$_data/opt/etc/init.d" "$_ctrl"
+             "$_data/opt/susanin/docs" "$_data/opt/etc/init.d" \
+             "$_data/opt/etc/ndm/netfilter.d" "$_ctrl"
 
     # Библиотека приложения
     cp "$_bin" "$_data/opt/susanin/bin/susanin-agent"
@@ -101,6 +102,8 @@ build_one() { # build_one <target-arch> <binary>
             share)  cp "$SRC/$_src" "$_data/opt/susanin/share/$(basename "$_src")" ;;
             cfg)    cp "$SRC/$_src" "$_data/opt/susanin/share/susanin.conf.example" ;;
             www)    cp -r "$SRC/$_src/." "$_data/opt/susanin/www/" ;;
+            ayserver) cp -r "$SRC/$_src" "$_data/opt/susanin/ay-server" ;;
+            ndmhook) cp "$SRC/$_src" "$_data/opt/etc/ndm/netfilter.d/$(basename "$_src")" ;;
             root)   : ;;   # install.sh/bootstrap.sh нужны tar-архиву, не .ipk
             *)
                 echo "make-ipk: неизвестный класс '$_cls' в манифесте" >&2
@@ -110,6 +113,8 @@ build_one() { # build_one <target-arch> <binary>
     done < "$SRC/packaging/manifest.txt"
     find "$_data/opt/etc/init.d" -type f -exec chmod 755 {} \; 2>/dev/null || true
     find "$_data/opt/susanin/tools" -type f -name '*.sh' -exec chmod 755 {} \; 2>/dev/null || true
+    find "$_data/opt/susanin/ay-server" -type f -name '*.sh' -exec chmod 755 {} \; 2>/dev/null || true
+    find "$_data/opt/etc/ndm/netfilter.d" -type f -exec chmod 755 {} \; 2>/dev/null || true
 
     # control + скрипты сопровождения
     _size=$(du -sk "$_data" 2>/dev/null | awk '{print $1}')

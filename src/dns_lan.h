@@ -10,11 +10,16 @@
 int  dns_lan_start(const susanin_config *cfg);   /* 0 = слушаем */
 void dns_lan_stop(void);
 void dns_lan_reload(const susanin_config *cfg);
+/* AY: переключить уже слушающий форвардер на ay0, когда интерфейс появился. */
+int  dns_lan_ay_ensure(const susanin_config *cfg);
 void dns_lan_poll(void);
 int  dns_lan_active(void);
 /* 1 = форвардер обслуживается своим потоком: движку нельзя ни опрашивать его
  * (dns_lan_poll), ни читать счётчики (dns_lan_stats) — это сделает поток. */
 int  dns_lan_threaded(void);
+/* 1 = поток форвардера был запущен, но не тикает дольше 10 с: движок
+ * перезапускает его, иначе DNS клиентов молча умирает. */
+int  dns_lan_thread_stale(void);
 /* Пиннинг по подмене (dns_lan_pin): подменённый домен получает настоящий адрес
  * из туннеля, заявки складывает форвардер (в поточном режиме — из своего
  * потока), применяет главный цикл через dns_lan_drain_pins. */

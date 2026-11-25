@@ -9,10 +9,14 @@
 /AGENTS.md
 /readme.html
 /release-notes-*.md
+/DNS.md
+/DNS_result.md
 
 # build intermediates (release binaries ARE committed, see build/)
 *.o
 susanin-agent
+# закрытая часть транспорта AY: кладёт сборщик из проекта Susanin.Keenetic.AY
+/src/ay_transport_private.c
 # копии кросс-бинарников в корне (build/susanin-agent.* — коммитятся)
 /susanin-agent.*
 # скомпилированные host-тесты (исходники .c/.sh — на месте)

@@ -77,6 +77,7 @@ h1 { font-size: 17px; margin: 0; font-weight: 700; letter-spacing: .2px; }
   transition: background .2s, box-shadow .2s;
 }
 .dot.ok { background: var(--acc2); box-shadow: 0 0 0 3px rgba(52,211,153,0.18); }
+.dot.warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(245,165,36,0.18); }
 .dot.err { background: var(--err); box-shadow: 0 0 0 3px rgba(255,107,107,0.18); }
 .tokenbox { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
@@ -247,6 +248,37 @@ tr:last-child td { border-bottom: 0; }
 .cfg-group-title {
   font-size: 11.5px; font-weight: 800; color: var(--acc); text-transform: uppercase;
   letter-spacing: .08em; border-bottom: 1px solid var(--line); padding-bottom: 7px; margin-bottom: 14px;
+}
+
+/* --- Susanin.Keenetic.AY: закрытый VPN-транспорт ----------------------
+ * Группа в рамке внутри раздела «VPN / Egress»: статус-точка в стиле
+ * индикатора агента (.dot), кнопка подключения и мелкая строка ошибки. */
+.cfg-group--ay {
+  border: 1px solid var(--acc-dim); border-radius: 10px;
+  padding: 14px 16px 16px; margin-bottom: 26px;
+}
+.cfg-ay-tip { font-size: 12px; line-height: 1.45; margin: -6px 0 12px; }
+.cfg-ay-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
+}
+.cfg-ay-status {
+  display: inline-flex; align-items: center; gap: 8px;
+  min-width: 0; font-size: 12.5px; line-height: 1.4;
+}
+.cfg-ay-status .dot { flex: none; }
+.cfg-ay-state { overflow-wrap: anywhere; }
+.cfg-ay-btn { flex: none; }
+.cfg-ay-err {
+  margin-top: 8px; font-size: 11.5px; line-height: 1.4; overflow-wrap: anywhere;
+}
+.cfg-ay-err[hidden] { display: none; }
+
+/* Узкий экран: статус и кнопка — в столбик, кнопка на всю ширину рамки. */
+@media (max-width: 480px) {
+  .cfg-ay-bar { align-items: flex-start; }
+  .cfg-ay-status { flex: 1 1 100%; }
+  .cfg-ay-btn { width: 100%; }
 }
 
 .cfg-field {

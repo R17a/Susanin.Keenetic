@@ -76,6 +76,21 @@ PROXY_MARK_HEX=$(printf '0x%x' "$((PROXY_MARK))")
 # Поэтому приоритет P5 — 1100, выше NDM-правил.
 PRI_PROXY=${SUSANIN_PRI_PROXY:-1100}
 
+# AY: закрытый транспорт (egress_type=ay). Клиент создаёт свой tun, и трафик в
+# него требует SNAT в адрес клиента: сервер AY ищет сессию по внутреннему адресу
+# назначения, а без SNAT видит адрес LAN-клиента и молча дропает ответы.
+# AY_MARK — метка собственного UDP-сокета клиента: его пакеты не должны уходить
+# в тот же туннель (иначе петля).
+AY_MODE=${SUSANIN_AY:-}
+AY_MARK=${SUSANIN_AY_MARK:-0x2}
+AY_MTU=${SUSANIN_AY_MTU:-1200}
+AY_IFACE=${SUSANIN_AY_IFACE:-}
+AY_TUN_IP=${SUSANIN_AY_TUN_IP:-}
+# Выше NDM-правил по src (~1170) и наших VPN-правил: метка сокета клиента
+# обязана уводить пакет в main (WAN), а не в таблицу туннеля.
+PRI_AY=${SUSANIN_PRI_AY:-1090}
+PRI_AY_DNS=${SUSANIN_PRI_AY_DNS:-1080}
+
 # Ручной запуск (не из демона): значения берём из конфига; из демона всё
 # приходит через окружение (backend.c) — поведение не меняется.
 CONF_FILE=${SUSANIN_CONF:-/opt/susanin/etc/susanin.conf}
@@ -139,6 +154,30 @@ if [ -z "${SUSANIN_UDP_RELAY_PORT:-}" ]; then
     if [ "$(cfg_val udp_relay 0)" = "1" ]; then
         UDP_RELAY_PORT=$(cfg_val udp_relay_port "$UDP_RELAY_PORT")
     fi
+fi
+# AY: режим берём из окружения (демон) или из конфига (ручной запуск).
+if [ -z "${SUSANIN_AY:-}" ]; then
+    if [ "$(cfg_val egress_type interface)" = "ay" ]; then
+        AY_MODE=1
+    else
+        AY_MODE=0
+    fi
+fi
+[ -n "${SUSANIN_AY_MARK:-}" ] || AY_MARK=$(cfg_val ay_mark "$AY_MARK")
+[ -n "$AY_IFACE" ] || AY_IFACE=$(cfg_val ay_iface "ay0")
+AY_IFACE=$(printf '%s' "$AY_IFACE" | tr -d ' \t')
+[ -n "$AY_TUN_IP" ] || AY_TUN_IP=$(cfg_val ay_tun_ip "10.23.0.2/24")
+AY_TUN_IP=$(printf '%s' "$AY_TUN_IP" | sed 's,/.*,,' | tr -d ' \t')
+# В AY-режиме egress_interface в конфиге намеренно остаётся прежним (nwg0/
+# пусто); все AY-правила и статус должны работать с реальным ay0.
+if [ "$AY_MODE" = "1" ] && [ -n "$AY_IFACE" ]; then
+    EGRESS="$AY_IFACE"
+fi
+[ -n "${SUSANIN_AY_MTU:-}" ]  || AY_MTU=$(cfg_val ay_mtu "$AY_MTU")
+# В AY-режиме MSS обязан быть меньше MTU туннеля, иначе крупные TCP-сегменты
+# молча дропаются на входе в tun. Если оператор не задал clamp — берём pmtu.
+if [ "$AY_MODE" = "1" ] && { [ -z "$MSS_CLAMP" ] || [ "$MSS_CLAMP" = "0" ]; }; then
+    MSS_CLAMP=pmtu
 fi
 
 CHAIN=SUSANIN
@@ -994,6 +1033,49 @@ proxy_egress_clean() {
     "$IPCMD" route flush table "$PROXY_TABLE" >/dev/null 2>&1 || true
 }
 
+# AY: обходная ip rule для UDP-сокета клиента + SNAT в tun + rp_filter/MTU.
+# Сервер AY ищет сессию по внутреннему адресу из HELLO, поэтому src LAN-клиента
+# обязан стать адресом клиента в туннеле (ay_tun_ip) — это делает MASQUERADE.
+# Без него ответы приходят с dst = LAN-клиент, сессия не находится, трафик
+# уходит в noroute. Обратный путь из tun идёт не через WAN, поэтому строгий
+# rp_filter на интерфейсе выключен точечно (только наш tun).
+ay_rules() {
+    [ "$AY_MODE" = "1" ] || return 0
+    "$IPCMD" rule del fwmark "$AY_MARK/$AY_MARK" priority "$PRI_AY" lookup main \
+        >/dev/null 2>&1 || true
+    if ! "$IPCMD" rule add fwmark "$AY_MARK/$AY_MARK" priority "$PRI_AY" lookup main \
+            2>/dev/null; then
+        say "ay: ip rule метки $AY_MARK не добавлен — сокет клиента может уйти в туннель"
+    fi
+    # DNS-форвардер и прочие локальные сокеты с source = ay_tun_ip должны
+    # уходить в tun: иначе bind(source) без SO_BINDTODEVICE уйдёт в main/WAN.
+    "$IPCMD" rule del from "$AY_TUN_IP" lookup "$TABLE" priority "$PRI_AY_DNS" \
+        >/dev/null 2>&1 || true
+    if ! "$IPCMD" rule add from "$AY_TUN_IP" lookup "$TABLE" priority "$PRI_AY_DNS" \
+            2>/dev/null; then
+        say "ay: ip rule from $AY_TUN_IP -> table $TABLE не добавлен — DNS через AY не пойдёт"
+    fi
+    "ipt" -t nat -D POSTROUTING -o "$EGRESS" -j MASQUERADE >/dev/null 2>&1 || true
+    if ! "ipt" -t nat -A POSTROUTING -o "$EGRESS" -j MASQUERADE 2>/dev/null; then
+        say "ay: MASQUERADE на $EGRESS не включился — ответы сервера не найдут сессию"
+    fi
+    if [ -w "/proc/sys/net/ipv4/conf/$EGRESS/rp_filter" ]; then
+        printf '0' > "/proc/sys/net/ipv4/conf/$EGRESS/rp_filter" 2>/dev/null || true
+    fi
+    "$IPCMD" link set "$EGRESS" mtu "$AY_MTU" up 2>/dev/null || true
+    say "ay: SNAT -> $EGRESS (mark=$AY_MARK mtu=$AY_MTU)"
+}
+
+ay_clean() {
+    [ "$AY_MODE" = "1" ] || return 0
+    "$IPCMD" rule del fwmark "$AY_MARK/$AY_MARK" priority "$PRI_AY" lookup main \
+        >/dev/null 2>&1 || true
+    "$IPCMD" rule del from "$AY_TUN_IP" lookup "$TABLE" priority "$PRI_AY_DNS" \
+        >/dev/null 2>&1 || true
+    "ipt" -t nat -D POSTROUTING -o "$EGRESS" -j MASQUERADE >/dev/null 2>&1 || true
+    say "ay: правила сняты"
+}
+
 command_up() {
     backup
     # P5 — первым и независимо от tproxy: если какая-то ступень ниже упадёт
@@ -1007,6 +1089,7 @@ command_up() {
     profiles_return_rules
     ensure_jump
     ensure_table
+    ay_rules
     forward_accept_rules
     dns_hijack_rules
     dns_lan_rules
@@ -1028,6 +1111,7 @@ command_down() {
     # живут до явного `datapath.sh sets-down` (uninstall/susanin down).
     iprule_fw_clean "$MARK_OK" "$PRI_OK"
     iprule_fw_clean "$MARK_TEST" "$PRI_TEST"
+    ay_clean || true
     "$IPCMD" rule del fwmark "$TPROXY_MARK" priority "$((PRI_OK + 2))" lookup "$TABLE" >/dev/null 2>&1 || true
     "$IPCMD" route del default dev "$EGRESS" table "$TABLE" >/dev/null 2>&1 || true
     "$IPCMD" route del local default dev lo table "$TABLE" >/dev/null 2>&1 || true
@@ -1157,6 +1241,14 @@ command_status() {
     elif [ -n "$MSS_CLAMP" ] && [ "$MSS_CLAMP" != "0" ]; then
         echo "mss_clamp: задан ($MSS_CLAMP), но цепочки $MSS_CHAIN нет"
     fi
+    if [ "$AY_MODE" = "1" ]; then
+        _as=$("ipt" -t nat -S POSTROUTING 2>/dev/null | grep -cF -- "-o $EGRESS -j MASQUERADE" || true)
+        _ar=$("$IPCMD" rule show 2>/dev/null | grep -c "fwmark $AY_MARK/$AY_MARK" || true)
+        _al=$("$IPCMD" link show "$EGRESS" 2>/dev/null | grep -cE 'state (UP|UNKNOWN)' || true)
+        echo "ay: on (dev=$EGRESS mtu=$AY_MTU mark=$AY_MARK snat=${_as:-0} ip_rule=${_ar:-0} up=${_al:-0})"
+    else
+        echo "ay: off"
+    fi
 }
 
 command_egress() {
@@ -1164,6 +1256,16 @@ command_egress() {
     [ -n "$iface" ] || { echo "usage: $0 egress <iface>" >&2; exit 2; }
     if [ "${TPROXY_PORT:-0}" -gt 0 ] 2>/dev/null; then
         say "tproxy mode: egress switch ignored (table=$TABLE stays local)"
+        return 0
+    fi
+    if [ "$AY_MODE" = "1" ]; then
+        # Снимаем SNAT/метку со старого интерфейса и ставим на новый: AY-клиент
+        # может пересоздать tun с другим именем.
+        ay_clean || true
+        EGRESS="$iface"
+        "$IPCMD" route replace default dev "$iface" table "$TABLE"
+        ay_rules
+        say "egress -> $iface (table=$TABLE, ay)"
         return 0
     fi
     "$IPCMD" route del default table "$TABLE" >/dev/null 2>&1 || true

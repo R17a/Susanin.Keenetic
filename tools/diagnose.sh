@@ -800,6 +800,35 @@ echo "  - поймать реальный хост: tcpdump -i br0 -n 'host <IP-
 echo "  - проверка заворота: grep '<IP-приставки>' /proc/net/nf_conntrack | grep sport=12345"
 
 # ------------------------------------------------------------- рекомендации
+sec "AY (закрытый транспорт)"
+_ay_type=$(cfg egress_type)
+_ay_srv=$(cfg ay_server)
+_ay_if=$(cfg ay_iface)
+_ay_tun=$(cfg ay_tun_ip)
+[ -n "$_ay_if" ] || _ay_if=ay0
+echo "egress_type=${_ay_type:-?} ay_server=${_ay_srv:-<пусто>} iface=$_ay_if tun_ip=${_ay_tun:-?}"
+if [ -f /opt/susanin/var/ay.status ]; then
+    echo "status: $(cat /opt/susanin/var/ay.status 2>/dev/null)"
+else
+    echo "status: снимка нет (клиент ни разу не применялся)"
+fi
+[ -r /opt/susanin/var/ay.desired ] && echo "desired: $(cat /opt/susanin/var/ay.desired 2>/dev/null)"
+if [ "$_ay_type" = "ay" ]; then
+    [ -e /dev/net/tun ] || rec "egress_type=ay, но /dev/net/tun отсутствует: выполните 'modprobe tun' (на части прошивок — вручную)."
+    [ -n "$_ay_srv" ] || rec "egress_type=ay без ay_server: сессия не поднимется, трафик останется прямым."
+    if command -v ip >/dev/null 2>&1; then
+        if ! ip link show "$_ay_if" >/dev/null 2>&1; then
+            rec "AY: интерфейса $_ay_if нет — нажмите «Подключиться» в панели или смотрите журнал (нет tun / имя сервера не разрешилось)."
+        fi
+    fi
+    _ay_snat=$(iptables -w -t nat -S POSTROUTING 2>/dev/null | grep -c -- "-o $_ay_if -j MASQUERADE" || true)
+    if [ "${_ay_snat:-0}" -eq 0 ]; then
+        rec "AY: на $_ay_if нет MASQUERADE — сервер не найдёт сессию по адресу, ответы уйдут в noroute. Нужен restart/reload датаплейна."
+    fi
+    _ay_rule=$(ip rule show 2>/dev/null | grep -c 'lookup main' || true)
+    echo "ip rule: с 'lookup main' = ${_ay_rule:-0} (метка сокета клиента должна обходить туннель)"
+fi
+
 sec "Рекомендации"
 if [ -n "$RECS" ]; then
     printf '%s\n' "$RECS"

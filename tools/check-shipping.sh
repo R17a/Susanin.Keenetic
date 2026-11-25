@@ -36,7 +36,7 @@ grep -vE '^[[:space:]]*(#|$)' "$MAN" > "$LIST"
 while read -r cls src; do
     [ -n "${src:-}" ] || continue
     case "$cls" in
-        tool|init|doc|share|cfg|www|root) ;;
+        tool|init|doc|share|cfg|www|ayserver|ndmhook|root) ;;
         *) fail "неизвестный класс '$cls' у '$src'"; continue ;;
     esac
     if [ ! -e "$SRC/$src" ]; then
@@ -92,6 +92,8 @@ if [ "$CHK_IPK" = 1 ]; then
                 share) p="opt/susanin/share/$(basename "$src")" ;;
                 cfg)   p="opt/susanin/share/susanin.conf.example" ;;
                 www)   p="opt/susanin/www/index.html" ;;
+                ayserver) p="opt/susanin/ay-server" ;;
+                ndmhook) p="opt/etc/ndm/netfilter.d/$(basename "$src")" ;;
                 root)  continue ;;
                 *) continue ;;
             esac

@@ -6,14 +6,18 @@ BINDIR = $(PREFIX)/susanin/bin
 CONFDIR = $(PREFIX)/susanin/etc
 VARDIR = $(PREFIX)/susanin/var
 
+# Закрытый транспорт AY: исходники живут в проекте Susanin.Keenetic.AY и кладутся
+# в src/ay_transport_private.c сборщиком (tools/wsl-build.sh). Без них — заглушка.
+AY_TRANSPORT = $(if $(wildcard src/ay_transport_private.c),src/ay_transport_private.c,src/ay_transport_stub.c)
+
 SRCS = src/main.c src/config.c src/discover.c src/conntrack.c src/state.c \
        src/backend.c src/classifier.c src/health.c src/engine.c src/log.c src/ops.c \
        src/vpn_always.c src/vpn_never.c src/web.c src/web_choices.c \
-       src/udp_relay.c src/cdn.c src/dns_sniff.c src/profiles.c src/release.c src/vpin.c src/entryparse.c src/snisniff.c src/lang.c src/lang_catalog.c src/dns_lan.c src/ops_dnsprobe.c
+       src/udp_relay.c src/cdn.c src/dns_sniff.c src/profiles.c src/release.c src/vpin.c src/entryparse.c src/snisniff.c src/lang.c src/lang_catalog.c src/dns_lan.c src/ops_dnsprobe.c src/ay_client.c $(AY_TRANSPORT)
 OBJS = $(SRCS:.c=.o)
 
 TARGET = susanin-agent
-TESTS = tests/test_conntrack tests/test_config tests/test_ops tests/test_web_list tests/test_web_choices tests/test_state tests/test_backend_value tests/test_backend_lock tests/test_classifier_key tests/test_classifier_media tests/test_classifier_synfail tests/test_classifier_stall tests/test_config_sync tests/test_dns_sniff_stats tests/test_socks_timeout tests/test_web_token tests/test_release tests/test_vpin tests/test_entryparse tests/test_snisniff tests/test_va_soft tests/test_log_level tests/test_lang tests/test_dns_lan
+TESTS = tests/test_conntrack tests/test_config tests/test_ops tests/test_web_list tests/test_web_choices tests/test_state tests/test_backend_value tests/test_backend_lock tests/test_classifier_key tests/test_classifier_media tests/test_classifier_synfail tests/test_classifier_stall tests/test_config_sync tests/test_dns_sniff_stats tests/test_socks_timeout tests/test_web_token tests/test_release tests/test_vpin tests/test_entryparse tests/test_snisniff tests/test_va_soft tests/test_log_level tests/test_lang tests/test_dns_lan tests/test_ay
 SAMPLES = testdata/nf_conntrack.samples
 # Объекты для тестов, которые включают .c-файл в свой TU (тогда его .o линковать нельзя).
 TEST_OBJS = $(filter-out src/main.o,$(OBJS))
@@ -74,6 +78,7 @@ test: all $(TESTS)
 	./tests/test_log_level
 	./tests/test_lang
 	./tests/test_dns_lan
+	./tests/test_ay
 	sh tests/test-egress-failover.sh
 	sh tests/test-installer-sync.sh
 	sh tests/test-cfg-spaces.sh
@@ -93,6 +98,13 @@ tests/test_entryparse: tests/test_entryparse.c src/entryparse.c src/entryparse.h
 # ни сети, ни конфига, поэтому линкуем только его.
 tests/test_dns_lan: tests/test_dns_lan.c src/dns_lan.h src/log.c src/log.h src/config.h
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_dns_lan.c src/log.c src/lang.c src/lang_catalog.c
+
+# AY: заглушка закрытого транспорта + разбор ay-ключей. ay_client.c тянет
+# config/log/lang и pthread, поэтому линкуем их явно (в публичной сборке
+# вместо закрытого транспорта — src/ay_transport_stub.c).
+tests/test_ay: tests/test_ay.c src/config.c src/log.c src/lang.c src/lang_catalog.c src/ay_client.c src/ay_transport_stub.c $(HDRS)
+	$(CC) $(CFLAGS) -Isrc -pthread -o $@ tests/test_ay.c src/config.c src/log.c \
+		src/lang.c src/lang_catalog.c src/ay_client.c src/ay_transport_stub.c
 
 tests/test_lang: tests/test_lang.c src/lang.c src/lang_catalog.c src/log.c src/lang.h src/log.h
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_lang.c src/lang.c src/lang_catalog.c src/log.c

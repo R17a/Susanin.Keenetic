@@ -66,8 +66,16 @@
         { title: 'Тоннель', fields: [
           f('egress_interface', 'Интерфейс(ы) тоннеля', 'через запятую; порядок = приоритет фейловера — перетаскивайте чипы или ← / →', 'text', { kind: 'ifacelist' }),
           f('egress_address', 'Адрес(а) тоннеля', 'по индексу совпадает с интерфейсами (источник для health-проб)', 'text', { kind: 'iplist' }),
-          f('egress_type', 'Тип egress', '', 'select', { options: ['interface', 'tproxy'] }),
+          f('egress_type', 'Тип egress', '', 'select', { options: [
+            'interface', 'tproxy', { value: 'ay', label: 'AY (Susanin.Keenetic.AY)' }
+          ] }),
           f('tproxy_port', 'Порт локального Xray', 'только для egress_type=tproxy', 'number', { kind: 'int' })
+        ]},
+        /* Закрытый VPN-транспорт: группа в рамке, со своим блоком статуса и
+         * кнопкой подключения (см. раздел AY ниже). */
+        { title: 'Susanin.Keenetic.AY', ay: true, bordered: true, fields: [
+          f('ay_server', 'Сервер (адрес/имя)', 'адрес или имя сервера AY; порт можно указать как host:5004 (по умолчанию 5004)', 'text'),
+          f('ay_key', 'Ключ', 'как на сервере; пусто = не менять сохранённый', 'password')
         ]},
         { title: 'UDP-релей (для tproxy/XRay)', fields: [
           f('udp_relay', 'UDP-релей включён', 'нужен только при egress_type=tproxy', 'bool'),
@@ -973,14 +981,20 @@
         sel.appendChild(placeholderOpt);
         /* Ключа нет — оставляем выбор доступным: при сохранении он будет создан. */
       }
+      /* Вариант — строка или {value,label}: в конфиг уходит value, в списке
+       * показывается label (AY: значение 'ay', подпись человекочитаемая). */
+      var optValues = [];
       (fld.options || []).forEach(function (opt) {
+        var ov = (opt && typeof opt === 'object') ? opt.value : opt;
+        var ol = (opt && typeof opt === 'object') ? (opt.label || opt.value) : opt;
+        optValues.push(ov);
         var o = document.createElement('option');
-        o.value = opt;
-        o.textContent = opt;
-        if (present && opt === val) o.selected = true;
+        o.value = ov;
+        o.textContent = ol;
+        if (present && ov === val) o.selected = true;
         sel.appendChild(o);
       });
-      if (present && (fld.options || []).indexOf(val) < 0) {
+      if (present && optValues.indexOf(val) < 0) {
         var custom = document.createElement('option');
         custom.value = val;
         custom.textContent = T('cfg.select.notInList', '{value} (нет в списке)', { value: val });
@@ -1003,7 +1017,15 @@
       var inp = document.createElement('input');
       inp.type = fld.type === 'password' ? 'password' : (fld.type === 'number' ? 'number' : 'text');
       inp.dataset.key = fld.key;
-      if (val) inp.value = val;
+      if (fld.key === 'ay_key') {
+        /* Секрет не отдаётся (ay_key в GET всегда пустой) — значение никогда
+         * не подставляем, только подсказываем, задан ли ключ в конфиге. */
+        inp.value = '';
+        inp.autocomplete = 'new-password';
+        inp.placeholder = ayKeySet
+          ? T('cfg.ay_key.phSet', '(задан — оставьте пустым, чтобы не менять)')
+          : T('cfg.ay_key.phEmpty', '(не задан)');
+      } else if (val) inp.value = val;
       else if (!present && fld.def) inp.value = fld.def;
       else inp.placeholder = present
         ? T('cfg.inp.empty', '(пусто)')
@@ -1028,7 +1050,9 @@
       /* Поле без ключа в файле оставляем доступным: сервер создаст ключ, если
        * значение не пустое (пустые строки в конфиг не дописываем). */
       if (fld.kind || fld.noZero) attachValidation(inp, fld);
-      if (!present) wrap.appendChild(missingTag());
+      /* ay_key — write-only: его отсутствие в файле уже показано плейсхолдером
+       * «(не задан)», отдельная пометка «нет в файле» только мешает. */
+      if (!present && fld.key !== 'ay_key') wrap.appendChild(missingTag());
     }
 
     return wrap;
@@ -1134,6 +1158,296 @@
     });
   }
 
+  /* --- Susanin.Keenetic.AY (закрытый VPN-транспорт) ---------------------
+   *
+   * Блок рисуется в группе с флагом ay (VPN / Egress → сразу после «Тоннеля»).
+   * Статус: GET /api/ay -> state/transport/error; действия: POST /api/ay
+   * (state=connect|disconnect). Пока открыта вкладка, статус опрашивается раз
+   * в 2 с; таймер снимается при перерисовке панели и смене вкладки
+   * (renderPane -> ayStopPoll). Любой fetch заканчивается .catch: без конфига
+   * и при 401/403 блок просто остаётся с прочерком, панель не падает. */
+
+  var AY_URL = '/api/ay';
+  var AY_POLL_MS = 2000;
+  var ayTimer = null;      /* id таймера опроса статуса */
+  var aySeq = 0;           /* «поколение» отрисовки: старые ответы не применяем */
+  var ayView = null;       /* элементы текущего блока статуса */
+  var ayStatus = null;     /* последний ответ GET /api/ay */
+  var ayBusy = false;      /* запрос connect/disconnect в полёте */
+  var ayBusyAction = '';
+  var ayErrText = '';      /* ошибка последнего действия (в блоке под кнопкой) */
+  var ayKeySet = false;    /* ay_key_set из GET /api/config */
+
+  function ayTransport(st) { return !!(st && Number(st.transport)); }
+
+  function ayStopPoll() {
+    if (ayTimer !== null) { window.clearTimeout(ayTimer); ayTimer = null; }
+    aySeq++;               /* ответы ранее запущенных запросов уже не нужны */
+    ayView = null;
+  }
+
+  function aySchedule() {
+    if (!ayView || ayTimer !== null) return;
+    ayTimer = window.setTimeout(function () {
+      ayTimer = null;
+      ayRefresh().then(aySchedule);
+    }, AY_POLL_MS);
+  }
+
+  function ayStartPoll() {
+    if (!ayView) return;
+    ayRefresh();
+    aySchedule();
+  }
+
+  /* Общая обработка неуспешного ответа: 401/403 — понятные подсказки, иначе
+   * текст из JSON/тела ответа (как в saveTab). */
+  function ayFailResponse(r) {
+    if (r.status === 403) {
+      return Promise.reject(new Error(T('err.readonly', 'панель только для чтения: задайте токен — ' +
+        'susanin-agent config set web_token <секрет>, затем susanin restart')));
+    }
+    if (r.status === 401) {
+      return Promise.reject(new Error(T('err.token', 'нужен токен (обновите страницу с ?token=…)')));
+    }
+    return r.text().then(function (t) {
+      var msg = (t || '').trim();
+      try { var j = JSON.parse(msg); if (j && j.error) msg = j.error; } catch (e) {}
+      throw new Error(msg || ('HTTP ' + r.status));
+    });
+  }
+
+  function ayRefresh() {
+    var seq = aySeq;
+    var view = ayView;
+    if (!view) return Promise.resolve();
+    return fetch(AY_URL, { cache: 'no-store', headers: authHeaders() }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (st) {
+      if (seq !== aySeq || ayView !== view) return;   /* панель перерисована */
+      ayApply(st);
+    }).catch(function () {
+      if (seq !== aySeq || ayView !== view) return;
+      if (!ayStatus) ayApply(null);   /* 401/403/сеть: прочерк вместо статуса */
+    });
+  }
+
+  function ayStateLabel(state) {
+    switch (state) {
+      case 'connected': return T('cfg.ay.state.connected', 'подключено');
+      case 'connecting': return T('cfg.ay.state.connecting', 'подключение…');
+      case 'offline': return T('cfg.ay.state.offline', 'нет связи');
+      case 'stopped': return T('cfg.ay.state.stopped', 'остановлен');
+      case 'disabled': return T('cfg.ay.state.disabled', 'выключен');
+    }
+    return state || '—';
+  }
+
+  /* Цвет точки — как у индикатора SUSANIN: зелёная/жёлтая/красная, серая для
+   * остановленного/неизвестного состояния. */
+  function ayDotClass(state) {
+    if (state === 'connected') return 'dot ok';
+    if (state === 'connecting') return 'dot warn';
+    if (state === 'offline') return 'dot err';
+    return 'dot';
+  }
+
+  function ayApply(st) {
+    var v = ayView;
+    if (!v) return;
+    ayStatus = st;
+    var state = (st && st.state) ? String(st.state) : '';
+    var err = ayErrText || (st && st.error ? String(st.error) : '');
+
+    if (!st) {
+      /* Статус ещё не прочитан (или API недоступен) — не врём про транспорт. */
+      v.dot.className = 'dot';
+      v.stateEl.textContent = '—';
+      v.btn.textContent = (ayBusy && ayBusyAction === 'connect')
+        ? T('cfg.ay.connecting', 'Подключение…')
+        : T('cfg.ay.connect', 'Подключиться');
+      v.btn.disabled = ayBusy;
+    } else if (!ayTransport(st)) {
+      /* Сборка без закрытого транспорта: действие невозможно. */
+      v.dot.className = 'dot';
+      v.stateEl.textContent = T('cfg.ay.noTransport', 'транспорт не входит в сборку');
+      v.btn.textContent = T('cfg.ay.noTransport', 'транспорт не входит в сборку');
+      v.btn.disabled = true;
+    } else {
+      v.dot.className = ayDotClass(state);
+      v.stateEl.textContent = ayStateLabel(state);
+      if (ayBusy && ayBusyAction === 'connect') {
+        v.btn.textContent = T('cfg.ay.connecting', 'Подключение…');
+      } else {
+        v.btn.textContent = (state === 'connected' || state === 'connecting')
+          ? T('cfg.ay.disconnect', 'Отключиться')
+          : T('cfg.ay.connect', 'Подключиться');
+      }
+      v.btn.disabled = ayBusy;
+    }
+
+    if (err) {
+      v.err.textContent = T('cfg.ay.error', 'ошибка: {err}', { err: err });
+      v.err.hidden = false;
+    } else {
+      v.err.textContent = '';
+      v.err.hidden = true;
+    }
+  }
+
+  /* Разметка блока: подсказка, строка статуса (.dot + текст), кнопка и мелкая
+   * строка ошибки. Ссылки на элементы лежат в ayView — их обновляет ayApply;
+   * при перерисовке панели ayView сбрасывается (renderPane -> ayStopPoll). */
+  function renderAyBlock() {
+    var box = document.createElement('div');
+    box.className = 'cfg-ay';
+
+    var tip = document.createElement('div');
+    tip.className = 'cfg-ay-tip muted';
+    tip.textContent = T('cfg.ay.tip',
+      'Закрытый VPN-транспорт: адрес сервера и ключ сохраняются при подключении, отдельное «Сохранить раздел» не нужно.');
+    box.appendChild(tip);
+
+    var bar = document.createElement('div');
+    bar.className = 'cfg-ay-bar';
+
+    var stat = document.createElement('div');
+    stat.className = 'cfg-ay-status';
+    var dot = document.createElement('span');
+    dot.className = 'dot';
+    var stateEl = document.createElement('span');
+    stateEl.className = 'cfg-ay-state';
+    stateEl.textContent = '—';
+    stat.appendChild(dot);
+    stat.appendChild(stateEl);
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-sm cfg-ay-btn';
+    btn.textContent = T('cfg.ay.connect', 'Подключиться');
+    btn.onclick = ayRun;
+
+    bar.appendChild(stat);
+    bar.appendChild(btn);
+
+    var err = document.createElement('div');
+    err.className = 'cfg-ay-err err';
+    err.hidden = true;
+
+    box.appendChild(bar);
+    box.appendChild(err);
+
+    ayView = { root: box, dot: dot, stateEl: stateEl, btn: btn, err: err };
+    return box;
+  }
+
+  /* Поля берём из DOM: ay_server и ay_key — единственные с такими ключами. */
+  function ayInputs() {
+    var srv = body.querySelector('[data-key="ay_server"]');
+    var key = body.querySelector('[data-key="ay_key"]');
+    return {
+      server: srv ? String(srv.value || '').trim() : '',
+      key: key ? String(key.value || '') : '',
+      keyEl: key
+    };
+  }
+
+  function aySetBusy(action) {
+    ayBusy = !!action;
+    ayBusyAction = action || '';
+    ayApply(ayStatus);
+  }
+
+  function ayFail(e) {
+    ayErrText = (e && e.message) ? e.message : T('err.unknown', 'ошибка');
+    ayApply(ayStatus);
+    toast(T('cfg.ay.toast.fail', 'Ошибка: {err}', { err: ayErrText }), false);
+  }
+
+  function ayPostState(state) {
+    var b = new URLSearchParams();
+    b.append('state', state);
+    return fetch(AY_URL, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/x-www-form-urlencoded' }),
+      body: b.toString()
+    }).then(function (r) {
+      if (!r.ok) return ayFailResponse(r);
+      return r.json();
+    }).then(function (res) {
+      if (res && res.ok === false) throw new Error((res && res.error) || T('err.unknown', 'ошибка'));
+      return res;
+    });
+  }
+
+  function aySaveServer(pairs) {
+    var b = new URLSearchParams();
+    pairs.forEach(function (p) { b.append(p[0], p[1]); });
+    return fetch(API_URL, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/x-www-form-urlencoded' }),
+      body: b.toString()
+    }).then(function (r) {
+      if (!r.ok) return ayFailResponse(r);
+      return r.json();
+    }).then(function (res) {
+      if (res && res.ok === false) throw new Error((res && res.error) || T('err.unknown', 'ошибка'));
+      if (res && res.skipped && res.skipped.length) {
+        throw new Error(T('cfg.save.skipped', 'Сохранено, но не приняты ключи: {keys}',
+                          { keys: res.skipped.join(', ') }));
+      }
+      return res;
+    });
+  }
+
+  function ayConnect() {
+    var inp = ayInputs();
+    var pairs = [];
+    /* Пустые поля не отправляем: пустой ay_key = «не менять сохранённый»,
+     * пустой ay_server не должен затирать уже настроенный сервер. */
+    if (inp.server) pairs.push(['ay_server', inp.server]);
+    if (inp.key) pairs.push(['ay_key', inp.key]);
+
+    ayErrText = '';
+    aySetBusy('connect');
+    var saved = pairs.length ? aySaveServer(pairs) : Promise.resolve(null);
+    saved.then(function () {
+      return ayPostState('connect');
+    }).then(function () {
+      /* Ключ сохранён сервером и больше не отдаётся: чистим поле, чтобы
+       * пустое значение означало «не менять». */
+      if (inp.key && inp.keyEl) {
+        ayKeySet = true;
+        inp.keyEl.value = '';
+        inp.keyEl.placeholder = T('cfg.ay_key.phSet', '(задан — оставьте пустым, чтобы не менять)');
+      }
+      toast(T('cfg.ay.toast.connect', 'Подключение запущено'), true);
+    }).catch(ayFail).then(function () {
+      aySetBusy('');
+      ayRefresh();
+    });
+  }
+
+  function ayDisconnect() {
+    ayErrText = '';
+    aySetBusy('disconnect');
+    ayPostState('disconnect').then(function () {
+      toast(T('cfg.ay.toast.disconnect', 'Отключение запущено'), true);
+    }).catch(ayFail).then(function () {
+      aySetBusy('');
+      ayRefresh();
+    });
+  }
+
+  function ayRun() {
+    if (ayBusy) return;
+    if (ayStatus && !ayTransport(ayStatus)) return;   /* транспорт не входит в сборку */
+    var state = ayStatus && ayStatus.state;
+    if (state === 'connected' || state === 'connecting') ayDisconnect();
+    else ayConnect();
+  }
+
   /* Закладка со своим готовым блоком (view): блок живёт в index.html, при
    * смене закладки возвращается в скрытый контейнер, чтобы не потерять обработчики. */
   var statusEl = $('view-status');
@@ -1216,7 +1530,7 @@
 
   function renderGroup(g, tab) {
     var group = document.createElement('div');
-    group.className = 'cfg-group';
+    group.className = 'cfg-group' + (g.bordered ? ' cfg-group--ay' : '');
     if (g.title) {
       var gt = document.createElement('div');
       gt.className = 'cfg-group-title';
@@ -1224,12 +1538,16 @@
       group.appendChild(gt);
     }
     g.fields.forEach(function (fld) { group.appendChild(fieldRow(fld)); });
+    /* Группа закрытого транспорта: после полей — статус, кнопка, ошибка. */
+    if (g.ay) group.appendChild(renderAyBlock());
     return group;
   }
 
   function tabLabel(tab) { return T('tab.' + tab.id + '.label', tab.label); }
 
   function renderPane(tab) {
+    /* Снимаем опрос статуса AY: старый блок сейчас исчезнет вместе с body. */
+    ayStopPoll();
     if (statusEl) { statusEl.hidden = true; statusHome.appendChild(statusEl); }
     body.innerHTML = '';
 
@@ -1315,6 +1633,10 @@
     body.appendChild(save);
 
     takeSnapshot();
+
+    /* На вкладке с блоком AY — опрос статуса раз в 2 с (до перерисовки/смены
+     * вкладки; таймер снимает ayStopPoll в начале этого же renderPane). */
+    ayStartPoll();
   }
 
   /* --- «грязная» форма: перед сменой языка предупреждаем о потере ввода --- */
@@ -1383,9 +1705,11 @@
     }).then(function (data) {
       confValues = data.params || {};
       tokenSet = !!data.token_set;
+      ayKeySet = !!data.ay_key_set;
     }).catch(function () {
       confValues = null;
       tokenSet = false;
+      ayKeySet = false;
     }).then(function () {
       selectTab(activeTabId);
     });

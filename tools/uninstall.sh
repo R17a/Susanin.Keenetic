@@ -33,6 +33,10 @@ if [ -f /opt/etc/init.d/S95xray-guard ]; then
 fi
 [ -f "$INITD" ] && rm -f "$INITD" && say "removed $INITD"
 
+# Хук NDM ставится вне /opt/susanin — убираем отдельно.
+NDMHOOK=/opt/etc/ndm/netfilter.d/60-susanin-forward.sh
+[ -f "$NDMHOOK" ] && rm -f "$NDMHOOK" && say "removed $NDMHOOK"
+
 # Симлинк короткого вызова убираем только если он ведёт на НАШ скрипт.
 if [ -L /opt/bin/susanin ]; then
     _ln=$(readlink /opt/bin/susanin 2>/dev/null || true)

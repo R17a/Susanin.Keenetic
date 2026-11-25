@@ -8,12 +8,16 @@
  *   GET /api/choices  — «известные системе» значения для панели (интерфейсы,
  *                       подсети, таблицы, метки, файлы списков профилей)
  *   POST /api/config  — правка существующих ключей (form-urlencoded)
+ *   GET  /api/ay      — состояние клиента AY (connected/connecting/offline)
+ *   POST /api/ay      — state=connect|disconnect (кнопка «Подключиться»)
  *   GET /api/list?name=vpn_always|vpn_never — содержимое списка (read-only)
  *   GET /<path>       — статика из SUSANIN_WWW_ROOT
  * По умолчанию Web выключен (web_enable=0). Не трогаем чужие конфиги/порты. */
 
 #define _GNU_SOURCE
 #include "web.h"
+#include "ay_client.h"
+#include "ay_transport.h"
 #include "ops.h"
 #include "log.h"
 #include "web_choices.h"
@@ -770,8 +774,14 @@ static int key_creatable(const char *k)
     return 1;
 }
 
+/* Секрет AY в панель не отдаём: пустое значение = «оставить как есть»,
+ * как у web_token. */
 static int config_value_ok(const char *k, const char *v)
 {
+    if (!strcmp(k, "ay_key") && strlen(v) > 127)
+        return 0;
+    if (!strcmp(k, "ay_server") && strlen(v) > 127)
+        return 0;
     if (!strcmp(k, "web_token")) {
         /* Токен теперь правится через панель. Значение — write-only: GET его не
          * отдаёт. Пусто = доступ без пароля (только LAN). */
@@ -1334,10 +1344,93 @@ static void serve_choices(int fd, const susanin_config *cfg, int head_only)
     free(jb);
 }
 
+/* GET /api/ay — состояние клиента AY. Агент и веб — разные процессы, поэтому
+ * читаем снимок, который пишет движок; нет снимка — собираем по конфигу. */
+static void serve_ay_status(int fd, const susanin_config *cfg, int head_only)
+{
+    char buf[1024];
+    FILE *f = fopen(AY_STATUS_PATH, "r");
+    size_t n = 0;
+
+    if (f != NULL) {
+        n = fread(buf, 1, sizeof buf - 1, f);
+        fclose(f);
+        buf[n] = '\0';
+    }
+    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r' || buf[n - 1] == ' '))
+        buf[--n] = '\0';
+    if (n == 0 || buf[0] != '{') {
+        char jb[1024];
+
+        if (ay_client_status_json(cfg, jb, sizeof jb) != 0)
+            snprintf(jb, sizeof jb, "{\"state\":\"disabled\"}");
+        reply(fd, 200, "application/json; charset=utf-8", jb, strlen(jb), head_only);
+        return;
+    }
+    reply(fd, 200, "application/json; charset=utf-8", buf, n, head_only);
+}
+
+/* Записать «Подключиться/Отключиться». Агент прочитает файл на SIGHUP. */
+static int ay_write_desired(int on)
+{
+    char tmp[128];
+    FILE *f;
+
+    (void)mkdir("/opt/susanin/var", 0755);
+    snprintf(tmp, sizeof tmp, "%s.tmp", AY_DESIRED_PATH);
+    f = fopen(tmp, "w");
+    if (f == NULL)
+        return -1;
+    fprintf(f, "%d\n", on ? 1 : 0);
+    if (fclose(f) != 0) {
+        remove(tmp);
+        return -1;
+    }
+    if (rename(tmp, AY_DESIRED_PATH) != 0) {
+        remove(tmp);
+        return -1;
+    }
+    return 0;
+}
+
 static void handle_action(int fd, const susanin_config *cfg, const char *target,
                           const char *query, const char *body)
 {
     char a[CFG_PATH_MAX], b[128], err[160];
+
+    if (!strcmp(target, "/api/ay")) {
+        char st[16] = "";
+        int on;
+
+        form_get(body, "state", st, sizeof st);
+        if (!strcmp(st, "connect"))
+            on = 1;
+        else if (!strcmp(st, "disconnect"))
+            on = 0;
+        else {
+            json_err(fd, "state=connect|disconnect");
+            return;
+        }
+        if (on && !ay_transport_available()) {
+            json_err(fd, "транспорт AY не входит в эту сборку");
+            return;
+        }
+        if (on && (!cfg->ay_server[0] || !cfg->ay_key[0])) {
+            json_err(fd, "сначала задайте сервер и ключ");
+            return;
+        }
+        if (ay_write_desired(on) != 0) {
+            json_err(fd, "не удалось записать var/ay.desired");
+            return;
+        }
+        if (signal_agent(SIGHUP, err, sizeof(err)) != 0) {
+            json_err(fd, err);
+            return;
+        }
+        json_ok(fd, on ? "\"action\":\"ay\",\"desired\":1"
+                       : "\"action\":\"ay\",\"desired\":0");
+        return;
+    }
 
     if (!strcmp(target, "/api/reset") || !strcmp(target, "/api/forget")) {
         if (!form_get(body, "ip", a, sizeof(a)) || !a[0]) { json_err(fd, "value required"); return; }
@@ -1362,7 +1455,10 @@ static void handle_action(int fd, const susanin_config *cfg, const char *target,
             size_t seg = amp ? (size_t)(amp - p) : strlen(p);
             char k[64], v[512];
             if (seg && pair_get(p, seg, k, sizeof(k), v, sizeof(v)) && k[0]) {
-                if (config_value_ok(k, v) &&
+                if (!strcmp(k, "ay_key") && !v[0]) {
+                    /* Пустое поле ключа = «не менять»: панель его не получает
+                     * (GET маскирует), поэтому пустое значение — не сброс. */
+                } else if (config_value_ok(k, v) &&
                     config_file_set(ops_default_conf_path(), k, v, key_creatable(k)) == 0) {
                     applied++;
                 } else {
@@ -1652,6 +1748,10 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
         return;
     }
 
+    if (!strcmp(target, "/api/ay")) {
+        serve_ay_status(fd, cfg, head_only);
+        return;
+    }
     if (!strcmp(target, "/api/status")) {
         char *jb = malloc(MAX_BODY);
         if (!jb) {

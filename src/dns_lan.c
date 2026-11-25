@@ -111,6 +111,7 @@ typedef struct {
     unsigned qtype;         /* тип запроса клиента — для журнала */
     int wait;               /* сколько байт ждём на текущей стадии */
     int up_try;             /* какой upstream пробуем (0..g_up_n-1) */
+    int tun_try;            /* сколько раз запрос уходил в туннель (AY) */
     int esc;                /* эскалация в туннель уже посчитана */
     int esc_sub;            /* эскалация из-за подмены (127.x/0.0.0.0), а не таймаута */
     unsigned char tbuf[1600];
@@ -142,6 +143,7 @@ static int g_mode = DL_VIA_DIRECT;
 static pthread_t g_thr;
 static int g_thr_on;
 static volatile sig_atomic_t g_thr_stop;
+static volatile time_t g_last_step;
 static int g_wake_rd = -1, g_wake_wr = -1;
 #define DL_THREAD_TICK_MS 50
 
@@ -231,6 +233,20 @@ static int dl_question(const unsigned char *m, int len, char *key, size_t kn,
     *qtype = (unsigned)((m[off + 1] << 8) | m[off + 2]);
     snprintf(key, kn, "%s|%u", name, *qtype);
     return 1;
+}
+
+/* Имя из запроса может содержать любые байты (RFC 1035 это разрешает): в
+ * журнал печатаем только печатные ASCII, остальное — точкой. Без этого
+ * «двоичный» QNAME попадал в лог нечитаемым мусором и пугал при разборе. */
+static void dl_name_fmt(char *out, size_t n, const char *name)
+{
+    size_t i;
+
+    if (n == 0)
+        return;
+    for (i = 0; i + 1 < n && name[i]; i++)
+        out[i] = (name[i] >= 0x20 && name[i] < 0x7f) ? name[i] : '.';
+    out[i] = '\0';
 }
 
 static int skip_name(const unsigned char *m, int len, int off)
@@ -681,7 +697,11 @@ static void dl_tcp_give_up(dl_pend *p)
                    "повтор=%d, активных=%d)",
           dead_stage, p->why, p->rcode, p->rerr, p->qtype, p->qlen,
           p->up_try + 1, g_up_n, p->first_stage, retry, g_tcp_active);
-    dl_warn("DNS через туннель не прошёл (%s, SOCKS-TCP)", p->name);
+    {
+        char nm[96];
+        dl_name_fmt(nm, sizeof(nm), p->name);
+        dl_warn("DNS через туннель не прошёл (%s, SOCKS-TCP)", nm);
+    }
     if (g_cfg->dns_lan_fallback) {
         dl_pend_send_direct(p);
     } else {
@@ -838,13 +858,20 @@ static int dl_iface_open(const susanin_config *cfg)
     char list[sizeof(cfg->egress_interface)];
     char *tok, *save = NULL;
     int fd;
+    int is_ay = !strcmp(cfg->egress_type, "ay");
 
     if (g_tun_fd >= 0) {
         close(g_tun_fd);
         g_tun_fd = -1;
         g_tun_name[0] = '\0';
     }
-    snprintf(list, sizeof(list), "%s", cfg->egress_interface);
+    /* AY: клиент поднимает собственный tun (ay0), а egress_interface в
+     * конфиге намеренно остаётся прежним (nwg0/пусто) — для DNS берём ay_iface. */
+    if (is_ay)
+        snprintf(list, sizeof(list), "%s",
+                 cfg->ay_iface[0] ? cfg->ay_iface : "ay0");
+    else
+        snprintf(list, sizeof(list), "%s", cfg->egress_interface);
     for (tok = strtok_r(list, ", \t", &save); tok; tok = strtok_r(NULL, ", \t", &save)) {
         if (!strcmp(tok, "tproxy") || !strcmp(tok, "xray"))
             continue;
@@ -852,10 +879,30 @@ static int dl_iface_open(const susanin_config *cfg)
         if (fd < 0)
             continue;
         dl_cloexec(fd);
-        if (setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, tok,
+        {
+            /* Без O_NONBLOCK dl_drain_tunnel() делает блокирующий recvfrom и
+             * вешает поток форвардера навсегда: watchdog его перезапускает,
+             * а dns_lan так и не тикает (queries=0). */
+            int fl = fcntl(fd, F_GETFL, 0);
+            if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) != 0) {
+                close(fd);
+                continue;
+            }
+        }
+        if (!is_ay &&
+            setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, tok,
                        (socklen_t)strlen(tok)) != 0) {
             close(fd);
             continue;
+        }
+        if (is_ay) {
+            /* AY: DNS идёт на резолвер сервера 10.23.0.1:53 внутри tun10.
+             * Маршрут 10.23.0.0/24 dev ay0 connected, поэтому source
+             * выбирается сам (10.23.0.2); ни SO_BINDTODEVICE, ни bind не нужны. */
+            g_tun_fd = fd;
+            snprintf(g_tun_name, sizeof(g_tun_name), "%s",
+                     cfg->ay_iface[0] ? cfg->ay_iface : "ay0");
+            return 0;
         }
         g_tun_fd = fd;
         snprintf(g_tun_name, sizeof(g_tun_name), "%s", tok);
@@ -1222,15 +1269,19 @@ static void dl_expire(void)
          * стадии. Без него запрос в очереди SOCKS мог жить до 20 с, а при
          * сбросе at_ms на неудаче — не истекать вовсе. */
         if (p->born_ms && now - p->born_ms > DL_T_HARD_MS) {
+            char nm[96];
             g_q_fail++;
+            dl_name_fmt(nm, sizeof(nm), p->name);
             dl_warn("запрос дольше %d мс — SERVFAIL клиенту (%s)",
-                    DL_T_HARD_MS, p->name);
+                    DL_T_HARD_MS, nm);
             dl_pend_fail(p, 2);
             continue;
         }
         if (p->state == 0 && age > DL_T_QUEUE_MS) {
+            char nm[96];
             g_q_fail++;
-            dl_warn("очередь к туннелю переполнена (%s)", p->name);
+            dl_name_fmt(nm, sizeof(nm), p->name);
+            dl_warn("очередь к туннелю переполнена (%s)", nm);
             dl_pend_fail(p, 2);
         } else if (p->state == 0 && age > DL_T_LOCAL_MS) {
             if (!p->esc) {
@@ -1245,18 +1296,29 @@ static void dl_expire(void)
             if (g_tcp_active < DL_MAX_TCP)
                 dl_pend_send_tunnel(p);
         } else if (p->state == 1 && age > DL_T_TUNNEL_MS) {
-            dl_tunnel_failed();
-            if (g_cfg->dns_lan_fallback)
-                dl_pend_send_direct(p);
-            else {
-                g_q_fail++;
-                dl_pend_fail(p, 2);
+            /* Один повтор в туннель до фолбэка: потеря одной датаграммы (а на
+             * мобильном/междугороднем канале это штатные 1–3 %) не должна
+             * отправлять запрос «напрямую», где в РФ для части домён ни ответа,
+             * ни адреса. Бюджет укладывается в жёсткий: 1200 + 1200 + 800. */
+            if (g_mode == DL_VIA_IFACE && p->tun_try < 1) {
+                p->tun_try++;
+                dl_pend_send_tunnel(p);
+            } else {
+                dl_tunnel_failed();
+                if (g_cfg->dns_lan_fallback)
+                    dl_pend_send_direct(p);
+                else {
+                    g_q_fail++;
+                    dl_pend_fail(p, 2);
+                }
             }
         } else if (p->state == 2 && age > DL_T_DIRECT_MS) {
+            char nm[96];
             g_q_fail++;
-            dl_warn("upstream не ответил (%s, %s)",
+            dl_name_fmt(nm, sizeof(nm), p->name);
+            dl_warn("прямой upstream не ответил (%s, %s)",
                     g_mode == DL_VIA_SOCKS ? "socks-tcp" :
-                    g_mode == DL_VIA_IFACE ? g_tun_name : "direct", p->name);
+                    g_mode == DL_VIA_IFACE ? g_tun_name : "direct", nm);
             dl_pend_fail(p, 2);
         } else if (p->state == 3 && age > DL_T_SOCKS_MS) {
             dl_tcp_give_up(p);
@@ -1295,6 +1357,16 @@ static void dl_parse_upstreams(const susanin_config *cfg)
         g_up[0].sin_port = g_up[1].sin_port = htons(53);
         g_up_n = 2;
     }
+    /* AY: единственный upstream — резолвер на стороне сервера (tun10,
+     * 10.23.0.1). Он ходит в 1.1.1.1/9.9.9.9 уже из VPS, поэтому ответы
+     * не подменяются провайдером. */
+    if (cfg && !strcmp(cfg->egress_type, "ay")) {
+        memset(&g_up[0], 0, sizeof g_up[0]);
+        g_up[0].sin_family = AF_INET;
+        g_up[0].sin_port = htons(53);
+        inet_pton(AF_INET, "10.23.0.1", &g_up[0].sin_addr);
+        g_up_n = 1;
+    }
 }
 
 int dns_lan_start(const susanin_config *cfg)
@@ -1310,14 +1382,18 @@ int dns_lan_start(const susanin_config *cfg)
     dl_parse_upstreams(cfg);
     if (!strcmp(cfg->egress_type, "tproxy"))
         g_mode = DL_VIA_SOCKS;
-    else if (cfg->egress_interface[0] && dl_iface_open(cfg) == 0)
+    else if ((cfg->egress_interface[0] || !strcmp(cfg->egress_type, "ay")) &&
+             dl_iface_open(cfg) == 0)
         g_mode = DL_VIA_IFACE;
     else {
+        const char *shown = !strcmp(cfg->egress_type, "ay")
+                            ? (cfg->ay_iface[0] ? cfg->ay_iface : "ay0")
+                            : cfg->egress_interface;
         g_mode = DL_VIA_DIRECT;
         slogf(SL_WARN, "dns_lan: туннеля нет (egress_type=%s, интерфейсы '%s') — "
               "DNS клиентов пойдёт напрямую, как и раньше",
               cfg->egress_type[0] ? cfg->egress_type : "(пусто)",
-              cfg->egress_interface);
+              shown);
     }
     g_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (g_fd < 0) {
@@ -1423,6 +1499,13 @@ int dns_lan_start(const susanin_config *cfg)
           g_mode == DL_VIA_SOCKS ? "SOCKS-Xray (DNS-over-TCP)" :
           g_mode == DL_VIA_IFACE ? g_tun_name : "напрямую (туннеля нет)",
           cfg->dns_lan_smart ? " (сначала локальный резолвер)" : "");
+    /* Первый снимок сразу: status не должен показывать состояние прошлого
+     * запуска до первого тика/потока. */
+    dns_lan_write_snapshot(cfg);
+    /* DNAT ставим сразу после bind: datapath up проверяет, что 5399 слушает
+     * именно агент, и при гонке старта правила не создаёт — DNS клиентов
+     * уходил в NDM (queries=0). */
+    backend_dns_lan_up(cfg);
     return 0;
 }
 
@@ -1439,6 +1522,7 @@ void dns_lan_stop(void)
                 /* труба переполнена — поток всё равно проснётся по таймауту */
             }
         }
+        pthread_cancel(g_thr);
         pthread_join(g_thr, NULL);
         g_thr_on = 0;
         if (g_wake_rd >= 0)
@@ -1499,6 +1583,28 @@ void dns_lan_reload(const susanin_config *cfg)
     }
 }
 
+/* AY-интерфейс появляется позже старта форвардера (асинхронный HELLO).
+ * Движок зовёт это раз в 5 с, пока сессия жива. Старт мог остаться в direct
+ * (ay0 ещё не было) или поток форвардера мог умереть — поэтому не просто
+ * переключаем режим, а перезапускаем форвардер уже с существующим ay0. */
+int dns_lan_ay_ensure(const susanin_config *cfg)
+{
+    if (!cfg || !cfg->dns_lan || strcmp(cfg->egress_type, "ay") != 0)
+        return -1;
+    if (g_fd < 0)
+        return -1;
+    if (g_mode == DL_VIA_IFACE)
+        return 0;
+    if (dl_iface_open(cfg) == 0) {
+        g_mode = DL_VIA_IFACE;
+        slogf(SL_INFO, "dns_lan: AY-резолвер 10.23.0.1 — DNS клиентов через туннель");
+        dns_lan_write_snapshot(cfg);
+        backend_dns_lan_up(cfg);
+        return 0;
+    }
+    return -1;
+}
+
 /* Никаких блокирующих ожиданий: только приём и продвижение по срокам. */
 /* Поток форвардера: свой poll на слушающем сокете, сокете локального
  * резолвера, обменах с SOCKS и трубе пробуждения. Шаг 50 мс — компромисс между
@@ -1512,6 +1618,7 @@ static void *dl_thread_main(void *arg)
         struct pollfd pf[2 + DNS_LAN_PEND];
         int n = 0, i, rc;
 
+        g_last_step = time(NULL);
         if (g_thr_stop)
             break;
         if (g_fd >= 0) {
@@ -1555,6 +1662,10 @@ static void *dl_thread_main(void *arg)
             }
         }
     }
+    /* Поток мог выйти по ошибке poll: возвращаем обслуживание движку, иначе
+     * g_thr_on=1 навсегда и dns_lan молчит (DNS клиентов — таймаут). */
+    g_thr_on = 0;
+    backend_set_yield_cb(dns_lan_poll);
     return NULL;
 }
 
@@ -1563,8 +1674,35 @@ static void *dl_thread_main(void *arg)
  * при старте. */
 static void dl_step(void)
 {
+    static time_t last_ay_try;
+    static time_t last_ay_fail;
+
     if (g_fd < 0 || !g_cfg || !g_cfg->dns_lan)
         return;
+    g_last_step = time(NULL);
+    /* AY поднимается асинхронно, позже старта dns_lan. Если старт застал
+     * «connecting», переключаемся на ay0, как только интерфейс появился; при
+     * исчезновении tun — обратно в direct, чтобы DNS не уходил в мёртвый tun.
+     * Состояние сессии здесь не читаем: интерфейс создаётся раньше ACK, а
+     * гонка с потоком AY давала ложный «direct». */
+    if (!strcmp(g_cfg->egress_type, "ay")) {
+        if (g_mode == DL_VIA_DIRECT) {
+            time_t now = time(NULL);
+            if (!last_ay_try || now - last_ay_try >= 5) {
+                last_ay_try = now;
+                if (dl_iface_open(g_cfg) == 0) {
+                    g_mode = DL_VIA_IFACE;
+                    slogf(SL_INFO, "dns_lan: AY-интерфейс %s появился — DNS через него",
+                          g_tun_name);
+                } else if (!last_ay_fail || now - last_ay_fail >= 60) {
+                    last_ay_fail = now;
+                    slogf(SL_WARN, "dns_lan: AY-интерфейс %s не открылся: %s",
+                          g_cfg->ay_iface[0] ? g_cfg->ay_iface : "ay0",
+                          strerror(errno));
+                }
+            }
+        }
+    }
     dl_drain_clients();
     dl_drain_local();
     dl_drain_tunnel();
@@ -1574,14 +1712,34 @@ static void dl_step(void)
 
 void dns_lan_poll(void)
 {
+    static time_t last_snap;
+
     if (g_thr_on)
         return;                 /* форвардер обслуживает свой поток */
     dl_step();
+    /* Снимок для status пишем и из движка: если поток умер/не создан,
+     * state-файл иначе остаётся от прошлого запуска (status врёт). */
+    if (g_cfg) {
+        time_t now = time(NULL);
+        if (!last_snap || now - last_snap >= 60) {
+            last_snap = now;
+            dns_lan_write_snapshot(g_cfg);
+        }
+    }
 }
 
 int dns_lan_threaded(void)
 {
     return g_thr_on;
+}
+
+int dns_lan_thread_stale(void)
+{
+    time_t last = g_last_step;
+
+    if (!g_thr_on || !last)
+        return 0;
+    return time(NULL) - last > 10;
 }
 
 /* Есть ли заявки на пин. Проверка без блокировки: это только подсказка движку,

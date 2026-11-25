@@ -17,6 +17,12 @@ int backend_dns_lan_down(const susanin_config *c)
     return 0;
 }
 
+int backend_dns_lan_up(const susanin_config *c)
+{
+    (void)c;
+    return 0;
+}
+
 /* Форвардер регистрирует у backend точку «отдать время» на время ожидания
  * внешних процессов. В тесте ждать нечего — заглушка. */
 void backend_set_yield_cb(void (*cb)(void))

@@ -2,6 +2,7 @@
 #include "config.h"
 #include "lang.h"
 
+#include <arpa/inet.h>
 #include <dirent.h>
 #include <errno.h>
 #include <limits.h>
@@ -113,6 +114,24 @@ void config_parse_egress(susanin_config *c)
     char buf[CFG_PATH_MAX], abuf[CFG_PATH_MAX];
     char *save = NULL, *asave = NULL, *tok, *atok;
     int i = 0;
+
+    /* AY: egress один и задан самим клиентом транспорта, а не интерфейсом
+     * системы. egress_interface в конфиге НЕ перезаписываем — он понадобится,
+     * если тип egress вернут на interface. */
+    if (!strcmp(c->egress_type, "ay")) {
+        const char *ifn = c->ay_iface[0] ? c->ay_iface : "ay0";
+        char ipbuf[sizeof(c->ay_tun_ip)];
+        char *slash;
+
+        copy_str(c->egress_list[0], sizeof(c->egress_list[0]), ifn);
+        snprintf(ipbuf, sizeof(ipbuf), "%s", c->ay_tun_ip);
+        slash = strchr(ipbuf, '/');
+        if (slash != NULL)
+            *slash = '\0';
+        copy_str(c->egress_addr[0], sizeof(c->egress_addr[0]), ipbuf);
+        c->n_egress = 1;
+        return;
+    }
 
     c->n_egress = 0;
     snprintf(buf, sizeof(buf), "%s", c->egress_interface);
@@ -273,6 +292,19 @@ void config_set_defaults(susanin_config *c)
     c->release_check_interval = 43200;
     snprintf(c->egress_type, sizeof(c->egress_type), "%s", "interface");
     c->tproxy_port = 12345;
+    /* AY: параметры по умолчанию совпадают с сервером из проекта AY
+     * (UDP/5004, tun 10.23.0.1/24, MTU 1200). Пустые сервер/ключ = выключено. */
+    c->ay_server[0] = '\0';
+    c->ay_key[0] = '\0';
+    /* 5004 — порт по умолчанию.
+     * Порт можно задать и в ay_server как host:port (панель не имеет
+     * отдельного поля порта). */
+    c->ay_port = 5004;
+    snprintf(c->ay_iface, sizeof(c->ay_iface), "%s", "ay0");
+    snprintf(c->ay_tun_ip, sizeof(c->ay_tun_ip), "%s", "10.23.0.2/24");
+    c->ay_mtu = 1200;
+    c->ay_keepalive = 5;
+    c->ay_mark = 0x2UL;
     c->udp_relay = 0;
     c->udp_relay_port = 1081;
     snprintf(c->socks_addr, sizeof(c->socks_addr), "%s", "127.0.0.1");
@@ -946,6 +978,22 @@ int config_load(const char *path, susanin_config *c)
             c->profile_failover = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "egress_type"))
             set_str(c->egress_type, sizeof(c->egress_type), val);
+        else if (!strcmp(key, "ay_server"))
+            set_str(c->ay_server, sizeof(c->ay_server), val);
+        else if (!strcmp(key, "ay_key"))
+            set_str(c->ay_key, sizeof(c->ay_key), val);
+        else if (!strcmp(key, "ay_port"))
+            c->ay_port = (int)cfg_num(c, key, val);
+        else if (!strcmp(key, "ay_iface"))
+            set_str(c->ay_iface, sizeof(c->ay_iface), val);
+        else if (!strcmp(key, "ay_tun_ip"))
+            set_str(c->ay_tun_ip, sizeof(c->ay_tun_ip), val);
+        else if (!strcmp(key, "ay_mtu"))
+            c->ay_mtu = (int)cfg_num(c, key, val);
+        else if (!strcmp(key, "ay_keepalive"))
+            c->ay_keepalive = (int)cfg_num(c, key, val);
+        else if (!strcmp(key, "ay_mark"))
+            c->ay_mark = cfg_unum(c, key, val);
         else if (!strcmp(key, "tproxy_port"))
             c->tproxy_port = (int)cfg_num(c, key, val);
         else if (!strcmp(key, "udp_relay"))
@@ -1395,6 +1443,24 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "socks_addr=%s\n", c->socks_addr);
     fprintf(fp, "# Порт Xray SOCKS.\n");
     fprintf(fp, "socks_port=%d\n", c->socks_port);
+    /* AY: закрытый транспорт. Секреты в этом файле и так лежат рядом с
+     * web_token, но панель ключ не отдаёт (пишет только при смене). */
+    fprintf(fp, "# AY: адрес или имя сервера (egress_type=ay); пусто = выключено.\n");
+    fprintf(fp, "ay_server=%s\n", c->ay_server);
+    fprintf(fp, "# AY: ключ — 64 hex-символа или парольная фраза, как на сервере.\n");
+    fprintf(fp, "ay_key=%s\n", c->ay_key);
+    fprintf(fp, "# AY: UDP-порт сервера (по умолчанию 5004; можно задать и в ay_server как host:port).\n");
+    fprintf(fp, "ay_port=%d\n", c->ay_port);
+    fprintf(fp, "# AY: tun-интерфейс клиента; создаёт сам агент.\n");
+    fprintf(fp, "ay_iface=%s\n", c->ay_iface);
+    fprintf(fp, "# AY: адрес клиента в туннеле (в tun-сети сервера): адрес/префикс.\n");
+    fprintf(fp, "ay_tun_ip=%s\n", c->ay_tun_ip);
+    fprintf(fp, "# AY: MTU туннеля; 576..1212 (габарит датаграммы).\n");
+    fprintf(fp, "ay_mtu=%d\n", c->ay_mtu);
+    fprintf(fp, "# AY: период keepalive, сек (сервер чистит сессию через 30 с).\n");
+    fprintf(fp, "ay_keepalive=%d\n", c->ay_keepalive);
+    fprintf(fp, "# AY: fwmark собственного UDP-сокета, чтобы он не уходил в туннель.\n");
+    fprintf(fp, "ay_mark=0x%lx\n", c->ay_mark);
     for (i = 0; i < CFG_MAX_PROFILES; i++) {
         if (!c->profile_name[i][0])
             continue;
@@ -1936,6 +2002,61 @@ int config_validate(const susanin_config *c, char *out, size_t n)
     if (!strcmp(c->egress_type, "interface") && !c->egress_interface[0])
         CFGV("egress_type=interface без egress_interface: учение будет, маршрутизации — нет");
 
+    /* AY: закрытый транспорт. Проверяем то, что реально ломает работу —
+     * адрес клиента в туннеле, MTU, порт; пустой ключ — предупреждение
+     * (панель может заполнить его позже). */
+    {
+        static const char *known_types[] = { "interface", "tproxy", "xray", "ay" };
+        size_t j;
+        int known = 0;
+
+        for (j = 0; j < sizeof(known_types) / sizeof(known_types[0]); j++)
+            if (!strcmp(c->egress_type, known_types[j]))
+                known = 1;
+        if (!known)
+            CFGV("egress_type=%s: неизвестный тип — работает как interface", c->egress_type);
+    }
+    if (!strcmp(c->egress_type, "ay") && !c->ay_server[0])
+        CFGV("egress_type=ay без ay_server: сессия не поднимется, трафик останется прямым");
+    if (c->ay_server[0] && !c->ay_key[0])
+        CFGV("ay_server задан, а ay_key пуст: сервер не подтвердит сессию");
+    if (c->ay_server[0] || !strcmp(c->egress_type, "ay")) {
+        char ipb[64];
+        char *slash;
+        struct in_addr a;
+        int pfx = 24;
+
+        snprintf(ipb, sizeof(ipb), "%s", c->ay_tun_ip);
+        slash = strchr(ipb, '/');
+        if (slash != NULL) {
+            *slash = '\0';
+            pfx = atoi(slash + 1);
+        }
+        if (inet_pton(AF_INET, ipb, &a) != 1)
+            CFGV("ay_tun_ip=%s: не IPv4-адрес", c->ay_tun_ip);
+        else if (pfx < 8 || pfx > 30)
+            CFGV("ay_tun_ip=%s: префикс вне 8..30", c->ay_tun_ip);
+        if (c->ay_mtu < 576 || c->ay_mtu > 1212)
+            CFGV("ay_mtu=%d: вне 576..1212", c->ay_mtu);
+    }
+    CFGV_PORT_STRICT("ay_port", c->ay_port, c->ay_server[0] != '\0');
+    if (c->ay_keepalive < 1 || c->ay_keepalive > 300)
+        CFGV("ay_keepalive=%d: вне 1..300", c->ay_keepalive);
+    {
+        const char *p = c->ay_iface;
+
+        for (; p != NULL && *p; p++) {
+            char ch = *p;
+
+            if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                  (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-')) {
+                CFGV("ay_iface=%s: допустимы буквы, цифры, '.', '_', '-'",
+                     c->ay_iface);
+                break;
+            }
+        }
+    }
+
     for (i = 0; i < c->n_egress && i < CFG_MAX_EGRESS; i++)
         if (!c->egress_list[i][0])
             CFGV("egress %d: пустой интерфейс в списке", i + 1);
@@ -2100,6 +2221,14 @@ void config_print(const susanin_config *c)
     printf("udp_relay_port=%d\n", c->udp_relay_port);
     printf("socks_addr=%s\n", c->socks_addr);
     printf("socks_port=%d\n", c->socks_port);
+    printf("ay_server=%s\n", c->ay_server);
+    printf("ay_key=%s\n", c->ay_key);
+    printf("ay_port=%d\n", c->ay_port);
+    printf("ay_iface=%s\n", c->ay_iface);
+    printf("ay_tun_ip=%s\n", c->ay_tun_ip);
+    printf("ay_mtu=%d\n", c->ay_mtu);
+    printf("ay_keepalive=%d\n", c->ay_keepalive);
+    printf("ay_mark=0x%lx\n", c->ay_mark);
     for (i = 0; i < CFG_MAX_PROFILES; i++) {
         if (!c->profile_name[i][0])
             continue;

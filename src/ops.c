@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "ops.h"
+#include "ay_client.h"
 #include "backend.h"
 #include "cdn.h"
 #include "classifier.h"
@@ -355,7 +356,9 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
                strcmp(cfg->disk_mode, "soft") == 0 ? " (disk_mode=soft: файл не ведётся)"
                : path_on_tmpfs(lp) ? "  (! tmpfs = RAM: риск OOM и утраты логов при reboot)" : "");
     }
-    printf("egress=%s table=%d lan=%s\n", cfg->egress_interface,
+    printf("egress=%s table=%d lan=%s\n",
+           (cfg->n_egress > 0 && cfg->egress_list[0][0]) ? cfg->egress_list[0]
+                                                         : cfg->egress_interface,
            cfg->routing_table, cfg->lan_interfaces);
     cfg_tp = strcmp(cfg->egress_type, "tproxy") == 0;
     act_tp = dp_actual_tproxy(ipt, ip, cfg);
@@ -372,6 +375,29 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
     printf("egress pool: n=%d failback=%d debounce=%ds race=%d\n",
            cfg->n_egress, cfg->egress_failback, cfg->egress_failback_debounce,
            cfg->egress_race);
+    if (!strcmp(cfg->egress_type, "ay") || cfg->ay_server[0]) {
+        /* Снимок пишет движок (отдельный процесс): состояние сессии живёт в
+         * его памяти. Нет снимка — так и говорим, а не угадываем. */
+        char ay[1024] = "";
+        FILE *ayf = fopen(AY_STATUS_PATH, "r");
+
+        if (ayf != NULL) {
+            if (fgets(ay, (int)sizeof(ay), ayf) != NULL) {
+                size_t l = strlen(ay);
+
+                while (l && (ay[l - 1] == '\n' || ay[l - 1] == '\r'))
+                    ay[--l] = '\0';
+            }
+            fclose(ayf);
+        }
+        if (ay[0])
+            printf("ay: %s\n", ay);
+        else
+            printf("ay: server=%s port=%d iface=%s tun_ip=%s mtu=%d (снимка нет — "
+                   "движок не запущен или клиент не применялся)\n",
+                   cfg->ay_server[0] ? cfg->ay_server : "-", cfg->ay_port,
+                   ay_client_iface(cfg), cfg->ay_tun_ip, cfg->ay_mtu);
+    }
     printf("features: dns_sniff=%d offload=%d(%s) pin_reassert=%d xray_watchdog=%d auto_direct=%d media=%d\n",
            cfg->dns_sniff, cfg->kernel_offload,
            cfg->kernel_egress[0] ? cfg->kernel_egress : "-",
@@ -1100,8 +1126,8 @@ int ops_config_json(const susanin_config *cfg, const char *conf_path, char *buf,
                 while (l && (v[l - 1] == '\n' || v[l - 1] == '\r'))
                     ((char *)v)[--l] = '\0';
             }
-            if (!strcmp(k, "web_token"))
-                v = "";  /* секрет не отдаём */
+            if (!strcmp(k, "web_token") || !strcmp(k, "ay_key"))
+                v = "";  /* секреты не отдаём */
             json_str(ke, sizeof(ke), k);
             json_str(ve, sizeof(ve), v);
             japp(buf, n, &used, "%s\"%s\":\"%s\"", first ? "" : ",", ke, ve);
@@ -1109,7 +1135,9 @@ int ops_config_json(const susanin_config *cfg, const char *conf_path, char *buf,
         }
         fclose(fp);
     }
-    japp(buf, n, &used, "},\"token_set\":%s}", cfg->web_token[0] ? "true" : "false");
+    japp(buf, n, &used, "},\"token_set\":%s,\"ay_key_set\":%s}",
+         cfg->web_token[0] ? "true" : "false",
+         cfg->ay_key[0] ? "true" : "false");
     return used;
 }
 
