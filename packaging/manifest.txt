@@ -57,7 +57,7 @@ share   lang/ZH.json
 
 www     www
 
-ayserver ../Susanin.Keenetic.AY/dist/ay-server-binary
+ayserver ay-server-binary
 
 # Хук NDM: возвращает FORWARD-разрешение по метке VPN сразу после пересборки
 # netfilter (иначе агент восстанавливает его за 5–8 с, и трафик в это окно
