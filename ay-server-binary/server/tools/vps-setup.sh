@@ -63,17 +63,29 @@ command -v "$IPT" >/dev/null 2>&1 || die "iptables не установлен"
 say "внешний интерфейс: $IFB, туннель: $TUN_IF ($TUN_IP), сеть: $TUN_NET"
 
 # --- sysctl ---------------------------------------------------------------
-say "sysctl: ip_forward=1, rp_filter=0"
+say "sysctl: ip_forward=1, rp_filter=0, UDP-буферы под RTT туннеля"
 sysctl -qw net.ipv4.ip_forward=1 || warn "не удалось включить ip_forward"
 sysctl -qw net.ipv4.conf.all.rp_filter=0 || true
 if [ -w "/proc/sys/net/ipv4/conf/$TUN_IF/rp_filter" ]; then
     echo 0 > "/proc/sys/net/ipv4/conf/$TUN_IF/rp_filter"
 fi
+# UDP-буфер сокета туннеля. Дефолтные 208 КБ при RTT 100+ мс дают полосу
+# ~2 МБ/с по BDP (208 КБ / 0.105 с): выше канал не разогнать, хотя он свободен.
+# rmem — приём от клиента, wmem — отправка клиенту (для скачивания важнее wmem).
+sysctl -qw net.core.rmem_max=4194304 || warn "не удалось поднять net.core.rmem_max"
+sysctl -qw net.core.wmem_max=4194304 || warn "не удалось поднять net.core.wmem_max"
+sysctl -qw net.core.rmem_default=1048576 || true
+sysctl -qw net.core.wmem_default=1048576 || true
 mkdir -p /etc/sysctl.d
 cat > /etc/sysctl.d/90-susanin-tunnel.conf <<EOF
 # Susanin tunnel server: форвардинг трафика клиентов туннеля
 net.ipv4.ip_forward = 1
 net.ipv4.conf.all.rp_filter = 0
+# UDP-буферы под RTT туннеля (дефолт 208 КБ ограничивал полосу ~2 МБ/с)
+net.core.rmem_max = 4194304
+net.core.wmem_max = 4194304
+net.core.rmem_default = 1048576
+net.core.wmem_default = 1048576
 EOF
 
 # --- правила ---------------------------------------------------------------
@@ -132,6 +144,7 @@ fi
 
 say "готово (порт туннеля: UDP/$PORT)"
 echo "  ip_forward        = $(cat /proc/sys/net/ipv4/ip_forward)"
+echo "  udp buffers       = rmem $(cat /proc/sys/net/core/rmem_max) / wmem $(cat /proc/sys/net/core/wmem_max)"
 echo "  rules (nat):"
 $IPT -t nat -L POSTROUTING -n -v --line-numbers 2>/dev/null | sed -n '1,12p'
 echo "  rules (forward):"

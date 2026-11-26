@@ -22,7 +22,7 @@
   английский, переопределяется `AY_LANG=ru|en|zh`);
 - `server/config/tunnel-server.conf.example` — пример конфигурации;
 - `server/systemd/susanin-tunnel-server.service` — systemd-юнит;
-- `server/tools/vps-setup.sh` — sysctl/NAT/MSS/rp_filter (вызывается установщиком);
+- `server/tools/vps-setup.sh` — sysctl (в т.ч. UDP-буферы под RTT туннеля)/NAT/MSS/rp_filter (вызывается установщиком);
 - `SHA256SUMS` — контрольные суммы.
 
 ### Установка
@@ -89,7 +89,7 @@ systems (Alpine, RHEL, OpenWrt, arm64, etc.) — build separately for those.
   by default, override with `AY_LANG=ru|en|zh`);
 - `server/config/tunnel-server.conf.example` — configuration example;
 - `server/systemd/susanin-tunnel-server.service` — systemd unit;
-- `server/tools/vps-setup.sh` — sysctl/NAT/MSS/rp_filter (called by the installer);
+- `server/tools/vps-setup.sh` — sysctl (including UDP buffers for the tunnel RTT)/NAT/MSS/rp_filter (called by the installer);
 - `SHA256SUMS` — checksums.
 
 ### Install
@@ -156,7 +156,7 @@ OpenWrt、arm64 等）——如需使用请单独构建。
   指定）；
 - `server/config/tunnel-server.conf.example` — 配置示例；
 - `server/systemd/susanin-tunnel-server.service` — systemd 服务单元；
-- `server/tools/vps-setup.sh` — sysctl/NAT/MSS/rp_filter（由安装脚本调用）；
+- `server/tools/vps-setup.sh` — sysctl（含按隧道 RTT 调整的 UDP 缓冲区）/NAT/MSS/rp_filter（由安装脚本调用）；
 - `SHA256SUMS` — 校验和。
 
 ### 安装
