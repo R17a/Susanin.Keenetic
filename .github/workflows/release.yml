@@ -60,15 +60,15 @@ jobs:
           set -e
           STAGE="pkg-${{ matrix.arch }}"
           # Состав архива берётся из единого списка packaging/manifest.txt —
-          # тот же, что у .ipk (tools/stage-release.sh).
+          # тот же, что у .ipk (devtools/stage-release.sh).
           rm -rf "$STAGE"
-          sh tools/stage-release.sh --out "$STAGE" --bin susanin-agent
+          sh devtools/stage-release.sh --out "$STAGE" --bin susanin-agent
           tar -czf "susanin-keenetic-deploy-${{ matrix.arch }}.tar.gz" -C "$STAGE" .
           ls -l "susanin-keenetic-deploy-${{ matrix.arch }}.tar.gz"
       - name: Build .ipk (Entware)
         run: |
           set -e
-          sh tools/make-ipk.sh --one "${{ matrix.arch }}" susanin-agent --out dist-ipk \
+          sh devtools/make-ipk.sh --one "${{ matrix.arch }}" susanin-agent --out dist-ipk \
             --version "${GITHUB_REF_NAME#v}"
           # Кладём пакет в корень workspace: artifact сохраняет вложенные пути, и
           # dist-ipk/*.ipk превращался в dist/dist-ipk/*.ipk после
@@ -78,8 +78,8 @@ jobs:
       - name: Проверка состава поставки
         run: |
           set -e
-          sh tools/check-shipping.sh
-          sh tools/check-shipping.sh --ipk "$(ls dist-ipk/*.ipk | head -1)"
+          sh devtools/check-shipping.sh
+          sh devtools/check-shipping.sh --ipk "$(ls dist-ipk/*.ipk | head -1)"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

@@ -41,7 +41,7 @@ jobs:
         run: |
           IMG="${{ steps.img.outputs.name }}"
           TAG="${{ github.ref_name }}"
-          docker build -f Dockerfile.cross -t "${IMG}:${TAG}" -t "${IMG}:latest" .
+          docker build -f packaging/Dockerfile.cross -t "${IMG}:${TAG}" -t "${IMG}:latest" .
           docker push "${IMG}:${TAG}"
           docker push "${IMG}:latest"
 

@@ -3,12 +3,14 @@
 Makefile        text eol=lf
 Dockerfile*     text eol=lf
 *.conf          text eol=lf
-# init-скрипты (S93xray-tproxy, S94susanin, S95susanin-web, S96susanin-failover):
+# init-скрипты (S93xray-tproxy, S94susanin, S95susanin-web):
 # общий шаблон S9*susanin не покрывал их, а busybox sh падает на CRLF.
 init/**         text eol=lf
+# непоставляемые init-скрипты в devtools/ (тот же busybox sh при запуске вручную)
+devtools/init/* text eol=lf
 S9*susanin      text eol=lf
 # скрипты пакета .ipk (control-скрипты opkg исполняются как sh)
-opkg/*          text eol=lf
+packaging/opkg/* text eol=lf
 # исходники и статика
 *.c             text eol=lf
 *.h             text eol=lf

@@ -86,8 +86,8 @@ Xray. В панели **VPN / Egress → Susanin.Keenetic.AY** вписываю�
 - в Keenetic **выключена «Маршрутизация DNS»**, включён шифрованный DNS (DoH/DoT) —
   иначе возможны подмена DNS и «YouTube/Claude не открывается».
 
-  ![Маршрутизация DNS отключена в KeeneticOS](DNS_Route.png)
-  ![Настроенный шифрованный DNS (DoH/DoT)](DNS.png)
+  ![Маршрутизация DNS отключена в KeeneticOS](docs/images/DNS_Route.png)
+  ![Настроенный шифрованный DNS (DoH/DoT)](docs/images/DNS.png)
 
 **Быстрый старт**
 
@@ -104,12 +104,12 @@ susanin version && susanin status && susanin diagnose
 
 **Документация**
 
-- [USER_GUIDE.md](USER_GUIDE.md) — руководство: быстрый старт, задачи, настройки;
-- [DEPLOY.md](DEPLOY.md) — установка, обновление, удаление, автозапуск;
-- [TECHNICAL.RU.md](TECHNICAL.RU.md) — технические детали: как устроено, списки
+- [USER_GUIDE.md](docs/USER_GUIDE.md) — руководство: быстрый старт, задачи, настройки;
+- [DEPLOY.md](docs/DEPLOY.md) — установка, обновление, удаление, автозапуск;
+- [TECHNICAL.RU.md](docs/TECHNICAL.RU.md) — технические детали: как устроено, списки
   доменов, OpenConnect/qWDTT/XRay, профили, CLI, сборка, все параметры конфига;
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — если что-то не работает, по симптомам;
-- [XRAY.md](XRAY.md) — XRay/VLESS-REALITY: совместимость, конфликты, XKeen;
+- [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — если что-то не работает, по симптомам;
+- [XRAY.md](docs/XRAY.md) — XRay/VLESS-REALITY: совместимость, конфликты, XKeen;
 - [docs/AY.md](docs/AY.md) — AY: свой сервер вместо VPN — требования, ключи,
   диагностика;
 - [CHANGELOG.md](CHANGELOG.md) — что нового по версиям.
@@ -206,12 +206,12 @@ English, Chinese.
 
 **Documentation** (currently in Russian; translations are on the way)
 
-- [USER_GUIDE.md](USER_GUIDE.md) — guide: quick start, tasks, settings;
-- [DEPLOY.md](DEPLOY.md) — install, update, removal, autostart;
-- [TECHNICAL.RU.md](TECHNICAL.RU.md) — internals, domain lists,
+- [USER_GUIDE.md](docs/USER_GUIDE.md) — guide: quick start, tasks, settings;
+- [DEPLOY.md](docs/DEPLOY.md) — install, update, removal, autostart;
+- [TECHNICAL.RU.md](docs/TECHNICAL.RU.md) — internals, domain lists,
   OpenConnect/qWDTT/XRay, profiles, CLI, build, all config parameters;
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — when something does not work, by symptom;
-- [XRAY.md](XRAY.md) — XRay/VLESS-REALITY: compatibility, conflicts, XKeen;
+- [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — when something does not work, by symptom;
+- [XRAY.md](docs/XRAY.md) — XRay/VLESS-REALITY: compatibility, conflicts, XKeen;
 - [docs/AY.md](docs/AY.md) — AY: your own server instead of a VPN — requirements,
   keys, diagnostics;
 - [CHANGELOG.md](CHANGELOG.md) — what changed per version.
@@ -288,12 +288,12 @@ susanin version && susanin status && susanin diagnose
 
 **文档**（目前为俄语，翻译正在准备中）
 
-- [USER_GUIDE.md](USER_GUIDE.md) — 指南：快速开始、常见任务、设置；
-- [DEPLOY.md](DEPLOY.md) — 安装、更新、卸载、开机自启；
-- [TECHNICAL.RU.md](TECHNICAL.RU.md) — 技术细节：内部实现、域名列表、
+- [USER_GUIDE.md](docs/USER_GUIDE.md) — 指南：快速开始、常见任务、设置；
+- [DEPLOY.md](docs/DEPLOY.md) — 安装、更新、卸载、开机自启；
+- [TECHNICAL.RU.md](docs/TECHNICAL.RU.md) — 技术细节：内部实现、域名列表、
   OpenConnect/qWDTT/XRay、配置文件、CLI、构建、全部配置参数；
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — 出问题时按症状排查；
-- [XRAY.md](XRAY.md) — XRay/VLESS-REALITY：兼容性、冲突、XKeen；
+- [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — 出问题时按症状排查；
+- [XRAY.md](docs/XRAY.md) — XRay/VLESS-REALITY：兼容性、冲突、XKeen；
 - [docs/AY.md](docs/AY.md) — AY：用自有服务器代替 VPN——要求、配置项、诊断；
 - [CHANGELOG.md](CHANGELOG.md) — 各版本变更。
 

@@ -1,4 +1,4 @@
-/* Сгенерировано tools/gen-lang.py из lang/slog.json — не править руками. */
+/* Сгенерировано devtools/gen-lang.py из lang/slog.json — не править руками. */
 #include "lang.h"
 
 const struct lang_msg g_lang_msgs[] = {

@@ -13,7 +13,7 @@
 /DNS_result.md
 
 # build intermediates: готовые бинарники агента в репозитории НЕ лежат —
-# их собирает локально tools/wsl-build.sh или CI, а .ipk и архив релиза
+# их собирает локально devtools/wsl-build.sh или CI, а .ipk и архив релиза
 # собираются из этого файла (make-ipk/stage-release берут его аргументом)
 *.o
 susanin-agent
@@ -22,13 +22,15 @@ susanin-agent
 /src/ay_transport_private.c
 # копии кросс-бинарников в корне
 /susanin-agent.*
-# скомпилированные host-тесты (исходники .c/.sh — на месте)
-/tests/test_*
-!/tests/test_*.c
-# .ipk-пакеты (tools/make-ipk.sh) — артефакты сборки, публикуются в Release
+# тесты и сэмплы для conntrack — только локально, в публикацию не входят
+/tests/
+/testdata/
+# .ipk-пакеты (devtools/make-ipk.sh) — артефакты сборки, публикуются в Release
 *.ipk
 /dist/
 /dist-ipk/
+# готовые deploy-архивы — артефакты релиза, публикуются в GitHub Releases
+/deploy/
 # локальные каталоги релизных сборок (dist-v0.4.6, dist-test и т.п.)
 /dist-*/
 
@@ -46,6 +48,9 @@ susanin-agent
 Thumbs.db
 .idea/
 .vscode/
+# python-кеш служебных скриптов
+__pycache__/
+*.pyc
 
 # локальные служебные скрипты агентов/разработчика (тестовые обёртки,
 # разовые проверки) — внутреннее, на GitHub не публикуется никогда

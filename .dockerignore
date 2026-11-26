@@ -1,11 +1,27 @@
 # keep the build context small and free of private/working files
 .git
 .github
+AGENTS.md
 PLAN.md
+PLAN_REFACTOR.MD
 STATUS.md
+DNS.md
+DNS_result.md
 docs/
 recon/
+local/
 *.log
 *.state
 build/
 deploy/
+deploy-openwrt/
+dist/
+dist-*/
+tests/
+testdata/
+xray/
+*.ipk
+*.o
+susanin-agent
+susanin-agent.*
+__pycache__/

@@ -1,7 +1,8 @@
 name: CI
 
-# Проверки на каждый push/PR: сборка хоста + тесты, синтаксис shell-скриптов,
-# shellcheck (серьёзные ошибки). Релизный workflow — отдельно, по тегу.
+# Проверки на каждый push/PR: сборка хоста, синтаксис shell-скриптов,
+# shellcheck (серьёзные ошибки), сборка .ipk по манифесту.
+# Тесты (tests/) — dev-only и в публикацию не входят, поэтому в CI их нет.
 
 on:
   push:
@@ -25,15 +26,13 @@ jobs:
           make clean || true
           make CC=gcc CFLAGS="-O2 -std=c11 -Wall -Wextra -Wpedantic -Werror"
 
-      - name: Host-тесты
-        run: make test
-
       - name: Проверка shell-синтаксиса
         run: |
           set -e
           fail=0
-          for f in install.sh bootstrap.sh tools/*.sh init/entware/* init/ndm/* \
-                   opkg/postinst opkg/prerm opkg/postrm tests/*.sh; do
+          for f in install.sh bootstrap.sh tools/*.sh devtools/*.sh \
+                   init/entware/* init/ndm/* \
+                   packaging/opkg/postinst packaging/opkg/prerm packaging/opkg/postrm; do
             [ -f "$f" ] || continue
             if ! sh -n "$f"; then echo "SYNTAX FAIL: $f"; fail=1; fi
           done
@@ -42,13 +41,13 @@ jobs:
       - name: shellcheck (только ошибки; предупреждения — информативно)
         run: |
           set +e
-          shellcheck -S error install.sh bootstrap.sh tools/*.sh \
-                     init/ndm/* opkg/postinst opkg/prerm opkg/postrm || exit 1
+          shellcheck -S error install.sh bootstrap.sh tools/*.sh devtools/*.sh \
+                     init/ndm/* packaging/opkg/postinst packaging/opkg/prerm packaging/opkg/postrm || exit 1
 
       - name: Проверка сборки .ipk (linux x86_64)
         run: |
           set -e
-          sh tools/make-ipk.sh --one x86_64 susanin-agent --out dist-ci --version ci
+          sh devtools/make-ipk.sh --one x86_64 susanin-agent --out dist-ci --version ci
           ls -l dist-ci
           # .ipk = gzip(tar) с ./debian-binary и ./data.tar.gz (формат фида Entware)
           tar -tzf dist-ci/*.ipk | grep -q './debian-binary'
@@ -57,14 +56,15 @@ jobs:
       - name: Единый список поставки (.ipk / манифест)
         run: |
           set -e
-          sh tools/check-shipping.sh
-          sh tools/check-shipping.sh --ipk "$(ls dist-ci/*.ipk | head -1)"
+          sh devtools/check-shipping.sh
+          sh devtools/check-shipping.sh --ipk "$(ls dist-ci/*.ipk | head -1)"
 
       - name: Пробная сборка tar-архива (CI-раскладка из манифеста)
         run: |
           set -e
-          sh tools/stage-release.sh --out /tmp/stage --bin susanin-agent
+          sh devtools/stage-release.sh --out /tmp/stage --bin susanin-agent
           test -f /tmp/stage/susanin-agent
           test -f /tmp/stage/docs/README.md
           test -f /tmp/stage/S94susanin
           test -f /tmp/stage/www/index.html
+          test -f /tmp/stage/config.example.conf

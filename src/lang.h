@@ -2,7 +2,7 @@
 #define SUSANIN_LANG_H
 
 /* Локализация сообщений журнала. Ключ — русский шаблон ровно в том виде, в
- * каком он стоит в slogf(); таблица собирается tools/gen-lang.py из
+ * каком он стоит в slogf(); таблица собирается devtools/gen-lang.py из
  * lang/slog.json, поэтому вызовы в коде менять не нужно. */
 struct lang_msg {
     const char *ru;

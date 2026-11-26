@@ -7,7 +7,7 @@ CONFDIR = $(PREFIX)/susanin/etc
 VARDIR = $(PREFIX)/susanin/var
 
 # Закрытый транспорт AY: исходники живут в проекте Susanin.Keenetic.AY и кладутся
-# в src/ay_transport_private.c сборщиком (tools/wsl-build.sh). Без них — заглушка.
+# в src/ay_transport_private.c сборщиком (devtools/wsl-build.sh). Без них — заглушка.
 AY_TRANSPORT = $(if $(wildcard src/ay_transport_private.c),src/ay_transport_private.c,src/ay_transport_stub.c)
 
 SRCS = src/main.c src/config.c src/discover.c src/conntrack.c src/state.c \
@@ -22,15 +22,15 @@ SAMPLES = testdata/nf_conntrack.samples
 # Объекты для тестов, которые включают .c-файл в свой TU (тогда его .o линковать нельзя).
 TEST_OBJS = $(filter-out src/main.o,$(OBJS))
 
-.PHONY: all clean install test
+.PHONY: all clean install test test-local
 
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
 
-src/lang_catalog.c: lang/slog.json tools/gen-lang.py
-	@python3 tools/gen-lang.py > $@.tmp && mv $@.tmp $@ || { rm -f $@.tmp; echo 'gen-lang: python3 unavailable - using committed file'; }
+src/lang_catalog.c: lang/slog.json devtools/gen-lang.py
+	@python3 devtools/gen-lang.py > $@.tmp && mv $@.tmp $@ || { rm -f $@.tmp; echo 'gen-lang: python3 unavailable - using committed file'; }
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -49,11 +49,20 @@ $(OBJS): $(HDRS)
 $(TESTS): $(HDRS)
 
 # Тесты (хост-компилятор; в кросс-сборку и поставку не входят).
+# Каталог tests/ — dev-only и в публикацию не входит: в чистом публичном клоне
+# `make test` сообщает об этом, а не падает на отсутствующей цели.
+test:
+	@if [ ! -d tests ]; then \
+		echo "make test: каталог tests/ не публикуется (тесты есть только локально)"; \
+		exit 1; \
+	fi
+	@$(MAKE) --no-print-directory test-local
+
 # `all` в зависимостях обязателен: test-installer-sync.sh запускает сам
 # `susanin-agent` (config check/sync), и без этого шага он молча проверял бы
 # бинарник, оставшийся от прошлой сборки, — зелёный результат при изменённом
 # исходнике.
-test: all $(TESTS)
+test-local: all $(TESTS)
 	./tests/test_conntrack $(SAMPLES)
 	./tests/test_config
 	./tests/test_ops

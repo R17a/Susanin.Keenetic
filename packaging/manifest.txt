@@ -1,7 +1,7 @@
 # Единый список того, что ПОСТАВЛЯЕТСЯ (0.4.0).
 #
-# Читают: tools/make-ipk.sh (.ipk), tools/stage-release.sh (CI tar-архив),
-# tools/check-shipping.sh (проверка, что ничего не забыто и лишнего не уехало).
+# Читают: devtools/make-ipk.sh (.ipk), devtools/stage-release.sh (CI tar-архив),
+# devtools/check-shipping.sh (проверка, что ничего не забыто и лишнего не уехало).
 #
 # ВАЖНО: сюда попадают только файлы, которые есть в git. Приватные рабочие
 # документы (/TESTBUILD.md, /STATUS.md, /PLAN.md, docs/RECON.md) в манифест
@@ -16,9 +16,9 @@
 #   www   — статика панели (каталог)    -> /opt/susanin/www/    (в архиве: www/)
 #   root  — файлы только для tar-архива (в .ipk не нужны)
 #
-# Всё, что лежит в tools/ или init/entware/, но здесь не перечислено, обязано
-# быть в packaging/dev-only.txt с причиной — это проверяет
-# tools/check-shipping.sh (шаги 2 и 2b).
+# Всё, что лежит в tools/ или init/entware/, обязано быть здесь: эти каталоги
+# содержат только поставляемые файлы, dev-инструменты — в devtools/. Это
+# проверяет devtools/check-shipping.sh (шаги 2 и 2b).
 
 tool    tools/datapath.sh
 tool    tools/susanin.sh
@@ -36,21 +36,21 @@ init    init/entware/S94susanin
 init    init/entware/S95susanin-web
 
 doc     README.md
-doc     TECHNICAL.RU.md
-doc     USER_GUIDE.md
-doc     TROUBLESHOOTING.md
-doc     DEPLOY.md
-doc     XRAY.md
+doc     docs/TECHNICAL.RU.md
+doc     docs/USER_GUIDE.md
+doc     docs/TROUBLESHOOTING.md
+doc     docs/DEPLOY.md
+doc     docs/XRAY.md
 doc     docs/AY.md
 doc     CHANGELOG.md
 doc     LICENSE
 
-cfg     config.example.conf
-share   cdn_ranges.txt
-share   vpn_always.txt
-share   vpn_never.txt
-share   xray-tproxy.json.example
-share   xray-tproxy-cdn.json.example
+cfg     share/config.example.conf
+share   share/cdn_ranges.txt
+share   share/vpn_always.txt
+share   share/vpn_never.txt
+share   share/xray-tproxy.json.example
+share   share/xray-tproxy-cdn.json.example
 share   lang/RU.json
 share   lang/EN.json
 share   lang/ZH.json

@@ -137,8 +137,10 @@ xray_setup() {
     _xtp=""
     for _c in "$PREFIX/share/xray-tproxy.json.example" \
               "${DIR:-}/xray-tproxy.json.example" \
+              "${DIR:-}/share/xray-tproxy.json.example" \
               "${DIR:-}/xray/xray-tproxy.json.example" \
-              "${DIR0:-}/xray-tproxy.json.example"; do
+              "${DIR0:-}/xray-tproxy.json.example" \
+              "${DIR0:-}/share/xray-tproxy.json.example"; do
         [ -n "$_c" ] && [ -f "$_c" ] && { _xtp="$_c"; break; }
     done
     if [ -n "$_xtp" ]; then
@@ -552,9 +554,9 @@ else
 fi
 
 # Раскладка пакета: либо все файлы рядом с install.sh, либо по подпапкам
-# (bin/, tools/, etc/, init/, www/). Ищем в обоих вариантах.
+# (bin/, tools/, etc/, init/, www/, share/). Ищем в обоих вариантах.
 find_file() { # find_file <name> -> path
-    for _d in "$DIR" "$DIR/bin" "$DIR/tools" "$DIR/etc" "$DIR/init" "$DIR/www"; do
+    for _d in "$DIR" "$DIR/bin" "$DIR/tools" "$DIR/etc" "$DIR/init" "$DIR/www" "$DIR/share"; do
         [ -e "$_d/$1" ] && { printf '%s\n' "$_d/$1"; return 0; }
     done
     return 1
