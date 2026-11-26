@@ -2572,14 +2572,22 @@ int engine_run(susanin_config *cfg, const char *conf_path)
             last_dpfast = now;
             if (!backend_ready_why(cfg, &unk, why, sizeof(why))) {
                 char rsn[128];
+                /* Пропала только DNS-цепочка (её сносит каждая пересборка
+                 * nat у NDM) — полный пересбор датаплейна тут лишний: он
+                 * заново грузит ipset'ы, пишет backup и дёргает NAT каждые
+                 * 25 минут. Достаточно вернуть один перехват. */
+                int dns_only = !strcmp(why, "dns_lan DNAT chain");
+                int prc;
+
                 dp_unk_since = 0;
                 snprintf(rsn, sizeof(rsn), "rules missing: %s (fast re-provision)",
                          why[0] ? why : "?");
                 slogf(SL_WARN, "data plane missing (fast check: %s), re-provisioning",
                       why[0] ? why : "?");
-                if (backend_provision(cfg) == 0) {
+                prc = dns_only ? backend_dns_lan_up(cfg) : backend_provision(cfg);
+                if (prc == 0) {
                     backend_mark_reprov(rsn);
-                    if (tunnel_up) {
+                    if (tunnel_up && !dns_only) {
                         /* Никакого resync_sets()/flush здесь: ре-провижн правил
                          * не теряет ipset'ы, а flush на каждом быстром проходе
                          * давал churn (ok_tcp 507↔252, ok_net 19↔6) и на окно
@@ -2591,6 +2599,10 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                         vn_mark_dirty(nv);
                         last_force = 0;
                     }
+                } else if (dns_only) {
+                    /* Датаплейн цел, не встал только DNS-перехват (например,
+                     * форвардер ещё не слушает) — dp_ok не роняем, повтор на
+                     * следующем тике быстрой проверки. */
                 } else {
                     dp_ok = 0;
                     dp_fails = 1;
