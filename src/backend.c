@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "backend.h"
+#include "dns_lan.h"
 #include "log.h"
 
 #include <fcntl.h>
@@ -950,19 +951,34 @@ int backend_dns_lan_up(const susanin_config *c)
     return run_script(c, "dns-lan-up", NULL);
 }
 
+/* Пересборка netfilter у NDM может попасть ровно в середину нашего скрипта:
+ * цепочку сносят между `-N` и `-A`, и первая попытка падает с «No chain/
+ * target/match by that name». Без повтора окно без правил тянулось до
+ * следующей плановой проверки — минуты, всё это время помеченный трафик шёл
+ * напрямую. Повтор дешевле: на успехе цикл завершается сразу. */
+#define PROVISION_TRIES    3
+#define PROVISION_RETRY_MS 400
+
 int backend_provision(const susanin_config *c)
 {
     char *argv[4];
     char out[2048];
-    int rc;
+    int rc = -1;
+    int try;
     argv[0] = "sh";
     argv[1] = "/opt/susanin/tools/datapath.sh";
     argv[2] = "up";
     argv[3] = NULL;
     set_env(c);
-    rc = run_capture_argv(argv, out, sizeof(out));
-    if (rc != 0)
-        log_provision_error(rc, out);
+    for (try = 1; try <= PROVISION_TRIES; try++) {
+        out[0] = '\0';
+        rc = run_capture_argv(argv, out, sizeof(out));
+        if (rc == 0)
+            return 0;
+        if (try < PROVISION_TRIES)
+            wait_yield(PROVISION_RETRY_MS);
+    }
+    log_provision_error(rc, out);
     return rc;
 }
 
@@ -1197,6 +1213,35 @@ static int be_ready_int(const susanin_config *c, int *unknown,
     if (!strstr(out, "-A SUSANIN")) {
         why_set(why, whysz, "chain SUSANIN (empty)");
         return 0;
+    }
+
+    /* dns_lan=1 ставит перехват DNS клиентов LAN в отдельную nat-цепочку, и
+     * пересборка NDM сносит её вместе с остальными. Проверка о ней не знала:
+     * датаплейн считался целым, а DNS клиентов молча шёл мимо туннеля до
+     * ручного restart. Требуем цепочку только после того, как её хотя бы раз
+     * видели: если установка её не создаёт (нет LAN-адреса), иначе вышел бы
+     * вечный цикл пересборки. */
+    if (c->dns_lan && dns_lan_active()) {
+        static int dnslan_seen;
+        char *da[6];
+        int drc;
+        da[0] = (char *)tool_iptables();
+        da[1] = "-t"; da[2] = "nat"; da[3] = "-S";
+        da[4] = (char *)"SUSANIN_DNSLAN"; da[5] = NULL;
+        drc = run_check(da, out, sizeof(out));
+        if (drc == XT_BUSY) {
+            if (unknown)
+                *unknown = 1;
+            return 1;
+        }
+        if (drc != 0 || !strstr(out, "-A SUSANIN_DNSLAN")) {
+            if (dnslan_seen) {
+                why_set(why, whysz, "dns_lan DNAT chain");
+                return 0;
+            }
+        } else {
+            dnslan_seen = 1;
+        }
     }
 
     /* T3: dns_hijack ставит DNAT 53 для клиентов серверных VPN (oc+/wdtt+), в
